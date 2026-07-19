@@ -11,6 +11,16 @@ from app.services.audit import (
     verify_optimistic_locking,
     run_security_audit,
 )
+from app.services.sanitizer import (
+    sanitize_ocr_text,
+    detect_injection,
+    strip_suspicious_content,
+    validate_structured_output,
+    safe_parse_json,
+    PrescriptionSchema,
+    AppointmentSchema,
+    WeeklyReportSchema,
+)
 
 __all__ = [
     "redis_service",
@@ -29,4 +39,12 @@ __all__ = [
     "verify_audit_completeness",
     "verify_optimistic_locking",
     "run_security_audit",
+    "sanitize_ocr_text",
+    "detect_injection",
+    "strip_suspicious_content",
+    "validate_structured_output",
+    "safe_parse_json",
+    "PrescriptionSchema",
+    "AppointmentSchema",
+    "WeeklyReportSchema",
 ]

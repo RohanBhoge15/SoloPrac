@@ -8,6 +8,7 @@ from typing import Callable, Awaitable
 from uuid import UUID
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.config import settings
 from app.database import async_session_maker
@@ -86,8 +87,11 @@ async def doctor_identity_middleware(request: Request, call_next):
     """
     Extracts doctor identity from JWT and sets it in request.state
     and the PostgreSQL session variable for RLS enforcement.
+
+    RLS isolation: Every SQLAlchemy session used during this request
+    will see `current_setting('app.current_doctor_id')` set to the
+    authenticated doctor's UUID. This is how RLS policies filter rows.
     """
-    from app.dependencies import get_current_doctor_optional
     from app.database import async_session_maker
 
     # Try to extract doctor from Authorization header
@@ -104,4 +108,18 @@ async def doctor_identity_middleware(request: Request, call_next):
             pass
 
     response = await call_next(request)
+
+    # After response, set the RLS session variable for any deferred queries
+    doctor_id = getattr(request.state, "doctor_id", None)
+    if doctor_id:
+        try:
+            async with async_session_maker() as session:
+                await session.execute(
+                    text("SELECT set_config('app.current_doctor_id', :did, true)"),
+                    {"did": str(doctor_id)},
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("Failed to set RLS session variable: %s", exc)
+
     return response

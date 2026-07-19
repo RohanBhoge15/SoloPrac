@@ -87,18 +87,20 @@ async def get_optional_doctor(
 
 
 def create_access_token(sub: str) -> str:
-    """Create a short-lived access token."""
+    """Create a short-lived access token (30 minutes)."""
     from datetime import datetime, timedelta, timezone
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_EXPIRATION_MINUTES)
-    payload = TokenPayload(sub=sub, exp=expire, type="access")
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=settings.JWT_EXPIRATION_MINUTES)
+    payload = TokenPayload(sub=sub, exp=expire, iat=now, type="access")
     return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 def create_refresh_token(sub: str) -> str:
-    """Create a long-lived refresh token."""
+    """Create a long-lived refresh token (7 days)."""
     from datetime import datetime, timedelta, timezone
-    expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS)
-    payload = TokenPayload(sub=sub, exp=expire, type="refresh")
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS)
+    payload = TokenPayload(sub=sub, exp=expire, iat=now, type="refresh")
     return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 

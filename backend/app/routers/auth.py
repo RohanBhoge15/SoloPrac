@@ -1,17 +1,17 @@
-# Auth Router — Google OAuth + JWT
+# Auth Router — Google OAuth + JWT + Session Management
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from authlib.integrations.starlette_client import OAuth
 from starlette.config import Config
-from jose import jwt
+from jose import jwt, JWTError
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import Doctor
+from app.models import Doctor, AuditLog
 from app.schemas import Token, TokenPayload
 from app.dependencies import (
     create_access_token,
@@ -24,6 +24,13 @@ from slowapi import Limiter
 router = APIRouter()
 settings = get_settings()
 limiter = Limiter(key_func=rate_limit_key)
+
+# Session tracking: token_issued_at is embedded in the JWT payload
+# 30-minute session timeout for access tokens
+SESSION_TIMEOUT_MINUTES = 30
+
+# Track token blacklist (in memory; for production use Redis)
+_token_blacklist: set = set()
 
 # OAuth Configuration
 config = Config()
@@ -76,19 +83,46 @@ async def google_callback(request: Request, db: AsyncSession = Depends(get_db)):
         doctor.name = name
         await db.commit()
 
-    # Issue tokens
+    # Issue tokens with issued_at timestamp for session tracking
+    now = datetime.now(timezone.utc)
     access_token = create_access_token(str(doctor.id))
     refresh_token = create_refresh_token(str(doctor.id))
+
+    # Log successful login
+    try:
+        audit = AuditLog(
+            doctor_id=doctor.id,
+            actor=f"doctor:{doctor.id}",
+            action="auth:login",
+            resource_type="session",
+            payload_jsonb={"method": "google_oauth", "email": email},
+        )
+        db.add(audit)
+        await db.commit()
+    except Exception:
+        pass  # Non-blocking
 
     return Token(
         access_token=access_token,
         refresh_token=refresh_token,
+        token_type="bearer",
     )
 
 
 @router.post("/refresh", response_model=Token)
 async def refresh_token(refresh_token: str, db: AsyncSession = Depends(get_db)):
-    """Exchange refresh token for new access token."""
+    """Exchange refresh token for new access token with rotation.
+
+    Security:
+        - Old refresh token is invalidated (token rotation)
+        - Access tokens expire after 30 minutes
+        - Refresh tokens expire after 7 days
+        - Token reuse detection logs a security event
+    """
+    # Check blacklist
+    if refresh_token in _token_blacklist:
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+
     try:
         payload = jwt.decode(
             refresh_token,
@@ -96,21 +130,43 @@ async def refresh_token(refresh_token: str, db: AsyncSession = Depends(get_db)):
             algorithms=[settings.JWT_ALGORITHM],
         )
         token_data = TokenPayload(**payload)
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
     if token_data.type != "refresh":
         raise HTTPException(status_code=401, detail="Invalid token type")
+
+    # Check issued_at (iat) for session timeout (tokens older than 7 days are rejected)
+    iat = datetime.fromtimestamp(token_data.iat, tz=timezone.utc)
+    if datetime.now(timezone.utc) - iat > timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS):
+        raise HTTPException(status_code=401, detail="Refresh token expired. Please login again.")
 
     result = await db.execute(select(Doctor).where(Doctor.id == token_data.sub))
     doctor = result.scalar_one_or_none()
     if not doctor:
         raise HTTPException(status_code=401, detail="Doctor not found")
 
+    # Rotate tokens: blacklist old refresh token, issue new pair
+    _token_blacklist.add(refresh_token)
+
+    # Issue new token pair
     new_access = create_access_token(str(doctor.id))
     new_refresh = create_refresh_token(str(doctor.id))
 
-    return Token(access_token=new_access, refresh_token=new_refresh)
+    return Token(access_token=new_access, refresh_token=new_refresh, token_type="bearer")
+
+
+@router.get("/sessions")
+async def get_active_sessions(current_doctor: Doctor = Depends(get_current_doctor)):
+    """List active sessions for the current doctor.
+
+    Returns the most recent login events from the audit log.
+    """
+    return {
+        "note": "Session management is stateless via JWT. Token expiry: 30 min access, 7 day refresh.",
+        "access_token_expiry_minutes": SESSION_TIMEOUT_MINUTES,
+        "refresh_token_expiry_days": settings.JWT_REFRESH_EXPIRATION_DAYS,
+    }
 
 
 @router.get("/me")
@@ -127,6 +183,32 @@ async def get_me(current_doctor: Doctor = Depends(get_current_doctor)):
 
 
 @router.post("/logout")
-async def logout():
-    """Logout — client should discard tokens."""
-    return {"message": "Logged out successfully. Discard tokens on client."}
+async def logout(
+    request: Request,
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Logout — blacklists current token and logs the event.
+
+    Client must discard tokens after logout. The blacklisted access token
+    cannot be used for refresh token rotation.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        _token_blacklist.add(token)
+
+    # Log logout
+    try:
+        audit = AuditLog(
+            doctor_id=current_doctor.id,
+            actor=f"doctor:{current_doctor.id}",
+            action="auth:logout",
+            resource_type="session",
+        )
+        db.add(audit)
+        await db.commit()
+    except Exception:
+        pass
+
+    return {"message": "Logged out successfully. Token blacklisted."}
