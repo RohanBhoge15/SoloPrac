@@ -56,6 +56,11 @@ from app.services.feature_c_projector import ProjectorTrainer, generate_syntheti
 from app.services.feature_c_eval import evaluate_projector, run_qualitative_panel
 from app.services.feature_e_clustering import TrajectoryClusterer, AnomalyDetector, run_full_evaluation as run_feature_e_eval
 from app.services.research_data_mgmt import export_langfuse_metrics, verify_data_anonymization, get_research_data_report
+from app.services.cache import cached_patients, cached_doctor_settings, cached_working_hours, invalidate_cache, invalidate_patient_cache, invalidate_doctor_cache, safe_get_patient
+from app.services.gpu_optimizer import gpu_optimizer, GPUOptimizer, voice_latency_optimizer, VoiceLatencyOptimizer
+from app.services.final_eval import collect_all_metrics
+from app.services.security_audit import security_auditor, SecurityAuditor, penetration_tester, PenetrationTester, run_full_audit
+from app.services.audit_log_fixer import check_audit_completeness, log_security_event
 
 __all__ = [
     "redis_service",
@@ -136,4 +141,23 @@ __all__ = [
     "export_langfuse_metrics",
     "verify_data_anonymization",
     "get_research_data_report",
+    "cached_patients",
+    "cached_doctor_settings",
+    "cached_working_hours",
+    "invalidate_cache",
+    "invalidate_patient_cache",
+    "invalidate_doctor_cache",
+    "safe_get_patient",
+    "gpu_optimizer",
+    "GPUOptimizer",
+    "voice_latency_optimizer",
+    "VoiceLatencyOptimizer",
+    "collect_all_metrics",
+    "security_auditor",
+    "SecurityAuditor",
+    "penetration_tester",
+    "PenetrationTester",
+    "run_full_audit",
+    "check_audit_completeness",
+    "log_security_event",
 ]
