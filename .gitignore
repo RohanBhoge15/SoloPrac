@@ -1,0 +1,105 @@
+# SoloPrac AI — .gitignore
+
+## Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+## Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+## IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Logs
+*.log
+logs/
+
+## Database
+*.db
+*.sqlite
+*.sqlite3
+
+## Docker
+.docker/
+
+## Frontend
+node_modules/
+dist/
+build/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+## Model weights (downloaded at runtime)
+models/
+*.bin
+*.safetensors
+*.gguf
+
+## Local data
+data/
+uploads/
+generated_pdfs/
+
+## OS / temp
+*.tmp
+*.temp
+.cache/
+
+## Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+## PyTest
+.pytest_cache/
+
+## Mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+## Jupyter
+.ipynb_checkpoints/
+
+## Langfuse
+langfuse_data/
+
+## Caddy
+caddy_data/
+caddy_config/
