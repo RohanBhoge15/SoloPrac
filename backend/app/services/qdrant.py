@@ -162,9 +162,25 @@ class QdrantService:
         limit: int = 20,
         score_threshold: float = 0.3,
         use_hybrid: bool = True,
+        sparse_vector: Optional[Dict[str, List]] = None,
         timestamp_lte: Optional[str] = None,
     ) -> List[ScoredPoint]:
-        """Hybrid search with temporal filter and doctor isolation."""
+        """Hybrid search with temporal filter and doctor isolation.
+
+        Args:
+            patient_id: UUID of the patient.
+            doctor_id: UUID of the doctor (for RLS isolation).
+            query_vector: Dense query vector for the named vector.
+            vector_name: Which named vector to search ('medical_text', 'hybrid', 'image').
+            limit: Max results.
+            score_threshold: Minimum similarity score.
+            use_hybrid: Enable hybrid (dense + sparse) search for text vectors.
+            sparse_vector: Dict with 'indices' and 'values' lists for sparse search.
+            timestamp_lte: Only return versions at or before this timestamp (ISO-8601).
+
+        Returns:
+            List of scored Qdrant points.
+        """
         client = await self.connect()
 
         # Build filter: doctor isolation + patient + optional time
@@ -178,37 +194,87 @@ class QdrantService:
             )
 
         filter_obj = Filter(must=filter_conditions)
+        search_params = SearchParams(hnsw_ef=128, exact=False)
 
-        # Search
-        if use_hybrid and vector_name != "image":
-            # Hybrid: dense + sparse
-            sparse_vector = SparseVector(
-                indices=[],  # would come from BGE-M3 sparse
-                values=[],
+        # Hybrid search: use SearchRequest for dense + sparse
+        if use_hybrid and vector_name != "image" and sparse_vector:
+            sparse = SparseVector(
+                indices=sparse_vector.get("indices", []),
+                values=sparse_vector.get("values", []),
             )
-            # For now, just dense + filter
-            results = client.search(
+            search_requests = [
+                SearchRequest(
+                    vector=(vector_name, query_vector),
+                    filter=filter_obj,
+                    limit=limit * 2,  # over-fetch for fusion
+                    params=search_params,
+                    with_payload=True,
+                ),
+            ]
+            # Add sparse search request if we have sparse data
+            if sparse.indices and sparse.values:
+                search_requests.append(
+                    SearchRequest(
+                        vector=sparse,
+                        filter=filter_obj,
+                        limit=limit * 2,
+                        params=search_params,
+                        with_payload=True,
+                    )
+                )
+
+            results = client.search_batch(
                 collection_name=PATIENT_VERSION_COLLECTION,
-                query_vector=(vector_name, query_vector),
-                query_filter=filter_obj,
-                limit=limit,
-                score_threshold=score_threshold,
-                search_params=SearchParams(hnsw_ef=128, exact=False),
-                with_payload=True,
-            )
-        else:
-            # Dense search
-            results = client.search(
-                collection_name=PATIENT_VERSION_COLLECTION,
-                query_vector=(vector_name, query_vector),
-                query_filter=filter_obj,
-                limit=limit,
-                score_threshold=score_threshold,
-                search_params=SearchParams(hnsw_ef=128, exact=False),
-                with_payload=True,
+                requests=search_requests,
             )
 
+            # Reciprocal rank fusion of results
+            if len(results) > 1:
+                fused = self._reciprocal_rank_fusion(
+                    [list(r) for r in results],
+                    k=limit,
+                )
+                return fused[:limit]
+
+            return results[0][:limit] if results else []
+
+        # Dense-only search
+        results = client.search(
+            collection_name=PATIENT_VERSION_COLLECTION,
+            query_vector=(vector_name, query_vector),
+            query_filter=filter_obj,
+            limit=limit,
+            score_threshold=score_threshold,
+            search_params=search_params,
+            with_payload=True,
+        )
         return results
+
+    def _reciprocal_rank_fusion(
+        self, result_lists: List[List[ScoredPoint]], k: int = 60, top_n: int = 20
+    ) -> List[ScoredPoint]:
+        """Reciprocal Rank Fusion (RRF) for combining multiple search results."""
+        scores = {}
+        for rank_list in result_lists:
+            for rank, point in enumerate(rank_list):
+                point_id = str(point.id)
+                scores[point_id] = scores.get(point_id, 0.0) + 1.0 / (k + rank + 1)
+
+        # Build result list sorted by fused score
+        scored_points = {}
+        for rank_list in result_lists:
+            for point in rank_list:
+                pid = str(point.id)
+                if pid not in scored_points:
+                    scored_points[pid] = point
+
+        sorted_ids = sorted(scores.keys(), key=lambda pid: -scores[pid])
+        fused = []
+        for pid in sorted_ids[:top_n]:
+            pt = scored_points[pid]
+            pt.score = scores[pid]
+            fused.append(pt)
+        return fused
 
     async def search_image_similar(
         self,
