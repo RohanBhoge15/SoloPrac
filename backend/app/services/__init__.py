@@ -44,7 +44,7 @@ from app.services.image_registration import ImageRegistrationService, image_regi
 from app.services.image_security import ImageSecurityService
 from app.services.pdf_security import PDFSecurityService
 from app.services.medical_formatter import MedicalFormatter
-from app.services.calendar_service import CalendarService
+from app.services.calendar_service import CalendarService, find_available_slots, create_appointment, reschedule_appointment, cancel_appointment, query_calendar_nl, bulk_reschedule, block_doctor_time, smart_rearrange, find_optimal_window, handle_doctor_off
 from app.services.email_queue import email_queue
 from app.services.voice_scheduler import voice_scheduler
 from app.services.notification_prefs import validate_notification_prefs, get_enabled_channels, merge_with_defaults
@@ -100,4 +100,22 @@ __all__ = [
     "merge_with_defaults",
     "calendar_security",
     "CalendarRateLimiter",
+    "CalendarService",
+    "email_queue",
+    "voice_scheduler",
+    "validate_notification_prefs",
+    "get_enabled_channels",
+    "merge_with_defaults",
+    "calendar_security",
+    "CalendarRateLimiter",
+    "find_available_slots",
+    "create_appointment",
+    "reschedule_appointment",
+    "cancel_appointment",
+    "query_calendar_nl",
+    "bulk_reschedule",
+    "block_doctor_time",
+    "smart_rearrange",
+    "find_optimal_window",
+    "handle_doctor_off",
 ]
