@@ -14,6 +14,7 @@ from app.services.audit import (
 from app.services.sanitizer import (
     sanitize_ocr_text,
     detect_injection,
+    sanitize_for_doc_type,
     strip_suspicious_content,
     validate_structured_output,
     safe_parse_json,
@@ -39,6 +40,8 @@ from app.services.rag_audit import (
     LLMRateLimiter,
     validate_no_future_leak,
 )
+from app.services.document_parser import DocumentParser, ParserRouter, DocType, DocFormat
+from app.services.schema_aligner import SchemaAligner, evaluate_schema_aligner, generate_test_documents
 
 __all__ = [
     "redis_service",
@@ -77,4 +80,11 @@ __all__ = [
     "RAGAuditService",
     "LLMRateLimiter",
     "validate_no_future_leak",
+    "DocumentParser",
+    "ParserRouter",
+    "DocType",
+    "DocFormat",
+    "SchemaAligner",
+    "evaluate_schema_aligner",
+    "generate_test_documents",
 ]

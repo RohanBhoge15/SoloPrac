@@ -124,6 +124,34 @@ def detect_injection(text: str) -> List[str]:
     return matches
 
 
+def sanitize_for_doc_type(text: str, doc_type: str = "general") -> str:
+    """Document-type-specific sanitization.
+
+    Different document types need different handling:
+      - Prescriptions: preserve medication names, doses, instructions
+      - Lab reports: preserve numerical values, units, reference ranges
+      - Discharge summaries: preserve medical terminology, timeline
+    """
+    if doc_type == "prescription":
+        # Preserve: medication names (capitalized), doses (mg, mcg, ml), instructions
+        # Strip: excess whitespace, normalize line breaks
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        return "\n".join(lines)
+
+    elif doc_type == "lab_report":
+        # Preserve: numerical values, units, test names
+        # Normalize: ensure units are spaced properly
+        text = re.sub(r"(\d+)(mg|g|mcg|ml|dl|L|%|mmol)", r"\1 \2", text)
+        return text.strip()
+
+    elif doc_type in ("discharge_summary", "referral_letter"):
+        # Preserve full medical narrative
+        # Strip only control chars
+        return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text).strip()
+
+    return sanitize_ocr_text(text)
+
+
 def strip_suspicious_content(text: str) -> str:
     """Remove suspicious blocks from text (e.g., delimiter-wrapped injection attempts)."""
     # Remove content between known delimiter pairs that might indicate injection
