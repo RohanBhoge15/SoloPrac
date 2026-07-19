@@ -3,50 +3,134 @@ import { cn } from '@/utils/helpers'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { DocumentUpload, type UploadedFile } from '@/components/DocumentUpload'
-import { Upload, FileText, X, User, CheckCircle, Loader2 } from 'lucide-react'
+import { Badge } from '@/components/ui/Badge'
+import { apiClient } from '@/services/api'
+import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File } from 'lucide-react'
 
-// Mock patients list for demo
+interface ParsedDocument {
+  doc_id: string
+  filename: string
+  doc_type: string
+  doc_format: string
+  raw_text: string
+  structured: Record<string, unknown>
+  confidence: number
+  took_ms: number
+}
+
+interface UploadingFile {
+  id: string
+  name: string
+  size: number
+  type: string
+  preview: string
+  status: 'uploading' | 'parsing' | 'completed' | 'error'
+  result?: ParsedDocument
+  error?: string
+}
+
 const MOCK_PATIENTS = [
   { id: '1', initials: 'PS', name: 'Priya Sharma' },
   { id: '2', initials: 'RK', name: 'Rajesh Kumar' },
   { id: '3', initials: 'AP', name: 'Anita Patel' },
 ]
 
+const DOC_TYPE_LABELS: Record<string, string> = {
+  prescription: 'Prescription',
+  lab_report: 'Lab Report',
+  discharge_summary: 'Discharge Summary',
+  referral_letter: 'Referral Letter',
+  imaging_report: 'Imaging Report',
+  general_document: 'Document',
+}
+
+const DOC_TYPE_COLORS: Record<string, string> = {
+  prescription: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300',
+  lab_report: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+  discharge_summary: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+  referral_letter: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300',
+  imaging_report: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300',
+}
+
 export function Scratchpad() {
-  const [files, setFiles] = useState<{ name: string; size: number; type: string }[]>([])
+  const [files, setFiles] = useState<UploadingFile[]>([])
   const [dragOver, setDragOver] = useState(false)
-  const [extractedText, setExtractedText] = useState<string | null>(null)
-  const [processingComplete, setProcessingComplete] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [selectedPatient, setSelectedPatient] = useState<string | null>(null)
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  // Called when DocumentUpload finishes processing
-  const handleUploadComplete = useCallback((uploadedFiles: UploadedFile[]) => {
-    const completedFiles = uploadedFiles.filter(f => f.status === 'completed')
-    if (completedFiles.length > 0) {
-      setFiles(prev => [
-        ...prev,
-        ...completedFiles.map(f => ({ name: f.file.name, size: f.file.size, type: f.file.type })),
-      ])
-      // Combine extracted text from all completed files
-      const combinedText = completedFiles
-        .map(f => f.extractedText || '')
-        .filter(Boolean)
-        .join('\n\n')
-      setExtractedText(combinedText)
-      setProcessingComplete(true)
+  const handleDrop = useCallback(async (droppedFiles: FileList | File[]) => {
+    const newFiles: UploadingFile[] = Array.from(droppedFiles).map((f) => ({
+      id: Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9),
+      name: f.name,
+      size: f.size,
+      type: f.type,
+      preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : '',
+      status: 'uploading' as const,
+    }))
+
+    if (newFiles.length > 0) {
+      setFiles(prev => [...prev, ...newFiles])
+    }
+
+    // Upload each file to the parse API
+    for (const nf of newFiles) {
+      setFiles(prev => prev.map(f => f.id === nf.id ? { ...f, status: 'uploading' as const } : f))
+
+      try {
+        const formData = new FormData()
+        // Find the original file object
+        const fileObj = Array.from(droppedFiles).find(f => f.name === nf.name)
+        if (fileObj) {
+          formData.append('file', fileObj)
+        }
+
+        const response = await apiClient.post('/api/v1/documents/parse', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 60000,
+        })
+
+        const result: ParsedDocument = response.data
+        setFiles(prev => prev.map(f =>
+          f.id === nf.id ? { ...f, status: 'completed' as const, result } : f
+        ))
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Upload failed'
+        setFiles(prev => prev.map(f =>
+          f.id === nf.id ? { ...f, status: 'error' as const, error: errorMsg } : f
+        ))
+      }
     }
   }, [])
 
-  const removeFile = (name: string) => {
-    setFiles(prev => prev.filter(f => f.name !== name))
-    if (files.length <= 1) {
-      setExtractedText(null)
-      setProcessingComplete(false)
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(true)
+  }
+
+  const handleDragLeave = () => setDragOver(false)
+
+  const handleDropEvent = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    handleDrop(e.dataTransfer.files)
+  }
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleDrop(e.target.files)
+      e.target.value = ''
     }
+  }
+
+  const removeFile = (id: string) => {
+    setFiles(prev => {
+      const file = prev.find(f => f.id === id)
+      if (file?.preview) URL.revokeObjectURL(file.preview)
+      return prev.filter(f => f.id !== id)
+    })
   }
 
   const formatSize = (bytes: number) => {
@@ -56,123 +140,222 @@ export function Scratchpad() {
   }
 
   const handleSaveToPatient = async () => {
-    if (!selectedPatient || !extractedText) return
+    if (!selectedPatient || !selectedDocId) return
     setSaving(true)
-    // Simulate saving
-    await new Promise(r => setTimeout(r, 1500))
-    setSaving(false)
-    setSaved(true)
-    setTimeout(() => {
-      setSaved(false)
-      setShowSaveDialog(false)
-      setFiles([])
-      setExtractedText(null)
-      setProcessingComplete(false)
-      setSelectedPatient(null)
-    }, 2000)
+    try {
+      const formData = new FormData()
+      formData.append('patient_id', selectedPatient)
+      await apiClient.post(`/api/v1/documents/${selectedDocId}/save-to-patient`, formData)
+      setSaving(false)
+      setSaved(true)
+      setTimeout(() => {
+        setSaved(false)
+        setShowSaveDialog(false)
+        setFiles([])
+        setSelectedPatient(null)
+        setSelectedDocId(null)
+      }, 2000)
+    } catch {
+      setSaving(false)
+    }
   }
+
+  const openSaveDialog = (docId: string) => {
+    setSelectedDocId(docId)
+    setShowSaveDialog(true)
+  }
+
+  const completedFiles = files.filter(f => f.status === 'completed')
+  const hasContent = completedFiles.length > 0
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Scratchpad</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">Drop any document or image — AI will extract text and summarize</p>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">
+          Drop any document — PDF, JPG, PNG, WebP — AI will extract text and classify the document type
+        </p>
       </div>
 
-      {/* Document Upload Component (drag-drop zone with preview) */}
-      <DocumentUpload onUploadComplete={handleUploadComplete} maxFiles={5} maxSizeMB={20} />
-
-      {/* Simple Upload Zone (alternative) */}
-      {!processingComplete && (
-        <>
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t border-gray-300 dark:border-gray-600" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-gray-50 dark:bg-gray-950 px-2 text-gray-500">or upload directly</span>
-            </div>
-          </div>
-
-          <div
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault()
-              setDragOver(false)
-              const droppedFiles = Array.from(e.dataTransfer.files)
-              setFiles(prev => [...prev, ...droppedFiles.map(f => ({ name: f.name, size: f.size, type: f.type }))])
-            }}
-            className={cn(
-              'border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer',
-              dragOver
-                ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                : 'border-gray-300 dark:border-gray-600 hover:border-primary-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
-            )}
-          >
-            <Upload className="mx-auto h-8 w-8 text-gray-400" />
-            <p className="mt-2 text-sm font-medium text-gray-900 dark:text-white">
-              or click to browse — PDF, JPG, PNG (max 20MB)
-            </p>
-            <Input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png,.webp" />
-            <Button variant="outline" className="mt-3" size="sm" onClick={() => {}}>
-              Browse Files
-            </Button>
-          </div>
-        </>
-      )}
+      {/* Upload Zone */}
+      <div
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDropEvent}
+        onClick={() => document.getElementById('file-input')?.click()}
+        className={cn(
+          'border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer',
+          dragOver
+            ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+            : 'border-gray-300 dark:border-gray-600 hover:border-primary-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+        )}
+      >
+        <Upload className="mx-auto h-12 w-12 text-gray-400" />
+        <p className="mt-4 text-lg font-medium text-gray-900 dark:text-white">
+          Drop documents here or click to browse
+        </p>
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+          PDF, JPG, PNG, WebP — max 25MB each
+        </p>
+        <Input
+          id="file-input"
+          type="file"
+          className="hidden"
+          accept=".pdf,.jpg,.jpeg,.png,.webp"
+          multiple
+          onChange={handleFileInput}
+        />
+      </div>
 
       {/* Files List */}
       {files.length > 0 && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Uploaded Files ({files.length})</CardTitle>
-            {processingComplete && (
-              <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+            {hasContent && (
+              <span className="flex items-center gap-1 text-xs text-green-600">
                 <CheckCircle className="h-3.5 w-3.5" />
-                Processing complete
+                {completedFiles.length} parsed
               </span>
             )}
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-3">
             {files.map((file) => (
-              <div key={file.name} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                <div className="flex items-center gap-3">
-                  <FileText className="h-8 w-8 text-primary-600" />
-                  <div>
-                    <p className="font-medium text-gray-900 dark:text-white">{file.name}</p>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">{formatSize(file.size)}</p>
-                  </div>
+              <div
+                key={file.id}
+                className={cn(
+                  'flex items-center gap-3 p-3 rounded-lg border transition-colors',
+                  file.status === 'completed' && 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800',
+                  file.status === 'error' && 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800',
+                  file.status === 'uploading' && 'bg-blue-50 dark:bg-blue-900/10 border-blue-200 dark:border-blue-800',
+                  (file.status === 'parsing' || file.status === 'uploading') && 'bg-yellow-50 dark:bg-yellow-900/10 border-yellow-200 dark:border-yellow-800',
+                )}
+              >
+                {/* Thumbnail/Icon */}
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                  {file.preview ? (
+                    <img src={file.preview} alt={file.name} className="h-full w-full object-cover" />
+                  ) : file.type === 'application/pdf' ? (
+                    <FileText className="h-6 w-6 text-red-500" />
+                  ) : (
+                    <File className="h-6 w-6 text-gray-400" />
+                  )}
                 </div>
-                <Button variant="ghost" size="icon" onClick={() => removeFile(file.name)}>
-                  <X className="h-4 w-4" />
-                </Button>
+
+                {/* Details */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-gray-900 dark:text-white truncate">{file.name}</p>
+                    {file.result?.doc_type && (
+                      <Badge variant="secondary" className={cn('text-[10px]', DOC_TYPE_COLORS[file.result.doc_type] || '')}>
+                        {DOC_TYPE_LABELS[file.result.doc_type] || file.result.doc_type}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">{formatSize(file.size)}</p>
+
+                  {/* Status / Progress */}
+                  {file.status === 'uploading' && (
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                      <span className="text-xs text-blue-600">Uploading & parsing...</span>
+                    </div>
+                  )}
+                  {file.status === 'completed' && file.result && (
+                    <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
+                      <span>Confidence: {(file.result.confidence * 100).toFixed(0)}%</span>
+                      <span>·</span>
+                      <span>{(file.result.took_ms / 1000).toFixed(1)}s</span>
+                      {file.result.structured && typeof file.result.structured === 'object' && 'text_length' in file.result.structured && (
+                        <>
+                          <span>·</span>
+                          <span>{String(file.result.structured.text_length)} chars</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {file.status === 'error' && (
+                    <p className="text-xs text-red-600 mt-1">{file.error}</p>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1 shrink-0">
+                  {file.status === 'completed' && file.result && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title="View extracted text"
+                        onClick={() => {}}
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={() => file.result && openSaveDialog(file.result.doc_id)}
+                      >
+                        <User className="h-3 w-3 mr-1" />
+                        Save
+                      </Button>
+                    </>
+                  )}
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeFile(file.id)}>
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
             ))}
           </CardContent>
         </Card>
       )}
 
-      {/* Extracted Content */}
-      {extractedText && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Extracted Content</CardTitle>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => setShowSaveDialog(true)}
-            >
-              <User className="h-4 w-4 mr-2" />
-              Save to Patient
-            </Button>
-          </CardHeader>
-          <CardContent>
-            <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 min-h-[120px] text-gray-900 dark:text-white text-sm whitespace-pre-wrap font-mono">
-              {extractedText}
-            </div>
-          </CardContent>
-        </Card>
+      {/* Extracted Content Details */}
+      {hasContent && (
+        <div className="space-y-4">
+          {completedFiles.filter(f => f.result?.raw_text).map((file) => (
+            <Card key={file.id}>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-sm">
+                  Extracted — {file.result?.doc_type ? DOC_TYPE_LABELS[file.result.doc_type] || file.result.doc_type : 'Document'}
+                </CardTitle>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => openSaveDialog(file.result!.doc_id)}
+                >
+                  <User className="h-4 w-4 mr-2" />
+                  Save to Patient
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 min-h-[100px] max-h-[300px] overflow-y-auto text-gray-900 dark:text-white text-sm whitespace-pre-wrap font-mono">
+                  {file.result?.raw_text || 'No text extracted.'}
+                </div>
+
+                {/* Structured data preview */}
+                {file.result?.structured && Object.keys(file.result.structured).length > 0 && (
+                  <div className="mt-3 space-y-1.5">
+                    <p className="text-xs font-semibold text-gray-500 uppercase">Structured Fields</p>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      {Object.entries(file.result.structured).filter(([k]) => !['type', 'extracted_at', 'text_length'].includes(k)).slice(0, 8).map(([key, value]) => (
+                        <div key={key} className="p-1.5 rounded bg-gray-50 dark:bg-gray-800/50">
+                          <span className="text-gray-500 capitalize">{key.replace('_', ' ')}</span>
+                          <p className="font-medium truncate">
+                            {Array.isArray(value) ? `${value.length} items` : String(value).slice(0, 60)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
       )}
 
       {/* Save to Patient Dialog */}
@@ -185,12 +368,12 @@ export function Scratchpad() {
               <div className="text-center py-6">
                 <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
                 <p className="text-green-700 dark:text-green-300 font-medium">Saved successfully!</p>
-                <p className="text-sm text-gray-500 mt-1">Content added to patient record.</p>
+                <p className="text-sm text-gray-500 mt-1">Document added to patient record as a new version.</p>
               </div>
             ) : (
               <>
                 <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                  Select a patient to save this extracted content as a new version.
+                  Select a patient to save this parsed document as a new versioned record entry.
                 </p>
                 <div className="space-y-2 mb-6">
                   {MOCK_PATIENTS.map((p) => (
@@ -219,7 +402,7 @@ export function Scratchpad() {
                     {saving ? (
                       <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving...</>
                     ) : (
-                      'Save'
+                      'Save to Patient Record'
                     )}
                   </Button>
                 </div>
