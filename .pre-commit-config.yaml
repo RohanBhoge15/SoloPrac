@@ -1,0 +1,77 @@
+# SoloPrac AI — Pre-commit Hooks
+# https://pre-commit.com
+#
+# Install:  pre-commit install
+# Run:      pre-commit run --all-files
+# Update:   pre-commit autoupdate
+
+repos:
+  # ─── Cleanup & Secrets ───
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - --baseline
+          - .secrets.baseline
+        exclude: >
+          (?x)^(
+            .env\.example |
+            Caddyfile |
+            backend/pyproject\.toml |
+            frontend/package\.json |
+            docker-compose\.yml |
+            \.pre-commit-config\.yaml |
+            \.gitignore |
+            .*\.md |
+            docs/.* |
+            .*\.lock |
+            .*\.png
+          )$
+
+  # ─── Python Linting & Formatting ───
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.0
+    hooks:
+      - id: ruff
+        args:
+          - --fix
+          - --line-length=120
+        types_or: [python, pyi]
+        exclude: ^(frontend/|docs/|\.git/)
+
+      - id: ruff-format
+        args:
+          - --line-length=120
+        types_or: [python, pyi]
+        exclude: ^(frontend/|docs/|\.git/)
+
+  # ─── General File Hygiene ───
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        exclude: ^(docker-compose\.yml|frontend/|docs/)
+      - id: end-of-file-fixer
+        exclude: ^(frontend/|docs/.*\.md$)
+      - id: trailing-whitespace
+        exclude: ^(frontend/|docs/.*\.md$)
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+      - id: check-json
+        exclude: ^(frontend/package-lock\.json|frontend/tsconfig\.json)
+      - id: detect-private-key
+        exclude: ^(.env\.example|Caddyfile)$
+
+  # ─── Security-Focused Checks ───
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        args: [--no-git]
+        exclude: ^(.env\.example|backend/pyproject\.toml|docs/)$
+
+  # ─── Backend Import Sort (isort-like via ruff already handles this) ───
+  # Ruff's isort rules are configured in pyproject.toml
