@@ -44,6 +44,11 @@ from app.services.image_registration import ImageRegistrationService, image_regi
 from app.services.image_security import ImageSecurityService
 from app.services.pdf_security import PDFSecurityService
 from app.services.medical_formatter import MedicalFormatter
+from app.services.calendar_service import CalendarService
+from app.services.email_queue import email_queue
+from app.services.voice_scheduler import voice_scheduler
+from app.services.notification_prefs import validate_notification_prefs, get_enabled_channels, merge_with_defaults
+from app.services.calendar_security import calendar_security, CalendarRateLimiter
 
 __all__ = [
     "redis_service",
@@ -87,4 +92,12 @@ __all__ = [
     "ImageSecurityService",
     "PDFSecurityService",
     "MedicalFormatter",
+    "CalendarService",
+    "email_queue",
+    "voice_scheduler",
+    "validate_notification_prefs",
+    "get_enabled_channels",
+    "merge_with_defaults",
+    "calendar_security",
+    "CalendarRateLimiter",
 ]
