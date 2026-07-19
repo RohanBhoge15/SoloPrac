@@ -1,0 +1,92 @@
+---
+title: SoloPrac AI System Architecture
+---
+graph TB
+    subgraph Client["Client Layer"]
+        direction TB
+        WEB["React 19 + Vite + TS<br/>shadcn/ui + Tailwind"]
+        PWA["Responsive PWA<br/>Mobile/Tablet/Desktop"]
+        CMDK["Cmd+K Command Palette"]
+        FS["Framer Motion Animations"]
+    end
+
+    subgraph Gateway["API Gateway"]
+        CADDY["Caddy Reverse Proxy<br/>Auto HTTPS + Let's Encrypt"]
+    end
+
+    subgraph Backend["Backend Layer"]
+        direction TB
+        FA["FastAPI + Pydantic<br/>Async Python Backend"]
+        SQ["SQLAlchemy ORM<br/>PostgreSQL 16"]
+        ARQ["arq Redis Queue<br/>Async Task Worker"]
+        LAN["LangGraph Agent<br/>Orchestration Framework"]
+    end
+
+    subgraph Agent["Agent Layer"]
+        direction TB
+        RTR["Intent Router<br/>Llama-3.1-8B (NIM)"]
+        SYN["Response Synthesizer<br/>Llama-4 Maverick (NIM)"]
+        VLM["Vision Analyzer<br/>90B-V Groq / MedGemma-4B"]
+        DOC["Doc Processor<br/>Docling / Surya / GOT-OCR"]
+        IMG["Image Registration<br/>ORB + OpenCV"]
+        VOICE["Voice Scheduling<br/>ASR + TTS Subgraph"]
+    end
+
+    subgraph Storage["Storage Layer"]
+        direction TB
+        PG[("PostgreSQL 16<br/>Patient Records + Auth")]
+        QD[("Qdrant Vector DB<br/>Multi-Vector Search")]
+        RD[("Redis<br/>Cache + Queue")]
+        LF[("Langfuse<br/>Observability + Tracing")]
+        FS2[("File Storage<br/>PDFs + Images + Reports")]
+    end
+
+    subgraph External["External Services"]
+        NIM["NVIDIA NIM<br/>Free Tier LLMs"]
+        GROQ["Groq Cloud<br/>90B-Vision Free"]
+        GOOG["Google OAuth<br/>Authentication"]
+        OSM["OpenStreetMap<br/>Free Map Tiles"]
+        SMTP["SMTP Email<br/>Patient Notifications"]
+    end
+
+    WEB --> CADDY
+    PWA --> CADDY
+    CADDY --> FA
+    FA --> SQ
+    FA --> ARQ
+    FA --> LAN
+
+    LAN --> RTR
+    RTR --> SYN
+    RTR --> VLM
+    RTR --> DOC
+    RTR --> IMG
+    RTR --> VOICE
+
+    SQ --> PG
+    FA --> QD
+    FA --> RD
+    FA --> LF
+    FA --> FS2
+
+    SYN --> NIM
+    RTR --> NIM
+    VLM --> GROQ
+    VLM --> |MedGemma local| FS2
+    FA --> GOOG
+    FA --> OSM
+    ARQ --> SMTP
+
+    classDef client fill:#e1f5fe,stroke:#0288d1,color:#000
+    classDef gateway fill:#fff3e0,stroke:#f57c00,color:#000
+    classDef backend fill:#e8f5e9,stroke:#388e3c,color:#000
+    classDef agent fill:#fce4ec,stroke:#c62828,color:#000
+    classDef storage fill:#f3e5f5,stroke:#7b1fa2,color:#000
+    classDef external fill:#f5f5f5,stroke:#616161,color:#000,stroke-dasharray: 5 5
+
+    class WEB,PWA,CMDK,FS client
+    class CADDY gateway
+    class FA,SQ,ARQ,LAN backend
+    class RTR,SYN,VLM,DOC,IMG,VOICE agent
+    class PG,QD,RD,LF,FS2 storage
+    class NIM,GROQ,GOOG,OSM,SMTP external

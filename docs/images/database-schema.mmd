@@ -1,0 +1,157 @@
+---
+title: SoloPrac AI Database Schema
+---
+erDiagram
+    DOCTORS ||--o{ PATIENTS : "treats"
+    DOCTORS ||--o{ APPOINTMENTS : "hosts"
+    DOCTORS ||--o{ AUDIT_LOG : "generates"
+    PATIENTS ||--o| PATIENT_VERSIONS : "head"
+    PATIENTS ||--o{ PATIENT_VERSIONS : "has many"
+    PATIENTS ||--o{ PRESCRIPTION_BOXES : "receives"
+    PATIENTS ||--o{ INVOICES : "bills"
+    PATIENTS ||--o{ CERTIFICATES : "issued"
+    PATIENTS ||--o{ APPOINTMENTS : "attends"
+    PATIENTS ||--o{ PATIENT_TIME_PREFERENCES : "prefers"
+    PATIENTS ||--o{ RISK_ALERTS : "triggered"
+    PATIENTS ||--o{ PATIENT_NOTIFICATIONS : "receives"
+    PATIENT_VERSIONS }|--|| PATIENT_VERSIONS : "parent"
+
+    DOCTORS {
+        uuid id PK
+        varchar email UK
+        varchar name
+        varchar speciality
+        geography location
+        varchar clinic_name
+        text clinic_address
+        varchar phone
+        varchar registration_number
+        jsonb settings
+        timestamp created_at
+    }
+
+    PATIENTS {
+        uuid id PK
+        uuid doctor_id FK
+        uuid head_version_id FK
+        bytea phone_enc
+        bytea email_enc
+        boolean consent_for_share
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    PATIENT_VERSIONS {
+        uuid id PK
+        uuid patient_id FK
+        uuid doctor_id FK
+        uuid parent_version_id FK
+        int version_number
+        jsonb state_jsonb
+        text version_hash
+        text author
+        text edit_type
+        text summary
+        text tags
+        float clinical_significance
+        jsonb image_comparison
+        timestamp timestamp
+    }
+
+    PRESCRIPTION_BOXES {
+        uuid id PK
+        uuid version_id FK
+        uuid doctor_id FK
+        jsonb rx_jsonb
+        text pdf_path
+        timestamp created_at
+    }
+
+    INVOICES {
+        uuid id PK
+        uuid patient_id FK
+        uuid doctor_id FK
+        uuid appointment_id FK
+        varchar invoice_number UK
+        jsonb items
+        decimal subtotal
+        decimal tax
+        decimal total
+        varchar status
+        varchar payment_method
+        text notes
+        timestamp generated_at
+        timestamp paid_at
+        text pdf_path
+    }
+
+    CERTIFICATES {
+        uuid id PK
+        uuid patient_id FK
+        uuid doctor_id FK
+        text cert_type
+        jsonb cert_jsonb
+        text pdf_path
+        text verification_code UK
+        timestamp issued_at
+    }
+
+    APPOINTMENTS {
+        uuid id PK
+        uuid doctor_id FK
+        uuid patient_id FK
+        timestamp start_at
+        timestamp end_at
+        text reason
+        varchar status
+        varchar source
+        boolean notified
+        timestamp created_at
+    }
+
+    PATIENT_TIME_PREFERENCES {
+        uuid patient_id FK
+        int weekday
+        int hour_bucket
+        int count
+        timestamp last_seen
+    }
+
+    RISK_ALERTS {
+        uuid id PK
+        uuid doctor_id FK
+        uuid patient_id FK
+        text kind
+        text reason
+        float severity
+        timestamp triggered_at
+        uuid acknowledged_by FK
+        timestamp acknowledged_at
+    }
+
+    PATIENT_NOTIFICATIONS {
+        uuid id PK
+        uuid patient_id FK
+        uuid doctor_id FK
+        text kind
+        text subject
+        text body
+        text channel
+        boolean read
+        timestamp delivered_at
+        timestamp created_at
+    }
+
+    AUDIT_LOG {
+        bigint id PK
+        uuid doctor_id
+        uuid patient_id
+        text actor
+        text action
+        text resource_type
+        uuid resource_id
+        jsonb payload_jsonb
+        inet ip_address
+        text user_agent
+        timestamp occurred_at
+    }
