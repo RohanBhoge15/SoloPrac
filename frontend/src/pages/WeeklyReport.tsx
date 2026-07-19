@@ -129,7 +129,7 @@ export function WeeklyReport() {
         </button>
       )}
       {expandedSection === idx && s.components && (
-        <div className="mt-1 p-2 rounded bg-white/50 text-[10px] space-y-0.5">
+        <div className="mt-1 p-2 rounded bg-white/50 dark:bg-gray-800/50 text-[10px] space-y-0.5">
           {Object.entries(s.components).map(([key, val]) => (
             <div key={key} className="flex justify-between">
               <span className="text-gray-500">{key.replace(/_/g, ' ')}</span>
