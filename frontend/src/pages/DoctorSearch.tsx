@@ -122,7 +122,7 @@ export function DoctorSearch() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
-                      <span className="text-lg font-bold text-primary-700">{doc.name.split(' ').map(n => n[0]).join('')}</span>
+                      <span className="text-lg font-bold text-primary-700">{doc.name.split(' ').map((n: string) => n[0]).join('')}</span>
                     </div>
                     <div>
                       <p className="font-medium text-gray-900 dark:text-white">{doc.name}</p>

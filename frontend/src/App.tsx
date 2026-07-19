@@ -14,6 +14,7 @@ import { DoctorSearch } from '@/pages/DoctorSearch'
 import { PatientAppointments } from '@/pages/PatientAppointments'
 import { PatientInbox } from '@/pages/PatientInbox'
 import { PatientReports } from '@/pages/PatientReports'
+import { WeeklyReport } from '@/pages/WeeklyReport'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { useEffect } from 'react'
 
@@ -76,6 +77,7 @@ function AppRoutes() {
         <Route path="/scratchpad" element={<Scratchpad />} />
         <Route path="/chat" element={<Chat />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/weekly-report" element={<WeeklyReport />} />
         <Route path="/patients/:id" element={<PatientDetail />} />
       </Route>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -128,6 +130,14 @@ function PatientRoutes() {
             </PatientProtectedRoute>
           }
           path="/patient/reports"
+        />
+        <Route
+          element={
+            <PatientProtectedRoute>
+              <WeeklyReport />
+            </PatientProtectedRoute>
+          }
+          path="/patient/weekly-report"
         />
       </Route>
       <Route path="/patient/*" element={<Navigate to="/patient/login" replace />} />

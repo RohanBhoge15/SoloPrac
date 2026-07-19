@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
-import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
-import { FileText, Download, Loader2, Receipt, Certificate } from 'lucide-react'
+import { FileText, Loader2, Receipt, FileBadge } from 'lucide-react'
 
 export function PatientReports() {
   const [reports, setReports] = useState<any>({ prescriptions: [], invoices: [], certificates: [] })
@@ -61,7 +60,7 @@ export function PatientReports() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><Certificate className="h-4 w-4" />Certificates</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-2 text-sm"><FileBadge className="h-4 w-4" />Certificates</CardTitle></CardHeader>
         <CardContent>
           {reports.certificates.length === 0 ? <p className="text-sm text-gray-400">No certificates yet.</p> : (
             <div className="space-y-2">
