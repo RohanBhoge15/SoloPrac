@@ -73,10 +73,13 @@ class AgentGraph:
         intent = state["intent"]
 
         if intent == AgentIntent.PATIENT_QA and state.get("patient_id"):
+            doctor_id_str = str(state.get("doctor_id", ""))
             steps = [
                 {"step_id": 1, "tool": "retrieve_patient_context", "args": {
                     "patient_id": str(state["patient_id"]),
                     "query": state["user_query"],
+                    "doctor_id": doctor_id_str,
+                    "k": 8,
                 }, "depends_on": []},
                 {"step_id": 2, "tool": "synthesize_response", "args": {
                     "context": None,  # filled by step 1
@@ -175,9 +178,23 @@ class AgentGraph:
             step["_result"] = result
             state["trace_events"].append(f"Executor: {tool_name} OK")
 
-            # Store context for synthesis
+            # Store context for synthesis + wire citations to next step
             if tool_name == "retrieve_patient_context":
                 state["retrieved_context"] = result
+                state["citations"] = result.get("citations", [])
+                # Build merged context for synthesizer
+                results_context = result.get("results", [])
+                citations = result.get("citations", [])
+                merged = {
+                    "patient_context": state.get("retrieved_context", {}),
+                    "results": results_context,
+                    "citations": citations,
+                }
+                # Update step 2's context arg
+                for s in plan:
+                    if s["tool"] == "synthesize_response":
+                        s["args"]["context"] = merged
+                        break
             elif tool_name in ("analyze_image", "compare_images"):
                 state["analysis_result"] = result
 
@@ -239,18 +256,30 @@ class AgentGraph:
         return "respond"
 
     def _build_qa_response(self, state: AgentState) -> str:
-        """Build a QA response from retrieved context."""
+        """Build a QA response from retrieved context with citations."""
         context = state.get("retrieved_context", {})
-        if context and context.get("status") != "not_implemented":
-            return f"Based on the patient record: {json.dumps(context, indent=2)[:1000]}"
+        results = context.get("results", []) if isinstance(context, dict) else []
+        citations = context.get("citations", []) if isinstance(context, dict) else state.get("citations", [])
+
+        if results:
+            lines = [f"Based on the patient record, here's what I found about '{state['user_query']}':\n"]
+            for r in results[:5]:
+                vn = r.get("version_number", "?")
+                ts = str(r.get("timestamp", ""))[:10]
+                summary = r.get("summary", "")
+                score = r.get("score", 0)
+                lines.append(f"[v{vn}  ·  {ts}] {summary}  (relevance: {score:.3f})")
+            lines.append(f"\nRetrieved {len(results)} relevant version(s).")
+            lines.append("\n*AI Suggestion — Requires Doctor Validation.*")
+            return "\n".join(lines)
 
         patient_id = state.get("patient_id")
         if patient_id:
             return (
-                f"I can help you with patient information. "
-                f"I see patient ID {patient_id} is selected. "
-                f"To give you a detailed answer about '{state['user_query']}', "
-                f"I need the Temporal RAG system (Feature A) which will be active in Week 6."
+                f"I'm looking up information for patient {patient_id} "
+                f"about '{state['user_query']}'. "
+                f"No relevant versions found in the current query. "
+                f"Try asking about vitals, diagnoses, or medications."
             )
         return (
             f"You asked: '{state['user_query']}'. "
