@@ -1,0 +1,75 @@
+# SoloPrac AI - Caddyfile
+# Auto HTTPS via Let's Encrypt
+
+# Development (no HTTPS)
+localhost {
+    # Frontend (Vite dev server)
+    handle_path /api/* {
+        reverse_proxy backend:8000
+    }
+
+    handle {
+        reverse_proxy frontend:5173
+    }
+
+    # Langfuse
+    handle_path /langfuse* {
+        reverse_proxy langfuse:3000
+    }
+
+    # Qdrant (if needed externally)
+    handle_path /qdrant* {
+        reverse_proxy qdrant:6333
+    }
+}
+
+# Production (replace with your domain)
+# {
+#     email admin@yourdomain.com
+# }
+#
+# yourdomain.com {
+#     # API
+#     handle_path /api/* {
+#         reverse_proxy backend:8000
+#     }
+#
+#     # Langfuse
+#     handle_path /langfuse* {
+#         reverse_proxy langfuse:3000
+#     }
+#
+#     # Frontend
+#     handle {
+#         reverse_proxy frontend:80
+#         header {
+#             -Server
+#         }
+#     }
+#
+#     # Security headers
+#     header {
+#         Strict-Transport-Security "max-age=31536000;"
+#         X-Content-Type-Options "nosniff"
+#         X-Frame-Options "DENY"
+#         Referrer-Policy "strict-origin-when-cross-origin"
+#         Permissions-Policy "camera=(), microphone=(), geolocation=()"
+#     }
+#
+#     # Compression
+#     encode zstd gzip
+#
+#     # Logging
+#     log {
+#         output stdout
+#         format json
+#     }
+# }
+
+# Health checks (no auth)
+localhost {
+    @health path /health /health/live /health/ready
+    handle @health {
+        reverse_proxy backend:8000
+    }
+}

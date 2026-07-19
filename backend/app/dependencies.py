@@ -1,0 +1,115 @@
+# SoloPrac Backend Dependencies
+
+from __future__ import annotations
+
+from typing import Optional
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from app.config import get_settings
+from app.database import get_db
+from app.models import Doctor
+from app.schemas import TokenPayload
+from jose import jwt, JWTError
+
+settings = get_settings()
+security = HTTPBearer(auto_error=False)
+
+
+async def get_current_doctor(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> Doctor:
+    """Extract and validate JWT, return the Doctor instance."""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        token_data = TokenPayload(**payload)
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if token_data.type != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    result = await db.execute(select(Doctor).where(Doctor.id == token_data.sub))
+    doctor = result.scalar_one_or_none()
+
+    if not doctor:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Doctor not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return doctor
+
+
+async def get_optional_doctor(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[Doctor]:
+    """Optional authentication - returns None if not authenticated."""
+    if not credentials:
+        return None
+
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        token_data = TokenPayload(**payload)
+        if token_data.type != "access":
+            return None
+        result = await db.execute(select(Doctor).where(Doctor.id == token_data.sub))
+        return result.scalar_one_or_none()
+    except JWTError:
+        return None
+
+
+def create_access_token(sub: str) -> str:
+    """Create a short-lived access token."""
+    from datetime import datetime, timedelta, timezone
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_EXPIRATION_MINUTES)
+    payload = TokenPayload(sub=sub, exp=expire, type="access")
+    return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def create_refresh_token(sub: str) -> str:
+    """Create a long-lived refresh token."""
+    from datetime import datetime, timedelta, timezone
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS)
+    payload = TokenPayload(sub=sub, exp=expire, type="refresh")
+    return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+# Rate limiting key function
+def rate_limit_key(request: Request) -> str:
+    """Key function for slowapi rate limiter - per doctor."""
+    # Try to get doctor_id from request state (set by auth middleware)
+    doctor_id = getattr(request.state, "doctor_id", None)
+    if doctor_id:
+        return f"doctor:{doctor_id}"
+    # Fallback to IP
+    forwarded = request.headers.get("X-Forwarded-For")
+    ip = forwarded.split(",")[0].strip() if forwarded else request.client.host
+    return f"ip:{ip}"
