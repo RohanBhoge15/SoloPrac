@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
 import { Badge } from '@/components/ui/Badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
-import { User, Bell, Shield, Calendar, CreditCard, Loader2 } from 'lucide-react'
+import { apiClient } from '@/services/api'
+import { User, Bell, Shield, Calendar, CreditCard, Loader2, CheckCircle } from 'lucide-react'
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState('profile')
@@ -105,32 +106,7 @@ export function Settings() {
       </TabsContent>
 
       <TabsContent value="schedule" className="space-y-6 mt-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Calendar className="h-5 w-5" />Working Hours</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map((day) => (
-                <div key={day} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                  <span className="w-24 font-medium">{day}</span>
-                  <Input type="time" defaultValue={['Saturday', 'Sunday'].includes(day) ? '' : '09:00'} className="w-24" />
-                  <span className="text-gray-400">-</span>
-                  <Input type="time" defaultValue={['Saturday', 'Sunday'].includes(day) ? '' : '13:00'} className="w-24" />
-                </div>
-              ))}
-            </div>
-            <div className="flex items-center gap-4">
-              <Label htmlFor="buffer">Buffer between consultations (min)</Label>
-              <Input id="buffer" type="number" defaultValue={5} className="w-20" />
-            </div>
-            <div className="flex items-center gap-4">
-              <Label htmlFor="duration">Default consultation duration (min)</Label>
-              <Input id="duration" type="number" defaultValue={20} className="w-20" />
-            </div>
-            <Button>Save Schedule</Button>
-          </CardContent>
-        </Card>
+        <ScheduleTab />
       </TabsContent>
 
       <TabsContent value="security" className="space-y-6 mt-6">
@@ -176,5 +152,94 @@ export function Settings() {
         </Card>
       </TabsContent>
     </Tabs>
+  )
+}
+
+function ScheduleTab() {
+  const [buffer, setBuffer] = useState(5)
+  const [duration, setDuration] = useState(20)
+  const [hours, setHours] = useState<Record<string, { start: string; end: string; enabled: boolean }>>({
+    monday: { start: '09:00', end: '13:00', enabled: true },
+    tuesday: { start: '09:00', end: '13:00', enabled: true },
+    wednesday: { start: '09:00', end: '13:00', enabled: true },
+    thursday: { start: '09:00', end: '13:00', enabled: true },
+    friday: { start: '09:00', end: '13:00', enabled: true },
+    saturday: { start: '09:00', end: '12:00', enabled: false },
+    sunday: { start: '', end: '', enabled: false },
+  })
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  const dayNames: Record<string, string> = { monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday', thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday' }
+
+  useEffect(() => {
+    apiClient.get('/api/v1/calendar/working-hours').then(r => {
+      const data = r.data
+      setBuffer(data.buffer_minutes || 5)
+      setDuration(data.default_duration || 20)
+      const wh = data.working_hours_json || {}
+      if (Object.keys(wh).length > 0) {
+        setHours(prev => {
+          const updated = { ...prev }
+          Object.entries(wh).forEach(([day, windows]: [string, any]) => {
+            if (updated[day] && Array.isArray(windows) && windows.length > 0) {
+              updated[day] = { start: windows[0][0] || '', end: windows[0][1] || '', enabled: true }
+            }
+          })
+          return updated
+        })
+      }
+    }).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const workingHoursJson: Record<string, string[][]> = {}
+      Object.entries(hours).forEach(([day, h]) => {
+        if (h.enabled && h.start && h.end) workingHoursJson[day] = [[h.start, h.end]]
+      })
+      await apiClient.put('/api/v1/calendar/working-hours', {
+        working_hours_json: workingHoursJson,
+        buffer_minutes: buffer,
+        default_duration: duration,
+      })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } catch { alert('Failed to save. Check console.') }
+    finally { setSaving(false) }
+  }
+
+  if (loading) return <div className="text-center py-8 text-gray-500"><Loader2 className="h-5 w-5 animate-spin mx-auto" /></div>
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="flex items-center gap-2"><Calendar className="h-5 w-5" />Working Hours</CardTitle></CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {Object.entries(hours).map(([day, h]) => (
+            <div key={day} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+              <input type="checkbox" checked={h.enabled} onChange={e => setHours(prev => ({ ...prev, [day]: { ...prev[day], enabled: e.target.checked } }))} className="mr-1 accent-primary-600" />
+              <span className="w-20 text-sm font-medium">{dayNames[day]}</span>
+              {h.enabled ? (
+                <><Input type="time" value={h.start} onChange={e => setHours(prev => ({ ...prev, [day]: { ...prev[day], start: e.target.value } }))} className="w-24 text-sm" />
+                <span className="text-gray-400 text-sm">-</span>
+                <Input type="time" value={h.end} onChange={e => setHours(prev => ({ ...prev, [day]: { ...prev[day], end: e.target.value } }))} className="w-24 text-sm" /></>
+              ) : <span className="text-xs text-gray-400 ml-2">Day off</span>}
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-3">
+          <Label htmlFor="buffer" className="text-sm">Buffer (min):</Label>
+          <Input id="buffer" type="number" min={0} max={60} value={buffer} onChange={e => setBuffer(Number(e.target.value))} className="w-20" />
+          <Label htmlFor="duration" className="text-sm ml-4">Duration (min):</Label>
+          <Input id="duration" type="number" min={5} max={120} value={duration} onChange={e => setDuration(Number(e.target.value))} className="w-20" />
+        </div>
+        <Button onClick={handleSave} disabled={saving}>
+          {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</> : saved ? <><CheckCircle className="h-4 w-4 mr-2 text-green-500" /> Saved!</> : 'Save Schedule'}
+        </Button>
+      </CardContent>
+    </Card>
   )
 }
