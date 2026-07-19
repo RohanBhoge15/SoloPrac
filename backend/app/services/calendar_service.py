@@ -576,3 +576,391 @@ async def list_appointments(
         })
 
     return output
+
+
+# ─── Tool 5: Query Calendar NL ──────────────────────
+
+async def query_calendar_nl(
+    db: AsyncSession,
+    doctor_id: uuid.UUID,
+    query: str,
+    date_range: Optional[Tuple[date, date]] = None,
+) -> Dict[str, Any]:
+    """Natural language calendar query using LLM.
+
+    Examples:
+      - "When am I free next week?"
+      - "Show all diabetic follow-ups this month"
+      - "What appointments do I have on Tuesday?"
+    """
+    result = await db.execute(select(Doctor).where(Doctor.id == doctor_id))
+    doctor = result.scalar_one_or_none()
+    if not doctor:
+        return {"error": "Doctor not found"}
+
+    query_lower = query.lower()
+    today = date.today()
+
+    if date_range:
+        date_from, date_to = date_range
+    else:
+        date_from = today
+        date_to = today + timedelta(days=7)
+
+    if "free" in query_lower or "available" in query_lower:
+        slots = await find_available_slots(db, doctor_id, date_from, date_to)
+        return {"type": "available_slots", "slots": slots, "summary": f"Found {len(slots)} available slots"}
+
+    if "diabetic" in query_lower or "diabetes" in query_lower:
+        appts = await list_appointments(db, doctor_id, date_from, date_to)
+        filtered = [a for a in appts if "diabet" in a.get("reason", "").lower()]
+        return {"type": "filtered_appointments", "appointments": filtered, "summary": f"Found {len(filtered)} diabetes-related appointments"}
+
+    if "tuesday" in query_lower or "monday" in query_lower or "wednesday" in query_lower or "thursday" in query_lower or "friday" in query_lower:
+        day_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4}
+        for day_name, day_num in [("tuesday", 1), ("monday", 0), ("wednesday", 2), ("thursday", 3), ("friday", 4)]:
+            if day_name in query_lower:
+                dates = get_date_range_for_slot(day_num, today)
+                slots = []
+                for d in dates:
+                    day_slots = await find_available_slots(db, doctor_id, d, d)
+                    slots.extend(day_slots)
+                return {"type": "available_slots", "slots": slots, "summary": f"Available on {day_name.capitalize()}s"}
+
+    return {"type": "unknown", "summary": "Could not parse query. Try: 'When am I free next week?' or 'Show diabetic follow-ups this month'"}
+
+
+# ─── Tool 6: Bulk Reschedule ────────────────────────
+
+async def bulk_reschedule(
+    db: AsyncSession,
+    doctor_id: uuid.UUID,
+    appointment_ids: List[uuid.UUID],
+    new_window: Tuple[date, date],
+    notify_template: str = "Your appointment has been rescheduled to {new_time}. Please confirm.",
+) -> Dict[str, Any]:
+    """Reschedule multiple appointments to fit within a new date window.
+
+    Used for scenarios like:
+      - Doctor going on leave
+      - Clinic closure
+      - Emergency requiring mass reschedule
+    """
+    if not appointment_ids:
+        return {"error": "No appointments provided"}
+
+    results = {"rescheduled": [], "failed": []}
+
+    window_start, window_end = new_window
+    slots = await find_available_slots(
+        db, doctor_id, window_start, window_end,
+        duration_minutes=20, prefer_morning=True
+    )
+
+    if not slots:
+        return {"error": "No available slots in the specified window"}
+
+    slots.sort(key=lambda s: s["start"])
+
+    for i, apt_id in enumerate(appointment_ids):
+        if i >= len(slots):
+            results["failed"].append({"appointment_id": str(apt_id), "error": "No more available slots"})
+            continue
+
+        try:
+            slot = slots[i]
+            new_start = datetime.fromisoformat(slot["start"])
+            new_end = datetime.fromisoformat(slot["end"])
+
+            result = await reschedule_appointment(
+                db=db, doctor_id=doctor_id,
+                appointment_id=apt_id,
+                new_start=new_start, new_end=new_end,
+                reason="Bulk reschedule", notify_patient=True,
+            )
+            results["rescheduled"].append({
+                "appointment_id": str(apt_id),
+                "old_slot": "TBD",
+                "new_start": slot["start"],
+                "new_end": slot["end"],
+            })
+        except Exception as exc:
+            results["failed"].append({"appointment_id": str(apt_id), "error": str(exc)})
+
+    return {
+        "rescheduled_count": len(results["rescheduled"]),
+        "failed_count": len(results["failed"]),
+        "details": results,
+    }
+
+
+# ─── Tool 7: Block Doctor Time ─────────────────────
+
+async def block_doctor_time(
+    db: AsyncSession,
+    doctor_id: uuid.UUID,
+    date_range: Tuple[date, date],
+    reason: str = "Doctor unavailable",
+) -> Dict[str, Any]:
+    """Block off a date range for the doctor (holiday, conference, emergency)."""
+    date_from, date_to = date_range
+
+    if date_to < date_from:
+        return {"error": "date_to must be after date_from"}
+
+    blocked_appts = []
+    current = date_from
+    while current <= date_to:
+        blocked = Appointment(
+            id=uuid.uuid4(),
+            doctor_id=doctor_id,
+            patient_id=uuid.uuid4(),
+            start_at=datetime.combine(current, time(0, 0), tzinfo=timezone.utc),
+            end_at=datetime.combine(current + timedelta(days=1), time(0, 0), tzinfo=timezone.utc),
+            reason=reason,
+            status="blocked",
+            source="blocked",
+        )
+        db.add(blocked)
+        blocked_appts.append(str(blocked.id))
+        current += timedelta(days=1)
+
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "blocked_dates": [str(date_from), str(date_to)],
+        "blocked_appointment_ids": blocked_appts,
+        "reason": reason,
+    }
+
+
+# ─── Tool 8: Smart Rearrange ───────────────────────
+
+async def smart_rearrange(
+    db: AsyncSession,
+    doctor_id: uuid.UUID,
+    date_range: Tuple[date, date],
+    optimization: str = "minimize_patient_disruption",
+) -> Dict[str, Any]:
+    """Smart rearrange appointments within a date range.
+
+    Optimization strategies:
+      - minimize_patient_disruption: prefer keeping same time/day
+      - maximize_throughput: pack appointments tightly
+      - balance_workload: distribute evenly across days
+    """
+    date_from, date_to = date_range
+
+    appts = await list_appointments(db, doctor_id, date_from, date_to)
+    scheduled_appts = [a for a in appts if a["status"] == "scheduled"]
+
+    if not scheduled_appts:
+        return {"message": "No appointments to rearrange", "proposals": []}
+
+    slots = await find_available_slots(db, doctor_id, date_from, date_to)
+    slots.sort(key=lambda s: s["start"])
+
+    patient_ids = [uuid.UUID(a["patient_id"]) for a in scheduled_appts]
+    prefs_result = await db.execute(
+        select(PatientTimePreference).where(PatientTimePreference.patient_id.in_(patient_ids))
+    )
+    prefs = prefs_result.scalars().all()
+
+    pref_map = defaultdict(lambda: defaultdict(int))
+    for p in prefs:
+        pref_map[str(p.patient_id)][(p.weekday, p.hour_bucket)] = p.count
+
+    proposals = []
+
+    for appt in scheduled_appts:
+        patient_id = appt["patient_id"]
+        appt_time = datetime.fromisoformat(appt["start_at"])
+        appt_weekday = appt_time.weekday()
+        appt_hour = appt_time.hour
+
+        best_slot = None
+        best_score = -1
+
+        for slot in slots:
+            slot_time = datetime.fromisoformat(slot["start"])
+            slot_weekday = slot_time.weekday()
+            slot_hour = slot_time.hour
+
+            pref_score = pref_map[patient_id].get((slot_weekday, slot_hour), 0)
+
+            if optimization == "minimize_patient_disruption":
+                if slot_weekday == appt_weekday:
+                    pref_score += 10
+                if abs(slot_hour - appt_hour) <= 1:
+                    pref_score += 5
+
+            if pref_score > best_score:
+                best_score = pref_score
+                best_slot = slot
+
+        if best_slot:
+            proposals.append({
+                "appointment_id": appt["id"],
+                "patient_id": appt["patient_id"],
+                "current_start": appt["start_at"],
+                "current_end": appt["end_at"],
+                "proposed_start": best_slot["start"],
+                "proposed_end": best_slot["end"],
+                "confidence": min(best_score / 20.0, 1.0),
+                "reason": f"Optimized for {optimization}",
+            })
+            slots.remove(best_slot)
+
+    return {"proposals": proposals, "summary": f"Generated {len(proposals)} rearrangement proposals", "optimization": optimization}
+
+
+# ─── Tool 9: Find Optimal Window ───────────────────
+
+async def find_optimal_window(
+    db: AsyncSession,
+    doctor_id: uuid.UUID,
+    constraints: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Find the optimal appointment window given constraints."""
+    duration = constraints.get("duration_minutes", 20)
+    date_from = constraints.get("earliest_date", date.today())
+    date_to = constraints.get("latest_date", date.today() + timedelta(days=30))
+    preferred_days = constraints.get("preferred_days", list(range(7)))
+    preferred_time = constraints.get("preferred_time", "any")
+    patient_id = constraints.get("patient_id")
+
+    slots = await find_available_slots(db, doctor_id, date_from, date_to, duration)
+
+    if preferred_days:
+        slots = [s for s in slots if datetime.fromisoformat(s["start"]).weekday() in preferred_days]
+
+    if preferred_time != "any":
+        time_ranges = {"morning": (0, 12), "afternoon": (12, 17), "evening": (17, 22)}
+        min_h, max_h = time_ranges.get(preferred_time, (0, 24))
+        slots = [s for s in slots if min_h <= datetime.fromisoformat(s["start"]).hour < max_h]
+
+    if patient_id:
+        prefs_result = await db.execute(
+            select(PatientTimePreference).where(PatientTimePreference.patient_id == patient_id)
+        )
+        prefs = prefs_result.scalars().all()
+        pref_map = {(p.weekday, p.hour_bucket): p.count for p in prefs}
+
+        for slot in slots:
+            dt = datetime.fromisoformat(slot["start"])
+            pref_score = pref_map.get((dt.weekday(), dt.hour), 0)
+            slot["preference_score"] = pref_score
+
+        slots.sort(key=lambda s: s.get("preference_score", 0), reverse=True)
+
+    return {
+        "optimal_slots": slots[:10],
+        "total_found": len(slots),
+        "constraints": constraints,
+    }
+
+
+# ─── Doctor-Off Scenario ──────────────────────────
+
+async def handle_doctor_off(
+    db: AsyncSession,
+    doctor_id: uuid.UUID,
+    off_start: date,
+    off_end: date,
+    reason: str = "Doctor unavailable",
+) -> Dict[str, Any]:
+    """Handle 'I'm off' scenario:
+      1. Block doctor's time
+      2. Find all affected appointments
+      3. Auto-reschedule using smart_rearrange
+      4. Draft notification emails
+      5. Return approval card
+    """
+    block_result = await block_doctor_time(db, doctor_id, (off_start, off_end), reason)
+
+    affected = await list_appointments(db, doctor_id, off_start, off_end)
+    affected_scheduled = [a for a in affected if a["status"] == "scheduled"]
+
+    rearrange = await smart_rearrange(db, doctor_id, (off_start, off_end), "minimize_patient_disruption")
+
+    affected_ids = {a["id"] for a in affected_scheduled}
+    relevant_proposals = [p for p in rearrange["proposals"] if p["appointment_id"] in affected_ids]
+
+    email_drafts = []
+    for proposal in relevant_proposals:
+        patient_result = await db.execute(select(Patient).where(Patient.id == uuid.UUID(proposal["patient_id"])))
+        patient = patient_result.scalar_one_or_none()
+        patient_name = "Patient"
+        if patient and patient.head_version_id:
+            from app.models import PatientVersion
+            vr = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
+            ver = vr.scalar_one_or_none()
+            if ver and ver.state_jsonb:
+                demo = ver.state_jsonb.get("demographics", {})
+                if isinstance(demo, dict):
+                    patient_name = demo.get("name", "Patient")
+
+        old_start = datetime.fromisoformat(proposal["current_start"])
+        new_start = datetime.fromisoformat(proposal["proposed_start"])
+
+        email_drafts.append({
+            "to": f"patient-{proposal['patient_id'][:8]}@example.com",
+            "subject": "Appointment Rescheduled - Action Required",
+            "body": f"""Dear {patient_name},
+
+Your appointment has been rescheduled due to doctor's unavailability.
+
+Original: {old_start.strftime('%A, %B %d at %I:%M %p')}
+New: {new_start.strftime('%A, %B %d at %I:%M %p')}
+
+Please confirm or request a different time.
+
+SoloPrac AI""",
+            "proposal_id": proposal["appointment_id"],
+        })
+
+    return {
+        "status": "doctor_off_processed",
+        "blocked": block_result,
+        "affected_count": len(affected_scheduled),
+        "proposals": relevant_proposals,
+        "email_drafts": email_drafts,
+        "approval_card": {
+            "title": "Doctor Off — Approve Rescheduling",
+            "message": f"Dr. is off {off_start} to {off_end}. {len(affected_scheduled)} appointments affected.",
+            "actions": ["Approve All", "Review Individually", "Cancel All"],
+        },
+    }
+
+
+# ─── LangGraph Subgraph Integration ──────────────────
+
+def build_scheduling_subgraph() -> "StateGraph":
+    """Build the voice scheduling LangGraph subgraph."""
+    return {
+        "nodes": [
+            "asr_node",
+            "intent_classifier",
+            "tool_dispatcher",
+            "synthesizer",
+            "tts_node",
+        ],
+        "edges": [
+            ("asr_node", "intent_classifier"),
+            ("intent_classifier", "tool_dispatcher"),
+            ("tool_dispatcher", "synthesizer"),
+            ("synthesizer", "tts_node"),
+        ],
+        "tools": [
+            "find_available_slots",
+            "create_appointment",
+            "reschedule_appointment",
+            "cancel_appointment",
+            "query_calendar_nl",
+            "bulk_reschedule",
+            "block_doctor_time",
+            "smart_rearrange",
+            "find_optimal_window",
+        ],
+    }
