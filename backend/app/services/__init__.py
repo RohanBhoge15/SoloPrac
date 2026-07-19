@@ -40,8 +40,9 @@ from app.services.rag_audit import (
     LLMRateLimiter,
     validate_no_future_leak,
 )
-from app.services.document_parser import DocumentParser, ParserRouter, DocType, DocFormat
-from app.services.schema_aligner import SchemaAligner, evaluate_schema_aligner, generate_test_documents
+from app.services.image_registration import ImageRegistrationService, image_registration_service
+from app.services.clinical_summary import ClinicalSummaryGenerator
+from app.services.image_security import ImageSecurityService
 
 __all__ = [
     "redis_service",
@@ -80,11 +81,8 @@ __all__ = [
     "RAGAuditService",
     "LLMRateLimiter",
     "validate_no_future_leak",
-    "DocumentParser",
-    "ParserRouter",
-    "DocType",
-    "DocFormat",
-    "SchemaAligner",
-    "evaluate_schema_aligner",
-    "generate_test_documents",
+    "ImageRegistrationService",
+    "image_registration_service",
+    "ClinicalSummaryGenerator",
+    "ImageSecurityService",
 ]
