@@ -41,8 +41,9 @@ from app.services.rag_audit import (
     validate_no_future_leak,
 )
 from app.services.image_registration import ImageRegistrationService, image_registration_service
-from app.services.clinical_summary import ClinicalSummaryGenerator
 from app.services.image_security import ImageSecurityService
+from app.services.pdf_security import PDFSecurityService
+from app.services.medical_formatter import MedicalFormatter
 
 __all__ = [
     "redis_service",
@@ -83,6 +84,7 @@ __all__ = [
     "validate_no_future_leak",
     "ImageRegistrationService",
     "image_registration_service",
-    "ClinicalSummaryGenerator",
     "ImageSecurityService",
+    "PDFSecurityService",
+    "MedicalFormatter",
 ]
