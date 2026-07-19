@@ -15,6 +15,7 @@ from app.schemas import (
     PatientVersionTimeline, PatientVersionDiff,
 )
 from app.dependencies import get_current_doctor
+from app.models import AuditLog
 
 router = APIRouter()
 
@@ -72,6 +73,32 @@ async def _mint_version(
 
     patient.head_version_id = version.id
     await db.flush()
+
+    # ── Version Audit Log (Dev - RLS + audit) ──
+    try:
+        audit_entry = AuditLog(
+            doctor_id=doctor_id,
+            patient_id=patient.id,
+            actor=author,
+            action="write",
+            resource_type="version",
+            resource_id=version.id,
+            payload_jsonb={
+                "version_number": next_ver,
+                "edit_type": edit_type,
+                "parent_version_id": str(parent_version_id) if parent_version_id else None,
+                "version_hash": version.version_hash,
+                "clinical_significance": clinical_significance,
+                "tags": tags or [],
+            },
+        )
+        db.add(audit_entry)
+        await db.flush()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Version audit log write failed (non-blocking): %s", exc
+        )
 
     if commit:
         await db.commit()
