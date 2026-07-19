@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { TimelineScrubber, type VersionNode } from '@/components/TimelineScrubber'
 import { ContextPanel } from '@/components/ContextPanel'
 import { ChatUI } from '@/components/ChatUI'
+import { ImageComparison } from '@/components/ImageComparison'
 import { Edit, Plus, Clock, FileText, ArrowUpDown, Search, Save, X, Check, Loader2 } from 'lucide-react'
 
 const MOCK_VERSIONS: VersionNode[] = [
@@ -294,29 +295,7 @@ export function PatientDetail() {
 
             {/* Images Tab */}
             <TabsContent value="images" className="mt-4">
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between">
-                  <CardTitle>Wound / Skin Images</CardTitle>
-                  <Button>Upload Photo</Button>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                    {[
-                      { url: 'https://via.placeholder.com/300x200', date: 'Jul 15', label: 'Initial wound' },
-                      { url: 'https://via.placeholder.com/300x200', date: 'Jul 18', label: 'Follow-up' },
-                    ].map((img, i) => (
-                      <div key={i} className="relative group">
-                        <img src={img.url} alt={img.label} className="w-full aspect-video object-cover rounded-lg" />
-                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white">
-                          <p className="font-medium">{img.label}</p>
-                          <p className="text-sm text-gray-300">{img.date}</p>
-                          <Button variant="ghost" className="mt-2 text-white border-white hover:bg-white/20">Compare</Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
+              <ImageComparison patientId={id || ''} />
             </TabsContent>
 
             {/* Documents Tab */}
