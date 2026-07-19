@@ -2,15 +2,15 @@ import { useState } from 'react'
 import { Link, useLocation, Outlet } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
 import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
 import { UserMenu } from '@/components/layout/UserMenu'
+import { PatientSearch } from '@/components/PatientSearch'
+import { CommandPalette, useCommandPalette } from '@/components/CommandPalette'
 import { useAuth } from '@/contexts/AuthContext'
 import {
   LayoutDashboard,
   Calendar,
   FileText,
   Settings,
-  Search,
   Mic,
   Bell,
   Menu,
@@ -29,6 +29,7 @@ export function AppLayout() {
   const { user, logout } = useAuth()
   const [sidebarOpen] = useState(true)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const { isOpen: cmdPaletteOpen, openPalette, closePalette } = useCommandPalette()
 
   const handleLogout = () => {
     logout()
@@ -167,15 +168,23 @@ export function AppLayout() {
                 <Menu className="h-6 w-6" />
               </button>
 
-              {/* Global Search */}
+              {/* Global Search + Command Palette Trigger */}
               <div className="relative flex-1 max-w-xl hidden sm:block">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                <Input
-                  type="search"
-                  placeholder="Search patients, commands... (⌘K)"
-                  className="pl-10 h-9 text-sm bg-gray-50 dark:bg-gray-800"
+                <PatientSearch
+                  placeholder="Search patients... (⌘K)"
+                  variant="header"
+                  className="mb-0"
                 />
+                <button
+                  onClick={openPalette}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
+                  aria-label="Open command palette"
+                  title="Command Palette (⌘K)"
+                >
+                  ⌘K
+                </button>
               </div>
+              <CommandPalette open={cmdPaletteOpen} onClose={closePalette} />
             </div>
 
             {/* Right: Actions */}
