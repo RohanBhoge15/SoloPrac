@@ -11,6 +11,7 @@ import {
   Calendar,
   FileText,
   Settings,
+  MessageSquare,
   Mic,
   Bell,
   Menu,
@@ -19,6 +20,7 @@ import {
 
 const NAV_ITEMS = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { path: '/chat', label: 'AI Assistant', icon: MessageSquare },
   { path: '/calendar', label: 'Calendar', icon: Calendar },
   { path: '/scratchpad', label: 'Scratchpad', icon: FileText },
   { path: '/settings', label: 'Settings', icon: Settings },

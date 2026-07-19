@@ -6,6 +6,7 @@ import { Calendar } from '@/pages/Calendar'
 import { Scratchpad } from '@/pages/Scratchpad'
 import { Settings } from '@/pages/Settings'
 import { PatientDetail } from '@/pages/PatientDetail'
+import { Chat } from '@/pages/Chat'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { useEffect } from 'react'
 
@@ -55,6 +56,7 @@ function AppRoutes() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/calendar" element={<Calendar />} />
         <Route path="/scratchpad" element={<Scratchpad />} />
+        <Route path="/chat" element={<Chat />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/patients/:id" element={<PatientDetail />} />
       </Route>
