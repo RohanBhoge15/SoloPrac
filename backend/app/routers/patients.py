@@ -1,341 +1,327 @@
-# Patients Router — Versioned Patient Records
+# Patients Router — Version-Controlled Patient Records
+# Each write mints an immutable version; the chain is content-addressed via SHA256.
 
+import uuid
 from typing import Optional
-from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.config import settings
 from app.database import get_db
-from app.models import Patient, PatientVersion
+from app.models import Patient, PatientVersion, EDIT_TYPE_CHOICES
 from app.schemas import (
-    PatientVersionCreate,
-    PatientVersionRead,
-    PatientVersionDiff,
+    PatientCreate, PatientRead, PatientVersionCreate, PatientVersionRead,
+    PatientVersionTimeline, PatientVersionDiff,
 )
 from app.dependencies import get_current_doctor
 
 router = APIRouter()
-settings = get_settings()
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED, response_model=PatientVersionRead)
-async def create_patient(
-    patient_data: PatientVersionCreate,
-    current_doctor = Depends(get_current_doctor),
-    db: AsyncSession = Depends(get_db),
-):
-    """Create a new patient with initial version."""
-    # Create patient record
-    patient = Patient(
-        doctor_id=current_doctor.id,
-        head_version_id=None,  # will be set after version created
+def _check_patient_ownership(patient: Patient, doctor_id: uuid.UUID):
+    if not patient or patient.doctor_id != doctor_id:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+
+def _build_version_number(db_version) -> PatientVersionRead:
+    return PatientVersionRead.model_validate(db_version)
+
+
+# ────────────────────────────────────────────
+# Version Minting (Internal helper)
+# ────────────────────────────────────────────
+
+async def _mint_version(
+    db: AsyncSession,
+    patient: Patient,
+    doctor_id: uuid.UUID,
+    state: dict,
+    edit_type: str,
+    author: str,
+    parent_version_id: Optional[uuid.UUID] = None,
+    summary: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+    clinical_significance: float = 0.0,
+    commit: bool = True,
+) -> PatientVersion:
+    """Create a new version in the chain and update head pointer."""
+    # Compute next version number atomically
+    result = await db.execute(
+        select(func.coalesce(func.max(PatientVersion.version_number), 0))
+        .where(PatientVersion.patient_id == patient.id)
     )
-    db.add(patient)
-    await db.flush()
+    next_ver = result.scalar() + 1
 
-    # Create initial version
     version = PatientVersion(
+        id=uuid.uuid4(),
         patient_id=patient.id,
-        doctor_id=current_doctor.id,
-        parent_version_id=None,
-        version_number=1,
-        state_jsonb=patient_data.state_jsonb,
-        version_hash=PatientVersion.compute_hash(patient_data.state_jsonb),
-        author=f"doctor:{current_doctor.id}",
-        edit_type=patient_data.edit_type,
-        summary=patient_data.summary or "Initial patient record",
-        tags=patient_data.tags,
-        clinical_significance=patient_data.clinical_significance,
-        image_comparison=patient_data.image_comparison,
+        doctor_id=doctor_id,
+        parent_version_id=parent_version_id,
+        version_number=next_ver,
+        state_jsonb=state,
+        version_hash=PatientVersion.compute_hash(state),
+        author=author,
+        edit_type=edit_type,
+        summary=summary or f"Version {next_ver}",
+        tags=tags or [],
+        clinical_significance=clinical_significance,
     )
     db.add(version)
     await db.flush()
 
-    # Update patient head pointer
     patient.head_version_id = version.id
-    await db.commit()
-    await db.refresh(version)
+    await db.flush()
 
-    return PatientVersionRead.model_validate(version)
+    if commit:
+        await db.commit()
+    else:
+        # caller will commit
+        pass
+
+    return version
 
 
-@router.get("/{patient_id}", response_model=PatientVersionRead)
-async def get_patient_current(
-    patient_id: UUID,
-    current_doctor = Depends(get_current_doctor),
+# ────────────────────────────────────────────
+# Patient CRUD
+# ────────────────────────────────────────────
+
+@router.post("/", status_code=status.HTTP_201_CREATED, response_model=PatientVersionRead)
+async def create_patient(
+    payload: PatientVersionCreate,
+    doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get current head state of a patient."""
+    """Create a new patient with an initial version (v1)."""
+    patient = Patient(
+        id=uuid.uuid4(),
+        doctor_id=doctor.id,
+    )
+    db.add(patient)
+    await db.flush()
+
+    version = await _mint_version(
+        db, patient, doctor.id,
+        state=payload.state_jsonb,
+        edit_type=payload.edit_type,
+        author=f"doctor:{doctor.id}",
+        summary=payload.summary or "Initial patient record",
+        tags=payload.tags,
+        clinical_significance=payload.clinical_significance or 1.0,
+    )
+    await db.refresh(version)
+    return _build_version_number(version)
+
+
+@router.get("/{patient_id}", response_model=PatientRead)
+async def get_patient(
+    patient_id: uuid.UUID,
+    doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get patient metadata (head pointer, timestamps)."""
     result = await db.execute(
-        select(Patient).where(
-            Patient.id == patient_id,
-            Patient.doctor_id == current_doctor.id,
-        )
+        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
     )
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    return PatientRead.model_validate(patient)
+
+
+@router.get("/{patient_id}/head", response_model=PatientVersionRead)
+async def get_patient_head(
+    patient_id: uuid.UUID,
+    doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get current (head) version — the latest patient state."""
+    result = await db.execute(
+        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
+    )
+    patient = result.scalar_one_or_none()
+    _check_patient_ownership(patient, doctor.id)
 
     if not patient.head_version_id:
         raise HTTPException(status_code=404, detail="Patient has no versions")
 
-    version_result = await db.execute(
+    v_result = await db.execute(
         select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
     )
-    version = version_result.scalar_one_or_none()
+    version = v_result.scalar_one_or_none()
     if not version:
-        raise HTTPException(status_code=404, detail="Head version not found")
+        raise HTTPException(status_code=500, detail="Head version pointer broken — contact support")
 
-    return PatientVersionRead.model_validate(version)
+    # Optional tamper check during retrieval
+    if not version.verify_hash():
+        raise HTTPException(status_code=500, detail="Data integrity check failed — version hash mismatch")
+
+    return _build_version_number(version)
 
 
-@router.get("/{patient_id}/timeline", response_model=list[PatientVersionRead])
+@router.get("/{patient_id}/timeline", response_model=list[PatientVersionTimeline])
 async def get_patient_timeline(
-    patient_id: UUID,
-    limit: int = Query(50, ge=1, le=200),
+    patient_id: uuid.UUID,
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    current_doctor = Depends(get_current_doctor),
+    doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get patient version timeline (most recent first)."""
-    result = await db.execute(
-        select(Patient).where(
-            Patient.id == patient_id,
-            Patient.doctor_id == current_doctor.id,
-        )
-    )
-    patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
-    version_result = await db.execute(
+    """Ordered version history (newest first) — lightweight, no full state."""
+    versions = await db.execute(
         select(PatientVersion)
-        .where(PatientVersion.patient_id == patient_id)
+        .where(
+            PatientVersion.patient_id == patient_id,
+            PatientVersion.doctor_id == doctor.id,
+        )
         .order_by(desc(PatientVersion.timestamp))
         .limit(limit)
         .offset(offset)
     )
-    versions = version_result.scalars().all()
-    return [PatientVersionRead.model_validate(v) for v in versions]
+    return [
+        PatientVersionTimeline.model_validate(v)
+        for v in versions.scalars().all()
+    ]
 
 
 @router.get("/{patient_id}/at_version/{version_number}", response_model=PatientVersionRead)
 async def get_patient_at_version(
-    patient_id: UUID,
+    patient_id: uuid.UUID,
     version_number: int,
-    current_doctor = Depends(get_current_doctor),
+    doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Reconstruct patient state at a specific version."""
+    """Reconstruct patient state at a specific historical version."""
     result = await db.execute(
         select(PatientVersion).where(
             PatientVersion.patient_id == patient_id,
+            PatientVersion.doctor_id == doctor.id,
             PatientVersion.version_number == version_number,
         )
     )
     version = result.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
-
-    return PatientVersionRead.model_validate(version)
+    return _build_version_number(version)
 
 
 @router.get("/{patient_id}/diff", response_model=PatientVersionDiff)
 async def diff_patient_versions(
-    patient_id: UUID,
-    v1: int = Query(..., description="First version number"),
-    v2: int = Query(..., description="Second version number"),
-    current_doctor = Depends(get_current_doctor),
+    patient_id: uuid.UUID,
+    v1: int = Query(..., ge=1, description="First version"),
+    v2: int = Query(..., ge=1, description="Second version"),
+    doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Field-level diff between two versions."""
-    result = await db.execute(
-        select(Patient).where(
-            Patient.id == patient_id,
-            Patient.doctor_id == current_doctor.id,
-        )
-    )
-    patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-
-    v1_result = await db.execute(
+    """Field-level diff between two versions — identifies added/removed/modified keys."""
+    versions = await db.execute(
         select(PatientVersion).where(
             PatientVersion.patient_id == patient_id,
-            PatientVersion.version_number == v1,
+            PatientVersion.doctor_id == doctor.id,
+            PatientVersion.version_number.in_([v1, v2]),
         )
     )
-    version1 = v1_result.scalar_one_or_none()
-
-    v2_result = await db.execute(
-        select(PatientVersion).where(
-            PatientVersion.patient_id == patient_id,
-            PatientVersion.version_number == v2,
-        )
-    )
-    version2 = v2_result.scalar_one_or_none()
-
-    if not version1 or not version2:
+    rows = versions.scalars().all()
+    if len(rows) != 2:
         raise HTTPException(status_code=404, detail="One or both versions not found")
 
-    # Compute field-level diff
-    state1 = version1.state_jsonb or {}
-    state2 = version2.state_jsonb or {}
-    all_keys = set(state1.keys()) | set(state2.keys())
+    v1_data = rows[0].state_jsonb or {} if rows[0].version_number == v1 else rows[1].state_jsonb or {}
+    v2_data = rows[1].state_jsonb or {} if rows[1].version_number == v2 else rows[0].state_jsonb or {}
 
-    added = {}
-    removed = {}
-    modified = {}
+    all_keys = set(v1_data.keys()) | set(v2_data.keys())
+    added, removed, modified = {}, {}, {}
 
     for key in all_keys:
-        val1 = state1.get(key)
-        val2 = state2.get(key)
-        if key not in state1:
-            added[key] = val2
-        elif key not in state2:
-            removed[key] = val1
-        elif val1 != val2:
-            modified[key] = {"from": val1, "to": val2}
+        if key not in v1_data:
+            added[key] = v2_data[key]
+        elif key not in v2_data:
+            removed[key] = v1_data[key]
+        elif v1_data[key] != v2_data[key]:
+            modified[key] = {"from": v1_data[key], "to": v2_data[key]}
 
     return PatientVersionDiff(added=added, removed=removed, modified=modified)
 
 
 @router.post("/{patient_id}/revert/{version_number}", response_model=PatientVersionRead)
-async def revert_patient(
-    patient_id: UUID,
+async def revert_patient_to_version(
+    patient_id: uuid.UUID,
     version_number: int,
-    current_doctor = Depends(get_current_doctor),
+    doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create new version with state from historical version."""
+    """Mint a new version whose state matches an older version (Git revert semantics)."""
     result = await db.execute(
-        select(Patient).where(
-            Patient.id == patient_id,
-            Patient.doctor_id == current_doctor.id,
-        )
+        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
     )
     patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    _check_patient_ownership(patient, doctor.id)
 
-    # Get target version to revert to
-    target_result = await db.execute(
+    target = await db.execute(
         select(PatientVersion).where(
             PatientVersion.patient_id == patient_id,
             PatientVersion.version_number == version_number,
         )
     )
-    target_version = target_result.scalar_one_or_none()
+    target_version = target.scalar_one_or_none()
     if not target_version:
-        raise HTTPException(status_code=404, detail="Target version not found")
+        raise HTTPException(status_code=404, detail=f"Version {version_number} not found")
 
-    # Get current head version
-    head_result = await db.execute(
-        select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-    )
-    head_version = head_result.scalar_one_or_none()
-
-    # Get next version number
-    max_version_result = await db.execute(
-        select(func.max(PatientVersion.version_number)).where(
-            PatientVersion.patient_id == patient_id
-        )
-    )
-    next_version = (max_version_result.scalar() or 0) + 1
-
-    # Create new version with reverted state
-    new_version = PatientVersion(
-        patient_id=patient.id,
-        doctor_id=current_doctor.id,
-        parent_version_id=head_version.id if head_version else None,
-        version_number=next_version,
-        state_jsonb=target_version.state_jsonb,
-        version_hash=PatientVersion.compute_hash(target_version.state_jsonb),
-        author=f"doctor:{current_doctor.id}",
+    new_version = await _mint_version(
+        db, patient, doctor.id,
+        state=target_version.state_jsonb,
         edit_type="revert",
+        author=f"doctor:{doctor.id}",
+        parent_version_id=patient.head_version_id,
         summary=f"Reverted to version {version_number}",
         tags=["revert"],
         clinical_significance=0.5,
     )
-    db.add(new_version)
-    await db.flush()
-
-    # Update head pointer
-    patient.head_version_id = new_version.id
-    await db.commit()
-    await db.refresh(new_version)
-
-    return PatientVersionRead.model_validate(new_version)
+    return _build_version_number(new_version)
 
 
 @router.patch("/{patient_id}/fields", response_model=PatientVersionRead)
 async def patch_patient_fields(
-    patient_id: UUID,
+    patient_id: uuid.UUID,
     field_updates: dict,
-    expected_version: int = Query(..., description="Expected current version for optimistic locking"),
-    current_doctor = Depends(get_current_doctor),
+    expected_version: int = Query(..., ge=1, description="Optimistic lock — expected current version"),
+    doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Inline field edit with optimistic locking on version number."""
+    """Inline field edit with optimistic locking on version_number (conflict → 409)."""
     result = await db.execute(
-        select(Patient).where(
-            Patient.id == patient_id,
-            Patient.doctor_id == current_doctor.id,
-        )
+        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
     )
     patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    _check_patient_ownership(patient, doctor.id)
 
-    # Get current head version
+    if not patient.head_version_id:
+        raise HTTPException(status_code=400, detail="Patient has no base version yet")
+
     head_result = await db.execute(
         select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
     )
-    head_version = head_result.scalar_one_or_none()
-    if not head_version:
-        raise HTTPException(status_code=404, detail="Patient has no versions")
+    head = head_result.scalar_one_or_none()
 
-    # Optimistic locking check
-    if head_version.version_number != expected_version:
+    if head.version_number != expected_version:
         raise HTTPException(
-            status_code=409,
-            detail=f"Version conflict. Expected {expected_version}, current is {head_version.version_number}",
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Version conflict: expected v{expected_version}, current v{head.version_number}. Reload and retry.",
+            headers={"X-Current-Version": str(head.version_number)},
         )
 
-    # Merge updates
-    new_state = dict(head_version.state_jsonb or {})
+    new_state = dict(head.state_jsonb or {})
     new_state.update(field_updates)
+    if not new_state:
+        raise HTTPException(status_code=400, detail="No fields to update")
 
-    # Get next version number
-    max_version_result = await db.execute(
-        select(func.max(PatientVersion.version_number)).where(
-            PatientVersion.patient_id == patient_id
-        )
-    )
-    next_version = (max_version_result.scalar() or 0) + 1
-
-    # Create new version
-    new_version = PatientVersion(
-        patient_id=patient.id,
-        doctor_id=current_doctor.id,
-        parent_version_id=head_version.id,
-        version_number=next_version,
-        state_jsonb=new_state,
-        version_hash=PatientVersion.compute_hash(new_state),
-        author=f"doctor:{current_doctor.id}",
+    new_version = await _mint_version(
+        db, patient, doctor.id,
+        state=new_state,
         edit_type="manual",
-        summary=f"Updated {len(field_updates)} field(s)",
+        author=f"doctor:{doctor.id}",
+        parent_version_id=head.id,
+        summary=f"Updated {len(field_updates)} field(s): {', '.join(field_updates.keys())}",
         tags=list(field_updates.keys()),
         clinical_significance=0.3,
     )
-    db.add(new_version)
-    await db.flush()
-
-    # Update head pointer
-    patient.head_version_id = new_version.id
-    await db.commit()
-    await db.refresh(new_version)
-
-    return PatientVersionRead.model_validate(new_version)
+    return _build_version_number(new_version)

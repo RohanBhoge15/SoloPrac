@@ -28,9 +28,8 @@ dependencies = [
     "numpy>=1.26.0",
     "opencv-python>=4.9.0",
     "playwright>=1.40.0",
-    "echarts-python>=2.1.0",
+    "pyecharts>=2.0.0",
     "cryptography>=42.0.0",
-    "pgcrypto>=1.0",
 ]
 
 [project.optional-dependencies]

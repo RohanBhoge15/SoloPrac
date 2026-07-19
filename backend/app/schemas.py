@@ -1,12 +1,12 @@
-# Pydantic Schemas
+# Pydantic Schemas — Version 2
 
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
-# Patient Schemas
+# ─── Patient ───────────────────────────────────
 class PatientBase(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
@@ -17,28 +17,35 @@ class PatientCreate(PatientBase):
     pass
 
 
-class PatientUpdate(BaseModel):
-    phone: Optional[str] = None
-    email: Optional[str] = None
-    consent_for_share: Optional[bool] = None
-
-
-class PatientRead(PatientBase):
+class PatientRead(BaseModel):
     id: UUID
     doctor_id: UUID
+    head_version_id: Optional[UUID] = None
+    consent_for_share: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
 
-# Patient Version Schemas
+# ─── Patient Version ──────────────────────────
 class PatientVersionBase(BaseModel):
-    version_number: int
-    edit_type: str
-    summary: Optional[str] = None
-    tags: List[str] = []
-    clinical_significance: float = 0.0
+    state_jsonb: Dict[str, Any]
+    edit_type: str = Field(..., pattern=r"^(manual|voice|ocr|ai_suggestion|revert)$")
+    summary: Optional[str] = Field(None, max_length=500)
+    tags: List[str] = Field(default_factory=list)
+    clinical_significance: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+    @field_validator("state_jsonb")
+    @classmethod
+    def state_not_empty(cls, v):
+        if not v:
+            raise ValueError("state_jsonb must not be empty")
+        return v
+
+
+class PatientVersionCreate(PatientVersionBase):
+    pass
 
 
 class PatientVersionRead(PatientVersionBase):
@@ -46,23 +53,10 @@ class PatientVersionRead(PatientVersionBase):
     patient_id: UUID
     doctor_id: UUID
     parent_version_id: Optional[UUID] = None
-    state_jsonb: Dict[str, Any]
+    version_number: int = Field(..., ge=1)
     version_hash: str
     author: str
-    timestamp: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PatientVersionTimeline(PatientVersionBase):
-    """Lightweight version for timeline display."""
-    id: UUID
-    version_number: int
-    author: str
-    edit_type: str
-    summary: Optional[str] = None
-    tags: List[str]
-    clinical_significance: float
+    image_comparison: Optional[Dict[str, Any]] = None
     timestamp: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -74,7 +68,22 @@ class PatientVersionDiff(BaseModel):
     modified: Dict[str, Dict[str, Any]] = {}
 
 
-# Prescription Schemas
+class PatientVersionTimeline(BaseModel):
+    """Lightweight version (no full state_jsonb) for timeline display."""
+    id: UUID
+    version_number: int
+    parent_version_id: Optional[UUID] = None
+    author: str
+    edit_type: str
+    summary: Optional[str] = None
+    tags: List[str]
+    clinical_significance: float
+    timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ─── Prescription ──────────────────────────────
 class MedicationSchema(BaseModel):
     drug: str
     strength: str
@@ -107,11 +116,11 @@ class PrescriptionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Invoice Schemas
+# ─── Invoice ────────────────────────────────────
 class InvoiceItem(BaseModel):
     description: str
     qty: int = 1
-    rate: int  # in paise/cents
+    rate: int
     amount: int
 
 
@@ -128,15 +137,12 @@ class InvoiceRead(BaseModel):
     id: UUID
     patient_id: UUID
     doctor_id: UUID
-    appointment_id: Optional[UUID] = None
     invoice_number: str
     items: List[Dict[str, Any]]
     subtotal: int
     tax: int
     total: int
     status: str
-    payment_method: Optional[str] = None
-    notes: Optional[str] = None
     generated_at: datetime
     paid_at: Optional[datetime] = None
     pdf_path: Optional[str] = None
@@ -144,10 +150,10 @@ class InvoiceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Certificate Schemas
+# ─── Certificate ────────────────────────────────
 class CertificateCreate(BaseModel):
     patient_id: UUID
-    cert_type: str  # sick_leave|fitness|school|disability|other
+    cert_type: str
     cert_jsonb: Dict[str, Any]
 
 
@@ -164,8 +170,8 @@ class CertificateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Appointment Schemas
-class AppointmentBase(BaseModel):
+# ─── Appointment ────────────────────────────────
+class AppointmentCreate(BaseModel):
     patient_id: UUID
     start_at: datetime
     end_at: datetime
@@ -173,50 +179,33 @@ class AppointmentBase(BaseModel):
     source: str = "manual"
 
 
-class AppointmentCreate(AppointmentBase):
-    pass
-
-
-class AppointmentRead(AppointmentBase):
+class AppointmentRead(BaseModel):
     id: UUID
     doctor_id: UUID
+    patient_id: UUID
+    start_at: datetime
+    end_at: datetime
+    reason: Optional[str] = None
     status: str
+    source: str
     notified: bool
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
 
-# Notification Schemas
-class NotificationCreate(BaseModel):
-    patient_id: UUID
-    kind: str
-    subject: str
-    body: str
-    channel: List[str] = ["in_app"]
+# ─── Health ────────────────────────────────────────
+class HealthCheck(BaseModel):
+    status: str
+    version: str
+    services: dict
 
 
-class NotificationRead(BaseModel):
-    id: UUID
-    patient_id: UUID
-    doctor_id: UUID
-    kind: str
-    subject: str
-    body: str
-    channel: List[str]
-    read: bool
-    delivered_at: Optional[datetime] = None
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-# Auth Schemas
+# ─── Auth ─────────────────────────────────────────
 class Token(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
-    expires_in: int
 
 
 class TokenPayload(BaseModel):
@@ -227,22 +216,9 @@ class TokenPayload(BaseModel):
     patient_id: Optional[UUID] = None
 
 
-# Doctor Settings
-class DoctorSettings(BaseModel):
-    working_hours_json: Dict[str, List[List[str]]] = {}
-    buffer_minutes_between_consults: int = 5
-    default_consult_duration: int = 20
-    auto_email_on_change: bool = True
-    patient_preference_decay_days: int = 180
-    notification_preferences: Dict[str, Any] = {}
-    certificate_templates: Dict[str, Any] = {}
-
-
+# ─── Doctor Settings ──────────────────────────────
 class DoctorSettingsUpdate(BaseModel):
     working_hours_json: Optional[Dict[str, List[List[str]]]] = None
-    buffer_minutes_between_consults: Optional[int] = None
-    default_consult_duration: Optional[int] = None
-    auto_email_on_change: Optional[bool] = None
-    patient_preference_decay_days: Optional[int] = None
-    notification_preferences: Optional[Dict[str, Any]] = None
-    certificate_templates: Optional[Dict[str, Any]] = None
+    buffer_minutes: Optional[int] = Field(None, ge=0, le=60)
+    default_duration: Optional[int] = Field(None, ge=5, le=120)
+    auto_email: Optional[bool] = None
