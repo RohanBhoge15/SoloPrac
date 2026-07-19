@@ -69,6 +69,9 @@ class AgentState(TypedDict):
     completed_at: Optional[datetime]
     langfuse_trace_id: Optional[str]
 
+    # Feature B: Self-Planning
+    replan_count: int
+
     # Image registration (Module 4)
     uploaded_images: Optional[List[str]]
     comparison_results: Optional[List[Dict[str, Any]]]
@@ -104,6 +107,7 @@ def create_initial_state(
         started_at=datetime.utcnow(),
         completed_at=None,
         langfuse_trace_id=None,
+        replan_count=0,
         uploaded_images=None,
         comparison_results=None,
     )
