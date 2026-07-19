@@ -21,6 +21,24 @@ from app.services.sanitizer import (
     AppointmentSchema,
     WeeklyReportSchema,
 )
+from app.services.temporal_rag import (
+    TemporalMultimodalRetriever,
+    temporal_decay,
+    clinical_significance_from_tags,
+    ALPHA, BETA, GAMMA, DELTA, EPSILON, TAU, TIER_WEIGHTS,
+)
+from app.services.evaluation import (
+    EvaluationHarness,
+    generate_test_dataset,
+    compute_recall_at_k,
+    compute_future_leak_rate,
+    BM25Baseline,
+)
+from app.services.rag_audit import (
+    RAGAuditService,
+    LLMRateLimiter,
+    validate_no_future_leak,
+)
 
 __all__ = [
     "redis_service",
@@ -47,4 +65,16 @@ __all__ = [
     "PrescriptionSchema",
     "AppointmentSchema",
     "WeeklyReportSchema",
+    "TemporalMultimodalRetriever",
+    "temporal_decay",
+    "clinical_significance_from_tags",
+    "ALPHA", "BETA", "GAMMA", "DELTA", "EPSILON", "TAU", "TIER_WEIGHTS",
+    "EvaluationHarness",
+    "generate_test_dataset",
+    "compute_recall_at_k",
+    "compute_future_leak_rate",
+    "BM25Baseline",
+    "RAGAuditService",
+    "LLMRateLimiter",
+    "validate_no_future_leak",
 ]

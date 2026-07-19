@@ -90,6 +90,20 @@ async def agent_chat(
     return EventSourceResponse(event_generator())
 
 
+@router.get("/rate-limit")
+async def agent_rate_limit(
+    doctor=Depends(get_current_doctor),
+):
+    """Get LLM rate limit usage for the current doctor."""
+    # Get per-doctor LLM usage from the shared rate limiter
+    from app.agents.tools import _llm_limiter as llm
+    stats = llm.get_stats(str(doctor.id))
+    return {
+        **stats,
+        "description": "Per-doctor LLM API rate limiting. Calls reset every 60 seconds.",
+    }
+
+
 @router.get("/health")
 async def agent_health():
     """Check if the agent system is ready."""
