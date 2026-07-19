@@ -15,7 +15,17 @@ import {
   AlertCircle,
   Loader2,
   Sparkles,
+  GitCommit,
+  ExternalLink,
 } from 'lucide-react'
+
+interface Citation {
+  version_number: number
+  date: string
+  summary: string
+  score?: number
+  edit_type?: string
+}
 
 interface Message {
   id: string
@@ -24,15 +34,57 @@ interface Message {
   timestamp: Date
   isStreaming?: boolean
   trace?: string[]
+  citations?: Citation[]
 }
 
 interface ChatUIProps {
   patientId?: string
   className?: string
   initialMessage?: string
+  onCiteVersion?: (versionNumber: number) => void
 }
 
-export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
+function renderContentWithCitations(
+  content: string,
+  citations: Citation[] | undefined,
+  onCiteVersion?: (versionNumber: number) => void,
+): React.ReactNode {
+  if (!citations || citations.length === 0) {
+    return <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{content}</div>
+  }
+
+  // Replace [v{n} · {date}] patterns with clickable chips and render the rest as prose
+  const parts = content.split(/(\[v\d+\s*·\s*[\d-]+\])/g)
+
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">
+      {parts.map((part, i) => {
+        const match = part.match(/\[v(\d+)\s*·\s*([\d-]+)\]/)
+        if (match) {
+          const vNum = parseInt(match[1])
+          const date = match[2]
+          return (
+            <button
+              key={`cite-${i}`}
+              onClick={() => onCiteVersion?.(vNum)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 mx-0.5 rounded-full text-xs font-medium bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 hover:bg-primary-200 dark:hover:bg-primary-900/50 transition-colors cursor-pointer border border-primary-200 dark:border-primary-800"
+              title={`Version ${vNum} · ${date}`}
+            >
+              <GitCommit className="h-3 w-3" />
+              <span>v{vNum}</span>
+              <span className="text-[10px] opacity-70">·</span>
+              <span className="text-[10px]">{date}</span>
+              <ExternalLink className="h-2.5 w-2.5 opacity-50" />
+            </button>
+          )
+        }
+        return <span key={`text-${i}`}>{part}</span>
+      })}
+    </div>
+  )
+}
+
+export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: ChatUIProps) {
   const [messages, setMessages] = useState<Message[]>(() => {
     if (initialMessage) {
       return [{
@@ -115,7 +167,6 @@ export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
     setInput('')
     setShowSuggestions(false)
 
-    // Add user message
     const userMsg: Message = {
       id: `user-${Date.now()}`,
       role: 'user',
@@ -123,7 +174,6 @@ export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
       timestamp: new Date(),
     }
 
-    // Add placeholder assistant message
     const assistantMsg: Message = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
@@ -131,11 +181,11 @@ export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
       timestamp: new Date(),
       isStreaming: true,
       trace: [],
+      citations: [],
     }
 
     setMessages(prev => [...prev, userMsg, assistantMsg])
 
-    // Send to SSE endpoint
     sendMessage(text, {
       patient_id: patientId,
     })
@@ -149,8 +199,7 @@ export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
   }
 
   const handleMicClick = useCallback(() => {
-    // Voice input placeholder — will be implemented in Week 10/11
-    setInput(prev => prev + (prev ? ' ' : '') + '[🎤 Voice input coming in Week 10]')
+    setInput(prev => prev + (prev ? ' ' : '') + '[Voice input coming in Week 10]')
   }, [])
 
   const handleSuggestionClick = useCallback((suggestion: string) => {
@@ -213,15 +262,36 @@ export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
                       <span>Thinking...</span>
                     </div>
                   ) : msg.role === 'assistant' ? (
-                    <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">
-                      {msg.content}
-                    </div>
+                    renderContentWithCitations(msg.content, msg.citations, onCiteVersion)
                   ) : (
                     <p>{msg.content}</p>
                   )}
                 </div>
 
-                {/* Agent Trace (for assistant messages) */}
+                {/* Citations bar */}
+                {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && !msg.isStreaming && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {msg.citations.slice(0, 4).map((cite, i) => (
+                      <button
+                        key={`cite-${i}`}
+                        onClick={() => onCiteVersion?.(cite.version_number)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-colors"
+                      >
+                        <GitCommit className="h-2.5 w-2.5" />
+                        <span>v{cite.version_number}</span>
+                        <span className="text-gray-400">·</span>
+                        <span>{cite.date || 'recent'}</span>
+                      </button>
+                    ))}
+                    {msg.citations.length > 4 && (
+                      <span className="text-[10px] text-gray-400 self-center">
+                        +{msg.citations.length - 4} more
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Agent Trace */}
                 {msg.role === 'assistant' && msg.trace && msg.trace.length > 0 && (
                   <AgentTrace
                     events={msg.trace}
@@ -324,7 +394,6 @@ export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
           </div>
         </div>
 
-        {/* Streaming indicator */}
         {isStreaming && (
           <div className="flex items-center gap-1.5 mt-2 max-w-3xl mx-auto">
             <Sparkles className="h-3 w-3 text-primary-500 animate-pulse" />
@@ -332,7 +401,6 @@ export function ChatUI({ patientId, className, initialMessage }: ChatUIProps) {
           </div>
         )}
 
-        {/* Footer hint */}
         {!isStreaming && (
           <p className="text-[10px] text-gray-400 mt-2 max-w-3xl mx-auto">
             AI responses are suggestions — requires doctor validation. Shift+Enter for new line.
