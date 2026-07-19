@@ -1,0 +1,37 @@
+---
+title: Research Features A-F for IEEE Paper
+---
+flowchart LR
+    subgraph Features["Research Contributions"]
+        direction TB
+        FA["Feature A ⭐<br/>Temporal Multimodal RAG<br/>Primary Contribution"]
+        FB["Feature B<br/>Self-Planning Agent<br/>Dynamic Plan-Execute-Critic"]
+        FC["Feature C<br/>Cross-Modal Retrieval<br/>NV-CLIP to BGE-M3 Projector"]
+        FD["Feature D<br/>Schema Alignment<br/>Zero-Shot Document Mapping"]
+        FE["Feature E<br/>Trajectory Clustering<br/>HDBSCAN + Mahalanobis"]
+        FF["Feature F<br/>Significance Reports<br/>Filtered Weekly Digest"]
+    end
+
+    subgraph Paper["IEEE Paper Structure"]
+        S3["Section III<br/>Temporal RAG System"]
+        S4["Section IV<br/>Agent Architecture"]
+        S5["Section V<br/>Cross-Modal Learning"]
+        S6["Section VI<br/>Supporting Features"]
+    end
+
+    FA --> S3
+    FB --> S4
+    FC --> S5
+    FD --> S6
+    FE --> S6
+    FF --> S6
+
+    classDef primary fill:#fff3e0,stroke:#e65100,color:#000,stroke-width:3
+    classDef co fill:#e3f2fd,stroke:#1565c0,color:#000
+    classDef support fill:#f3e5f5,stroke:#6a1b9a,color:#000
+    classDef paper fill:#e8f5e9,stroke:#2e7d32,color:#000
+
+    class FA primary
+    class FB,FC co
+    class FD,FE,FF support
+    class S3,S4,S5,S6 paper
