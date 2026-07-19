@@ -6,20 +6,30 @@ Architecture:
   └──────┬──────┘
          ▼
   ┌──────────────┐
-  │ Tool Executor│  Dispatches to RAG / Doc / Vision / Calendar
+  │   Planner    │  Generates step-by-step plan (Feature B)
   └──────┬──────┘
          ▼
   ┌──────────────┐
-  │  Critic      │  Evaluates output → re-plan or finish
+  │  Executor    │  Runs tool calls with retry + error handling
   └──────┬──────┘
          ▼
   ┌──────────────┐
-  │ Synthesizer  │  Maverick → final response
+  │ Synthesizer  │  Maverick → final response with citations
+  └──────┬──────┘
+         ▼
+  ┌──────────────┐
+  │  Responder   │  Formats + streams the response (SSE)
   └──────────────┘
 """
 
 from app.agents.state import AgentState, AgentIntent, AgentToolCall
 from app.agents.router import IntentRouter
 from app.agents.tools import tool_registry
+from app.agents.graph import AgentGraph
+from app.agents.synthesizer import MaverickSynthesizer
 
-__all__ = ["AgentState", "AgentIntent", "AgentToolCall", "IntentRouter", "tool_registry"]
+__all__ = [
+    "AgentState", "AgentIntent", "AgentToolCall",
+    "IntentRouter", "tool_registry",
+    "AgentGraph", "MaverickSynthesizer",
+]

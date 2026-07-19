@@ -30,6 +30,7 @@ dependencies = [
     "playwright>=1.40.0",
     "pyecharts>=2.0.0",
     "cryptography>=42.0.0",
+    "sse-starlette>=2.1.0",
 ]
 
 [project.optional-dependencies]
