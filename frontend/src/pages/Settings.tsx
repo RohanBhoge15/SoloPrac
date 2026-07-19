@@ -1,14 +1,16 @@
+import { useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { Badge } from '@/components/ui/Badge'
-import { User, Bell, Shield, Calendar, CreditCard } from 'lucide-react'
-import { useState } from 'react'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
+import { User, Bell, Shield, Calendar, CreditCard, Loader2 } from 'lucide-react'
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState('profile')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -52,7 +54,18 @@ export function Settings() {
                 <Input id="address" defaultValue="Aundh, Pune" />
               </div>
             </div>
-            <Button>Save Changes</Button>
+            <Button onClick={() => { setSaving(true); setTimeout(() => { setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 3000) }, 1000) }} disabled={saving}>
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : saved ? (
+                'Saved!'
+              ) : (
+                'Save Changes'
+              )}
+            </Button>
           </CardContent>
         </Card>
       </TabsContent>
@@ -76,7 +89,7 @@ export function Settings() {
                   <div>
                     <p className="font-medium text-gray-900 dark:text-white">{n.label}</p>
                     <p className="text-sm text-gray-500">
-                      Sent {n.defaultHours > 0 ? (n.defaultHours + "h before") : 'immediately'}
+                      {n.defaultHours > 0 ? (n.defaultHours + "h before") : "immediately"}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
