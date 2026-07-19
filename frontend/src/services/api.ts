@@ -8,10 +8,12 @@ export const apiClient = axios.create({
   },
 })
 
-// Request interceptor for auth
+// Request interceptor for auth (doctor or patient)
 apiClient.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('access_token')
+    const doctorToken = localStorage.getItem('access_token')
+    const patientToken = localStorage.getItem('patient_token')
+    const token = doctorToken || patientToken
     if (token && !config.headers.Authorization) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -43,10 +45,20 @@ apiClient.interceptors.response.use(
           // Refresh failed, redirect to login
           localStorage.removeItem('access_token')
           localStorage.removeItem('refresh_token')
+          localStorage.removeItem('patient_token')
+          localStorage.removeItem('patient_id')
           window.location.href = '/login'
         }
       } else {
-        window.location.href = '/login'
+        const patientToken = localStorage.getItem('patient_token')
+        if (patientToken) {
+          // Patient token can't be refreshed, redirect to patient login
+          localStorage.removeItem('patient_token')
+          localStorage.removeItem('patient_id')
+          window.location.href = '/patient/login'
+        } else {
+          window.location.href = '/login'
+        }
       }
     }
 

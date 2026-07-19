@@ -7,6 +7,13 @@ import { Scratchpad } from '@/pages/Scratchpad'
 import { Settings } from '@/pages/Settings'
 import { PatientDetail } from '@/pages/PatientDetail'
 import { Chat } from '@/pages/Chat'
+import { PatientLayout } from '@/layouts/PatientLayout'
+import { PatientLogin } from '@/pages/PatientLogin'
+import { PatientDashboard } from '@/pages/PatientDashboard'
+import { DoctorSearch } from '@/pages/DoctorSearch'
+import { PatientAppointments } from '@/pages/PatientAppointments'
+import { PatientInbox } from '@/pages/PatientInbox'
+import { PatientReports } from '@/pages/PatientReports'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { useEffect } from 'react'
 
@@ -23,6 +30,17 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (!user) {
     return <Navigate to="/login" replace />
+  }
+
+  return <>{children}</>
+}
+
+function PatientProtectedRoute({ children }: { children: React.ReactNode }) {
+  const patientToken = localStorage.getItem('patient_token')
+  const patientId = localStorage.getItem('patient_id')
+
+  if (!patientToken || !patientId) {
+    return <Navigate to="/patient/login" replace />
   }
 
   return <>{children}</>
@@ -66,10 +84,64 @@ function AppRoutes() {
   )
 }
 
+function PatientRoutes() {
+  return (
+    <Routes>
+      <Route path="/patient/login" element={<PatientLogin />} />
+      <Route element={<PatientLayout />}>
+        <Route
+          element={
+            <PatientProtectedRoute>
+              <PatientDashboard />
+            </PatientProtectedRoute>
+          }
+          path="/patient/dashboard"
+        />
+        <Route
+          element={
+            <PatientProtectedRoute>
+              <DoctorSearch />
+            </PatientProtectedRoute>
+          }
+          path="/patient/search"
+        />
+        <Route
+          element={
+            <PatientProtectedRoute>
+              <PatientAppointments />
+            </PatientProtectedRoute>
+          }
+          path="/patient/appointments"
+        />
+        <Route
+          element={
+            <PatientProtectedRoute>
+              <PatientInbox />
+            </PatientProtectedRoute>
+          }
+          path="/patient/inbox"
+        />
+        <Route
+          element={
+            <PatientProtectedRoute>
+              <PatientReports />
+            </PatientProtectedRoute>
+          }
+          path="/patient/reports"
+        />
+      </Route>
+      <Route path="/patient/*" element={<Navigate to="/patient/login" replace />} />
+    </Routes>
+  )
+}
+
 export default function App() {
   return (
     <AuthProvider>
-      <AppRoutes />
+      <Routes>
+        <Route element={<AppRoutes />} />
+        <Route element={<PatientRoutes />} />
+      </Routes>
     </AuthProvider>
   )
 }
