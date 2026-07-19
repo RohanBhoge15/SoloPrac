@@ -50,6 +50,12 @@ from app.services.voice_scheduler import voice_scheduler
 from app.services.notification_prefs import validate_notification_prefs, get_enabled_channels, merge_with_defaults
 from app.services.calendar_security import calendar_security, CalendarRateLimiter
 from app.services.patient_security import patient_security, PatientSecurityService, PatientPortalAudit
+from app.services.weekly_report import WeeklyReportService, REPORT_LAYOUTS, build_likert_study
+from app.services.feature_b_eval import FeatureBEvaluator, generate_100_query_set
+from app.services.feature_c_projector import ProjectorTrainer, generate_synthetic_pairs, infonce_loss
+from app.services.feature_c_eval import evaluate_projector, run_qualitative_panel
+from app.services.feature_e_clustering import TrajectoryClusterer, AnomalyDetector, run_full_evaluation as run_feature_e_eval
+from app.services.research_data_mgmt import export_langfuse_metrics, verify_data_anonymization, get_research_data_report
 
 __all__ = [
     "redis_service",
@@ -114,4 +120,20 @@ __all__ = [
     "smart_rearrange",
     "find_optimal_window",
     "handle_doctor_off",
+    "WeeklyReportService",
+    "REPORT_LAYOUTS",
+    "build_likert_study",
+    "FeatureBEvaluator",
+    "generate_100_query_set",
+    "ProjectorTrainer",
+    "generate_synthetic_pairs",
+    "infonce_loss",
+    "evaluate_projector",
+    "run_qualitative_panel",
+    "TrajectoryClusterer",
+    "AnomalyDetector",
+    "run_feature_e_eval",
+    "export_langfuse_metrics",
+    "verify_data_anonymization",
+    "get_research_data_report",
 ]
