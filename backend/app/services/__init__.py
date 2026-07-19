@@ -49,6 +49,7 @@ from app.services.email_queue import email_queue
 from app.services.voice_scheduler import voice_scheduler
 from app.services.notification_prefs import validate_notification_prefs, get_enabled_channels, merge_with_defaults
 from app.services.calendar_security import calendar_security, CalendarRateLimiter
+from app.services.patient_security import patient_security, PatientSecurityService, PatientPortalAudit
 
 __all__ = [
     "redis_service",
@@ -100,14 +101,9 @@ __all__ = [
     "merge_with_defaults",
     "calendar_security",
     "CalendarRateLimiter",
-    "CalendarService",
-    "email_queue",
-    "voice_scheduler",
-    "validate_notification_prefs",
-    "get_enabled_channels",
-    "merge_with_defaults",
-    "calendar_security",
-    "CalendarRateLimiter",
+    "patient_security",
+    "PatientSecurityService",
+    "PatientPortalAudit",
     "find_available_slots",
     "create_appointment",
     "reschedule_appointment",

@@ -214,6 +214,7 @@ class TokenPayload(BaseModel):
     iat: int
     doctor_id: Optional[UUID] = None
     patient_id: Optional[UUID] = None
+    type: str = "access"
 
 
 # ─── Doctor Settings ──────────────────────────────

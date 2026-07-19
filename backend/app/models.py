@@ -9,7 +9,7 @@ from sqlalchemy import (
     Column, String, Text, DateTime, ForeignKey, Integer, Float, Boolean,
     BigInteger, Index, UniqueConstraint, event,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, INET, ARRAY as PG_ARRAY
+from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, INET, ARRAY as PG_ARRAY, GEOGRAPHY
 from sqlalchemy.orm import relationship, declared_attr
 from app.database import Base
 
@@ -25,7 +25,7 @@ class Doctor(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
     speciality = Column(String(100), default="General Practice")
-    location = Column(String(500))
+    location = Column(GEOGRAPHY(geometry_type="POINT", srid=4326), nullable=True)
     clinic_name = Column(String(255))
     clinic_address = Column(Text)
     phone = Column(String(50))

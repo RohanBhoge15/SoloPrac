@@ -1,5 +1,6 @@
 # Database Setup
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from app.config import settings
@@ -45,6 +46,8 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         # Import models to register them
         from app import models  # noqa
+        # Create PostGIS extension if not exists
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
         await conn.run_sync(Base.metadata.create_all)
 
 
