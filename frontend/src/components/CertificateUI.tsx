@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { Label } from '@/components/ui/Label'
 import { Printer, Download, FileText, Loader2, AlertCircle, Calendar, CalendarDays, CalendarX } from 'lucide-react'
+import apiClient from '@/services/api'
 
 interface CertificateUIProps {
   patientId: string
@@ -42,23 +43,17 @@ export function CertificateUI({ patientId, patientName, className }: Certificate
     setResult(null)
 
     try {
-      const response = await fetch(`/api/v1/patients/${patientId}/certificates`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('access_token')}` },
-        body: JSON.stringify({
-          cert_type: certType,
-          body,
-          recommended_rest: recommendedRest,
-          patient_name: patientName,
-          start_date: startDate || undefined,
-          end_date: endDate || undefined,
-        }),
+      const response = await apiClient.post(`/patients/${patientId}/certificates`, {
+        cert_type: certType,
+        body,
+        recommended_rest: recommendedRest,
+        patient_name: patientName,
+        start_date: startDate || undefined,
+        end_date: endDate || undefined,
       })
-      if (!response.ok) throw new Error('Failed to create certificate')
-      const data = await response.json()
-      setResult(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Generation failed')
+      setResult(response.data)
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'Failed to create certificate')
     } finally {
       setGenerating(false)
     }

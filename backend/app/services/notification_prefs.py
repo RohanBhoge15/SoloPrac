@@ -31,14 +31,14 @@ REQUIRED_EVENT_TYPES = [
     "certificate_issued",
 ]
 
-ALLOWED_CHANNELS = {"in_app", "email", "sms"}
+ALLOWED_CHANNELS = {"in_app", "email"}
 
 DEFAULT_PREFERENCES: Dict[str, Dict[str, Any]] = {
-    "appointment_reminder": {"enabled": True, "hours_before": 2, "channels": ["in_app", "email"]},
+    "appointment_reminder": {"enabled": True, "hours_before": 2, "channels": ["in_app"]},
     "new_report": {"enabled": True, "channels": ["in_app", "email"]},
     "invoice_generated": {"enabled": True, "channels": ["in_app"]},
-    "booking_confirmation": {"enabled": True, "channels": ["in_app", "email"]},
-    "reschedule_notification": {"enabled": True, "channels": ["in_app", "email"]},
+    "booking_confirmation": {"enabled": True, "channels": ["in_app"]},
+    "reschedule_notification": {"enabled": True, "channels": ["in_app"]},
     "certificate_issued": {"enabled": True, "channels": ["in_app"]},
 }
 

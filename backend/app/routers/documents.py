@@ -38,24 +38,36 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "documents")
 
-# Track uploads per doctor for rate limiting
-_upload_counts: dict[str, list[float]] = {}
 MAX_UPLOADS_PER_MINUTE = 10
 
 
-def _check_upload_rate_limit(doctor_id: str) -> bool:
-    """Check if doctor has exceeded upload rate limit (10/min)."""
-    now = datetime.now(timezone.utc).timestamp()
-    bucket = _upload_counts.get(doctor_id, [])
-    # Prune older than 60 seconds
-    _upload_counts[doctor_id] = [t for t in bucket if now - t < 60]
-    return len(_upload_counts[doctor_id]) < MAX_UPLOADS_PER_MINUTE
+async def _check_upload_rate_limit(doctor_id: str) -> bool:
+    """Check if doctor has exceeded upload rate limit (10/min) using Redis."""
+    try:
+        from app.services.redis import redis_service
+        client = await redis_service.connect()
+        key = f"rate_limit:upload:{doctor_id}"
+        current = await client.incr(key)
+        if current == 1:
+            await client.expire(key, 60)
+        return current <= MAX_UPLOADS_PER_MINUTE
+    except Exception:
+        # Fallback: allow if Redis is down
+        logger.warning("Redis unavailable for rate limiting — allowing upload")
+        return True
 
 
-def _record_upload(doctor_id: str):
-    if doctor_id not in _upload_counts:
-        _upload_counts[doctor_id] = []
-    _upload_counts[doctor_id].append(datetime.now(timezone.utc).timestamp())
+async def _record_upload(doctor_id: str):
+    """Record upload in Redis for rate limiting."""
+    try:
+        from app.services.redis import redis_service
+        client = await redis_service.connect()
+        key = f"rate_limit:upload:{doctor_id}"
+        current = await client.incr(key)
+        if current == 1:
+            await client.expire(key, 60)
+    except Exception:
+        pass
 
 
 def _ensure_upload_dir():
@@ -72,13 +84,13 @@ async def parse_document(
     """Upload and parse a medical document through the OCR pipeline.
 
     Auto-detects document format (typed PDF, scanned PDF, handwritten, photo)
-    and routes to the correct parser (Docling, Surya, GOT-OCR, MedGemma).
+    and routes to the correct parser (Docling, Surya, Nanonets-OCR2, MedGemma).
     Also classifies document type (prescription, lab report, etc.).
     """
     doctor_id_str = str(doctor.id)
 
     # Rate limit check (Dev)
-    if not _check_upload_rate_limit(doctor_id_str):
+    if not await _check_upload_rate_limit(doctor_id_str):
         raise HTTPException(
             status_code=429,
             detail=f"Upload rate limit exceeded. Max {MAX_UPLOADS_PER_MINUTE} uploads per minute.",

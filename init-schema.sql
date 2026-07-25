@@ -9,25 +9,46 @@ CREATE EXTENSION IF NOT EXISTS "postgis";
 -- Set timezone
 SET timezone = 'Asia/Kolkata';
 
+-- Users table (cross-tenant app users — no RLS, no doctor scope)
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    phone TEXT NOT NULL,
+    phone_hash TEXT UNIQUE NOT NULL,  -- SHA256 for fast lookup
+    name TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX ON users (phone_hash);
+
 -- Doctors table (tenants)
 CREATE TABLE doctors (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
     speciality TEXT DEFAULT 'General Practice',
-    location TEXT,  -- Store as "lat,lng" text
+    location GEOGRAPHY(POINT, 4326),  -- PostGIS for patient map search (lat,lng)
     clinic_name TEXT,
     clinic_address TEXT,
     phone TEXT,
     registration_number TEXT,
+    password_hash TEXT,  -- bcrypt hash for email/password login
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
+    -- unverified | pending_verification | verified | rejected
+    license_document_path TEXT,  -- uploaded medical council cert / license photo
+    rejection_reason TEXT,       -- populated when verification_status = 'rejected'
+    verified_at TIMESTAMPTZ,     -- when admin approved
     settings JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Patients table (head pointer only)
+-- Each row is scoped to one doctor via doctor_id (RLS enforced).
+-- user_id is set when an app user books with or is linked to this doctor.
+-- A user may have multiple Patient rows (one per doctor they visit).
 CREATE TABLE patients (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- app user (nullable for walk-ins)
     head_version_id UUID,  -- Will FK to patient_versions after creation
     phone_enc BYTEA,
     email_enc BYTEA,
@@ -35,6 +56,7 @@ CREATE TABLE patients (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX ON patients (user_id);
 
 -- Patient Versions (immutable chain)
 CREATE TABLE patient_versions (
@@ -62,18 +84,36 @@ CREATE INDEX ON patient_versions (doctor_id, timestamp DESC);
 CREATE TABLE prescription_boxes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     version_id UUID NOT NULL REFERENCES patient_versions(id) ON DELETE CASCADE,
+    patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
     doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
     rx_jsonb JSONB NOT NULL,
     pdf_path TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Invoices
+-- Appointments (must exist before invoices due to FK reference)
+CREATE TABLE appointments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
+    patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    start_at TIMESTAMPTZ NOT NULL,
+    end_at TIMESTAMPTZ NOT NULL,
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'scheduled',  -- scheduled|done|cancelled|moved
+    source TEXT NOT NULL DEFAULT 'manual',  -- manual|voice|agent|patient_portal
+    notified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ON appointments (doctor_id, start_at);
+CREATE INDEX ON appointments (patient_id, start_at);
+
+-- Invoices (references appointments)
 CREATE TABLE invoices (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
     doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
-    appointment_id UUID REFERENCES appointments(id),
+    appointment_id UUID REFERENCES appointments(id) ON DELETE SET NULL,
     invoice_number TEXT NOT NULL UNIQUE,
     items JSONB NOT NULL,
     subtotal INTEGER NOT NULL,  -- in paise/cents
@@ -99,23 +139,6 @@ CREATE TABLE certificates (
     issued_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Appointments
-CREATE TABLE appointments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
-    patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
-    start_at TIMESTAMPTZ NOT NULL,
-    end_at TIMESTAMPTZ NOT NULL,
-    reason TEXT,
-    status TEXT NOT NULL DEFAULT 'scheduled',  -- scheduled|done|cancelled|moved
-    source TEXT NOT NULL DEFAULT 'manual',  -- manual|voice|agent|patient_portal
-    notified BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX ON appointments (doctor_id, start_at);
-CREATE INDEX ON appointments (patient_id, start_at);
-
 -- Patient Time Preferences (for smart scheduling)
 CREATE TABLE patient_time_preferences (
     patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -135,7 +158,7 @@ CREATE TABLE risk_alerts (
     reason TEXT NOT NULL,
     severity REAL NOT NULL,  -- 0-1
     triggered_at TIMESTAMPTZ DEFAULT NOW(),
-    acknowledged_by UUID REFERENCES doctors(id),
+    acknowledged_by UUID REFERENCES doctors(id) ON DELETE SET NULL,
     acknowledged_at TIMESTAMPTZ
 );
 
@@ -148,6 +171,7 @@ CREATE TABLE patient_notifications (
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
     channel TEXT[] DEFAULT '{in_app}',
+    meta JSONB,
     read BOOLEAN DEFAULT FALSE,
     delivered_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -156,7 +180,7 @@ CREATE TABLE patient_notifications (
 -- Audit Log (append-only, medico-legal)
 CREATE TABLE audit_log (
     id BIGSERIAL PRIMARY KEY,
-    doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
+    doctor_id UUID REFERENCES doctors(id) ON DELETE SET NULL,  -- nullable for system/patient actors
     patient_id UUID REFERENCES patients(id) ON DELETE SET NULL,
     actor TEXT NOT NULL,  -- doctor:<id> | patient:<id> | agent:<name> | system
     action TEXT NOT NULL,  -- read|write|ai_suggest|approve|export|book|cancel
@@ -173,9 +197,10 @@ CREATE INDEX ON audit_log (doctor_id, occurred_at DESC);
 -- Image Comparisons
 CREATE TABLE image_comparisons (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
     version_id UUID NOT NULL REFERENCES patient_versions(id) ON DELETE CASCADE,
     current_image_path TEXT NOT NULL,
-    matched_version_id UUID REFERENCES patient_versions(id),
+    matched_version_id UUID REFERENCES patient_versions(id) ON DELETE SET NULL,
     matched_image_path TEXT,
     area_change_pct REAL,
     edge_convergence_score REAL,
@@ -233,6 +258,41 @@ CREATE POLICY tenant_isolation ON audit_log
 CREATE POLICY tenant_isolation ON image_comparisons
   USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
 
+-- patient_time_preferences uses patient_id (not doctor_id) so we use a
+-- subquery to verify the patient belongs to the current doctor
+ALTER TABLE patient_time_preferences ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON patient_time_preferences
+  USING (patient_id IN (
+    SELECT id FROM patients WHERE doctor_id = current_setting('app.current_doctor_id')::uuid
+  ));
+
+-- Performance Indexes
+-- Spatial index for doctor location queries
+CREATE INDEX IF NOT EXISTS idx_doctors_location ON doctors USING GIST (location);
+
+-- FK indexes for common join patterns
+CREATE INDEX IF NOT EXISTS idx_patients_doctor_id ON patients (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_patient_versions_patient_id ON patient_versions (patient_id);
+CREATE INDEX IF NOT EXISTS idx_patient_versions_doctor_id ON patient_versions (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_prescription_boxes_version_id ON prescription_boxes (version_id);
+CREATE INDEX IF NOT EXISTS idx_prescription_boxes_doctor_id ON prescription_boxes (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_appointment_id ON invoices (appointment_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_doctor_id ON invoices (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_certificates_patient_id ON certificates (patient_id);
+CREATE INDEX IF NOT EXISTS idx_certificates_doctor_id ON certificates (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_appointments_doctor_id ON appointments (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_risk_alerts_patient_id ON risk_alerts (patient_id);
+CREATE INDEX IF NOT EXISTS idx_risk_alerts_doctor_id ON risk_alerts (doctor_id);
+CREATE INDEX IF NOT EXISTS idx_patient_notifications_patient_id ON patient_notifications (patient_id);
+CREATE INDEX IF NOT EXISTS idx_image_comparisons_version_id ON image_comparisons (version_id);
+CREATE INDEX IF NOT EXISTS idx_image_comparisons_doctor_id ON image_comparisons (doctor_id);
+
+-- Composite indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_invoices_doctor_status ON invoices (doctor_id, status, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_risk_alerts_doctor_ack ON risk_alerts (doctor_id, acknowledged_by, triggered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_patient_read ON patient_notifications (patient_id, read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_appointments_doctor_status ON appointments (doctor_id, status, start_at);
+
 -- Grant permissions for application role
 CREATE ROLE soloprac_app NOLOGIN;
 GRANT USAGE ON SCHEMA public TO soloprac_app;
@@ -264,6 +324,31 @@ CREATE TRIGGER update_patients_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Create langfuse database and user
-CREATE DATABASE langfuse;
-CREATE USER langfuse WITH ENCRYPTED PASSWORD 'langfuse_dev_password';
-GRANT ALL PRIVILEGES ON DATABASE langfuse TO langfuse;
+-- NOTE: CREATE DATABASE cannot run inside a transaction block.
+-- docker-entrypoint-initdb.d scripts run inside a transaction, so this
+-- is split into a DO block that skips gracefully if already created.
+DO $$
+BEGIN
+    -- Create langfuse user (idempotent)
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'langfuse') THEN
+        CREATE USER langfuse WITH ENCRYPTED PASSWORD 'langfuse_dev_password';
+    END IF;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- Grant privileges (these work inside transactions)
+GRANT ALL PRIVILEGES ON DATABASE soloprac TO langfuse;
+
+-- Seed admin user for verification review panel
+-- Password: admin123 (bcrypt hash). CHANGE IN PRODUCTION.
+INSERT INTO doctors (email, name, speciality, verification_status, password_hash, settings)
+VALUES (
+    'admin@soloprac.io',
+    'SoloPrac Admin',
+    'Administrator',
+    'verified',
+    '$2b$12$LJ3m4ys3Lk0TSwHnbfOMiOXPLbPvHm8sV5Y5n5Y5n5Y5n5Y5n5Y5O',
+    '{}'
+)
+ON CONFLICT (email) DO NOTHING;

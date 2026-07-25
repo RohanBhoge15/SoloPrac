@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional, List, Dict, Any, TypedDict, Annotated
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone, timezone
 from enum import Enum
 
 
@@ -104,7 +104,7 @@ def create_initial_state(
         error_count=0,
         max_retries=2,
         trace_events=["Agent initialized"],
-        started_at=datetime.utcnow(),
+        started_at=datetime.now(timezone.utc),
         completed_at=None,
         langfuse_trace_id=None,
         replan_count=0,

@@ -1,23 +1,14 @@
 import { useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { AlertTriangle, Activity, Loader2, Bell, X } from 'lucide-react'
-
-interface RiskAlert {
-  patient_id: string
-  kind: 'trajectory_drift' | 'anomaly'
-  severity: number
-  message: string
-  detected_at: string
-  patient_name?: string
-}
-
-function cn(...classes: any[]) { return classes.filter(Boolean).join(' ') }
+import { cn } from '@/utils/helpers'
+import type { RiskAlert } from '@/types'
 
 export function RiskAlertsPanel({ alerts, loading }: { alerts: RiskAlert[]; loading?: boolean }) {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState(false)
 
-  const visibleAlerts = alerts.filter(a => !dismissed.has(a.patient_id))
+  const visibleAlerts = alerts.filter(a => !dismissed.has(a.id))
   const criticalCount = visibleAlerts.filter(a => a.severity > 0.7).length
 
   if (loading) {

@@ -30,7 +30,7 @@ export function DoctorSearch() {
       const params: any = {}
       if (speciality) params.speciality = speciality
       if (query) params.q = query
-      const res = await apiClient.get('/api/public/doctors/search', { params })
+      const res = await apiClient.get('/public/doctors/search', { params })
       setDoctors(res.data?.doctors || [])
     } catch {
       setError('Failed to load doctors')
@@ -49,7 +49,7 @@ export function DoctorSearch() {
     try {
       const today = new Date().toISOString().split('T')[0]
       const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0]
-      const res = await apiClient.get(`/api/public/doctors/${doc.id}`, { params: { date_from: today, date_to: nextWeek } })
+      const res = await apiClient.get(`/public/doctors/${doc.id}`, { params: { date_from: today, date_to: nextWeek } })
       setSlots(res.data?.available_slots || [])
     } catch {
       setError('Failed to load slots')
@@ -66,7 +66,7 @@ export function DoctorSearch() {
     }
     setBooking(true)
     try {
-      await apiClient.post('/api/public/appointments', {
+      await apiClient.post('/patient/appointments', {
         doctor_id: selectedDoctor.id,
         patient_id: patientId,
         start_at: slot.start,

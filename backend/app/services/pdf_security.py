@@ -30,6 +30,8 @@ from reportlab.lib.colors import HexColor
 from reportlab.lib.units import inch
 from PyPDF2 import PdfReader, PdfWriter
 
+import fitz  # PyMuPDF - for QR embedding
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -177,7 +179,7 @@ class PDFSecurityService:
         return output
 
     async def embed_qr_in_pdf(self, pdf_path: str, qr_data: str, position: str = "bottom-right") -> str:
-        """Embed a QR code into the last page of a PDF.
+        """Embed a QR code into the last page of a PDF using PyMuPDF.
 
         Args:
             pdf_path: Path to the source PDF.
@@ -188,34 +190,50 @@ class PDFSecurityService:
             Path to the modified PDF.
         """
         # Generate QR image
-        qr_path = await self.generate_qr_code(qr_data, size=80)
+        qr_path = await self.generate_qr_code(qr_data, size=120)
 
-        # Embed into PDF
-        reader = PdfReader(pdf_path)
-        writer = PdfWriter()
+        # Open PDF with PyMuPDF
+        doc = fitz.open(pdf_path)
+        if len(doc) == 0:
+            doc.close()
+            raise ValueError("PDF has no pages")
 
-        # Determine position coordinates
-        page_width, page_height = A5
-        qr_size = 60
-        margin = 15 * mm
+        # Get last page
+        page = doc[-1]
+        page_rect = page.rect
+        page_width = page_rect.width
+        page_height = page_rect.height
+
+        # QR size in points (1/72 inch)
+        qr_size = 72  # 1 inch square
+        margin = 20
 
         positions = {
-            "bottom-right": (page_width - qr_size - margin, margin),
-            "bottom-left": (margin, margin),
-            "top-right": (page_width - qr_size - margin, page_height - qr_size - margin),
-            "top-left": (margin, page_height - qr_size - margin),
+            "bottom-right": (page_width - qr_size - margin, page_height - qr_size - margin),
+            "bottom-left": (margin, page_height - qr_size - margin),
+            "top-right": (page_width - qr_size - margin, margin),
+            "top-left": (margin, margin),
         }
         x, y = positions.get(position, positions["bottom-right"])
 
-        for i, page in enumerate(reader.pages):
-            writer.add_page(page)
-            if i == len(reader.pages) - 1:  # Only last page
-                # Add QR as annotation
-                pass  # QR embedding requires more complex PDF manipulation
+        # Create rect for QR image
+        qr_rect = fitz.Rect(x, y, x + qr_size, y + qr_size)
 
+        # Insert QR image on last page
+        page.insert_image(qr_rect, filename=qr_path)
+
+        # Save to new file
         output_path = pdf_path.replace(".pdf", "_qr.pdf")
-        with open(output_path, "wb") as f:
-            writer.write(f)
+        doc.save(output_path)
+        doc.close()
+
+        # Clean up QR image file
+        try:
+            os.remove(qr_path)
+        except OSError:
+            pass
+
+        logger.info("QR code embedded in PDF: %s -> %s", pdf_path, output_path)
         return output_path
 
     # ─── Audit Logging ───

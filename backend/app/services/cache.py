@@ -24,7 +24,7 @@ from functools import wraps
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Doctor, Patient, Appointment, WorkingHours
+from app.models import Doctor, Patient, Appointment
 from app.services.redis import redis_service
 
 logger = logging.getLogger(__name__)
@@ -132,34 +132,6 @@ async def cached_doctor_settings(
 
     await redis_service.set_cached(cache_key, settings, ttl=ttl)
     return settings
-
-
-async def cached_working_hours(
-    db: AsyncSession,
-    doctor_id: UUID,
-    ttl: int = 120,
-) -> Dict[str, Any]:
-    """Get doctor working hours with caching (2 min TTL)."""
-    cache_key = working_hours_key(doctor_id)
-    cached = await redis_service.get_cached(cache_key)
-    if cached is not None:
-        return cached
-
-    result = await db.execute(
-        select(WorkingHours).where(WorkingHours.doctor_id == doctor_id)
-    )
-    wh = result.scalars().all()
-
-    hours = {}
-    for h in wh:
-        hours[h.day_of_week] = {
-            "start": h.start_time.isoformat() if h.start_time else None,
-            "end": h.end_time.isoformat() if h.end_time else None,
-            "enabled": h.is_enabled if hasattr(h, "is_enabled") else True,
-        }
-
-    await redis_service.set_cached(cache_key, hours, ttl=ttl)
-    return hours
 
 
 # ─── Eager Loading Optimization ────────────────────────────

@@ -6,8 +6,8 @@ graph TB
         direction TB
         WEB["React 19 + Vite + TS<br/>shadcn/ui + Tailwind"]
         PWA["Responsive PWA<br/>Mobile/Tablet/Desktop"]
-        CMDK["Cmd+K Command Palette"]
-        FS["Framer Motion Animations"]
+        DOCTOR["Doctor App (/dashboard/*)<br/>Clinical workflow"]
+        PATIENT["Patient Portal (/patient/*)<br/>Self-booking, reports"]
     end
 
     subgraph Gateway["API Gateway"]
@@ -17,9 +17,11 @@ graph TB
     subgraph Backend["Backend Layer"]
         direction TB
         FA["FastAPI + Pydantic<br/>Async Python Backend"]
-        SQ["SQLAlchemy ORM<br/>PostgreSQL 16"]
+        SQ["SQLAlchemy ORM<br/>PostgreSQL 16 + RLS"]
         ARQ["arq Redis Queue<br/>Async Task Worker"]
         LAN["LangGraph Agent<br/>Orchestration Framework"]
+        ADMIN["Admin Router<br/>Doctor Verification"]
+        AUTH["Auth Service<br/>OTP + Email/Pass + Google"]
     end
 
     subgraph Agent["Agent Layer"]
@@ -27,34 +29,37 @@ graph TB
         RTR["Intent Router<br/>Llama-3.1-8B (NIM)"]
         SYN["Response Synthesizer<br/>Llama-4 Maverick (NIM)"]
         VLM["Vision Analyzer<br/>90B-V Groq / MedGemma-4B"]
-        DOC["Doc Processor<br/>Docling / Surya / GOT-OCR"]
+        DOC["Doc Processor<br/>Docling / Surya / Nanonets-OCR2"]
         IMG["Image Registration<br/>ORB + OpenCV"]
-        VOICE["Voice Scheduling<br/>ASR + TTS Subgraph"]
+        VOICE["Voice Scheduling<br/>IndicWhisper + Parler-TTS"]
     end
 
     subgraph Storage["Storage Layer"]
         direction TB
-        PG[("PostgreSQL 16<br/>Patient Records + Auth")]
+        PG[("PostgreSQL 16<br/>Users | Doctors | Patients<br/>Versions | Appointments<br/>RLS Isolation")]
         QD[("Qdrant Vector DB<br/>Multi-Vector Search")]
-        RD[("Redis<br/>Cache + Queue")]
+        RD[("Redis<br/>Cache + OTP + Queue")]
         LF[("Langfuse<br/>Observability + Tracing")]
-        FS2[("File Storage<br/>PDFs + Images + Reports")]
+        FS2[("File Storage<br/>PDFs + License Docs + Images")]
     end
 
     subgraph External["External Services"]
         NIM["NVIDIA NIM<br/>Free Tier LLMs"]
         GROQ["Groq Cloud<br/>90B-Vision Free"]
-        GOOG["Google OAuth<br/>Authentication"]
+        GOOG["Google OAuth<br/>Doctor Authentication"]
         OSM["OpenStreetMap<br/>Free Map Tiles"]
         SMTP["SMTP Email<br/>Patient Notifications"]
     end
 
     WEB --> CADDY
-    PWA --> CADDY
+    DOCTOR --> CADDY
+    PATIENT --> CADDY
     CADDY --> FA
     FA --> SQ
     FA --> ARQ
     FA --> LAN
+    FA --> ADMIN
+    FA --> AUTH
 
     LAN --> RTR
     RTR --> SYN
@@ -76,6 +81,7 @@ graph TB
     FA --> GOOG
     FA --> OSM
     ARQ --> SMTP
+    AUTH --> RD
 
     classDef client fill:#e1f5fe,stroke:#0288d1,color:#000
     classDef gateway fill:#fff3e0,stroke:#f57c00,color:#000
@@ -84,9 +90,9 @@ graph TB
     classDef storage fill:#f3e5f5,stroke:#7b1fa2,color:#000
     classDef external fill:#f5f5f5,stroke:#616161,color:#000,stroke-dasharray: 5 5
 
-    class WEB,PWA,CMDK,FS client
+    class WEB,PWA,DOCTOR,PATIENT client
     class CADDY gateway
-    class FA,SQ,ARQ,LAN backend
+    class FA,SQ,ARQ,LAN,ADMIN,AUTH backend
     class RTR,SYN,VLM,DOC,IMG,VOICE agent
     class PG,QD,RD,LF,FS2 storage
     class NIM,GROQ,GOOG,OSM,SMTP external

@@ -36,7 +36,7 @@ Gaps were identified through:
 | **Problem** | Cannot search "find prior wound photos similar to this description" or "show me all patients with x-ray findings matching this report" |
 | **Root Cause** | Text and images stored separately. No alignment between embedding spaces. |
 | **Severity** | Medium — limits diagnostic pattern matching |
-| **Our Solution** | **Feature C — Cross-Modal Retrieval** with linear projector (NV-CLIP → BGE-M3) |
+| **Our Solution** | **Feature C — Cross-Modal Retrieval** with linear projector (BiomedCLIP → BGE-M3) |
 | **Novelty** | First medical cross-modal projector trained on CheXpert + wound pairs |
 
 ### Gap 4: No Zero-Shot Document Understanding
@@ -75,8 +75,10 @@ Gaps were identified through:
 | **Free LLMs for clinical use** | No integrated solution; most systems use no LLMs | Maverick (NIM) + Groq 90B-V + MedGemma-4B |
 | **Multilingual voice for Indian clinics** | Practo has partial English; no Hindi ASR/TTS | faster-whisper + IndicWhisper + Indic-Parler-TTS |
 | **Free map for patient search** | Google Maps API ($200+/month) | OpenStreetMap + Leaflet.js (zero cost) |
-| **Open-source medical RAG stack** | None combines Qdrant + MedCPT + BGE-M3 + NV-CLIP | First integrated pipeline with temporal scoring |
+| **Open-source medical RAG stack** | None combines Qdrant + MedCPT + BGE-M3 + BiomedCLIP | First integrated pipeline with temporal scoring |
 | **Multi-tenant RLS for small clinics** | Enterprise-only in most EMRs | Free PostgreSQL RLS with per-request tenant injection |
+| **Cross-clinic patient identity** | Every EMR binds patient to one doctor; 20+ duplicate accounts per person | `User` table (no RLS) + per-doctor `Patient` rows via `user_id` FK |
+| **Doctor verification & trust** | No system distinguishes self-registered vs verified doctors | Tiered trust model with registration number + license document verification |
 
 ---
 

@@ -7,10 +7,13 @@ Week 6: Tools now wired to real implementations:
 
 from __future__ import annotations
 
+import os
 import logging
+import base64
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol
+from typing_extensions import runtime_checkable
 
 from app.config import settings
 from app.database import async_session_maker
@@ -81,7 +84,7 @@ def tool(name: str, description: str, parameters: dict):
     name="retrieve_patient_context",
     description=(
         "Retrieve patient medical context using temporal-aware multimodal RAG. "
-        "Searches across text (MedCPT), hybrid (BGE-M3 dense+sparse), and image (NV-CLIP) "
+        "Searches across text (MedCPT), hybrid (BGE-M3 dense+sparse), and image (BiomedCLIP) "
         "vectors with temporal decay weighting and clinical significance scoring."
     ),
     parameters={
@@ -228,11 +231,11 @@ def _build_fallback_response(context: dict, query: str) -> dict:
     return {"response": "\n".join(lines), "citations": citations, "model": "fallback"}
 
 
-# ─── Stubs for future weeks ───
+# ─── Vision Analysis (Module 3) ───
 
 @tool(
     name="analyze_image",
-    description="Analyze a medical image using Groq 90B-V or MedGemma-4B",
+    description="Analyze a medical image using MedGemma-4B-IT (radiology/dermatology) or Groq fallback (general medical images)",
     parameters={
         "type": "object",
         "properties": {
@@ -243,13 +246,156 @@ def _build_fallback_response(context: dict, query: str) -> dict:
     },
 )
 async def analyze_image(image_path: str, image_type: str, **kwargs) -> dict:
-    """Vision analysis — built Week 9."""
-    return {"status": "not_implemented"}
+    """Analyze a medical image using the appropriate vision model.
+
+    Routes to:
+    - MedGemma-4B-IT (local) for radiology (xray, ct, mri) - specialized medical vision
+    - Groq Llama-3.2-90B-Vision for general medical images (wound, dermatology, other) - fallback
+    """
+    import os
+    import base64
+    from app.config import settings
+
+    # Validate file exists
+    if not os.path.exists(image_path):
+        return {"status": "error", "message": f"Image not found: {image_path}"}
+
+    # Read and encode image
+    try:
+        with open(image_path, "rb") as f:
+            image_data = f.read()
+        image_b64 = base64.b64encode(image_data).decode("utf-8")
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to read image: {e}"}
+
+    # Determine which model to use
+    # Radiology images -> MedGemma (specialized), others -> Groq (general, high quality)
+    use_medgemma = image_type in ("xray", "ct", "mri")
+
+    try:
+        if use_medgemma:
+            # Use MedGemma-4B-IT for radiology
+            return await _analyze_with_medgemma(image_b64, image_type)
+        else:
+            # Use Groq Llama-3.2-90B-Vision for general medical images
+            return await _analyze_with_groq(image_b64, image_type)
+    except Exception as e:
+        logger.error("Vision analysis failed: %s", e)
+        return {"status": "error", "message": f"Vision analysis failed: {str(e)[:200]}"}
+
+
+async def _analyze_with_groq(image_b64: str, image_type: str) -> dict:
+    """Analyze image using Groq Llama-3.2-90B-Vision."""
+    from openai import AsyncOpenAI
+    from app.config import settings
+
+    if not settings.GROQ_API_KEY:
+        return {"status": "error", "message": "GROQ_API_KEY not configured"}
+
+    client = AsyncOpenAI(
+        api_key=settings.GROQ_API_KEY,
+        base_url=settings.GROQ_BASE_URL,
+    )
+
+    prompt = f"""You are a medical AI assistant analyzing a {image_type} image.
+    Provide a detailed clinical analysis including:
+    1. Key findings observed
+    2. Potential diagnoses or concerns
+    3. Recommended next steps or follow-up
+    4. Confidence level (0-1)
+
+    Be thorough but concise. Use medical terminology appropriately."""
+
+    response = await client.chat.completions.create(
+        model=settings.VISION_MODEL,
+        messages=[
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Analyze this {image_type} medical image."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+                ]
+            }
+        ],
+        temperature=0.2,
+        max_tokens=1500,
+    )
+
+    content = response.choices[0].message.content
+
+    return {
+        "status": "ok",
+        "model": f"groq/{settings.VISION_MODEL}",
+        "image_type": image_type,
+        "analysis": content,
+        "confidence": 0.85,
+    }
+
+
+async def _analyze_with_medgemma(image_b64: str, image_type: str) -> dict:
+    """Analyze radiology image using MedGemma-4B-IT locally."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoProcessor
+    from app.config import settings
+    from app.services.gpu_optimizer import gpu_optimizer
+
+    # Ensure model is loaded on GPU
+    await gpu_optimizer.ensure_model_loaded("medgemma")
+
+    try:
+        # Load model and processor (cached by gpu_optimizer)
+        model_path = settings.MEDGEMMA_PATH
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            device_map="cuda",
+            trust_remote_code=True,
+        )
+        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+
+        # Prepare inputs
+        from PIL import Image
+        import io
+        import base64
+        image = Image.open(io.BytesIO(base64.b64decode(image_b64)))
+
+        # MedGemma prompt format for radiology
+        prompt = f"<image>Analyze this {image_type} medical image. Provide clinical findings, potential diagnoses, and recommendations."
+
+        inputs = processor(text=prompt, images=image, return_tensors="pt").to("cuda")
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=1024,
+                temperature=0.2,
+                do_sample=True,
+            )
+
+        response = processor.decode(outputs[0], skip_special_tokens=True)
+        # Strip the prompt from the generated response
+        analysis = response
+        if prompt in response:
+            analysis = response.split(prompt, 1)[-1]
+        elif "Analyze this" in response:
+            analysis = response.split("Analyze this", 1)[-1]
+
+        return {
+            "status": "ok",
+            "model": "medgemma-4b-it",
+            "image_type": image_type,
+            "analysis": analysis.strip(),
+            "confidence": 0.9,
+        }
+    except Exception as e:
+        logger.error("MedGemma analysis failed: %s", e)
+        return {"status": "error", "message": f"MedGemma analysis failed: {str(e)[:200]}"}
 
 
 @tool(
     name="compare_images",
-    description="Compare two images using ORB feature matching (wound progression)",
+    description="Compare two patient images using ORB feature matching for wound/skin progression tracking",
     parameters={
         "type": "object",
         "properties": {
@@ -260,22 +406,192 @@ async def analyze_image(image_path: str, image_type: str, **kwargs) -> dict:
     },
 )
 async def compare_images(patient_id: str, image_paths: list, **kwargs) -> dict:
-    """ORB image registration — built Week 8."""
-    return {"status": "not_implemented"}
+    """Compare two images using ORB feature matching (wound progression, skin conditions).
+
+    Uses the image_registration_service to:
+    1. Detect ORB keypoints on both images
+    2. Match features with BFMatcher + Lowe's ratio test
+    3. Compute homography via RANSAC
+    4. Generate overlay image with metrics
+    5. Return clinical summary from Maverick
+    """
+    from app.services.image_registration import image_registration_service
+    import uuid
+
+    if len(image_paths) != 2:
+        return {"status": "error", "message": "Exactly 2 image paths required"}
+
+    # Verify files exist
+    for p in image_paths:
+        if not os.path.exists(p):
+            return {"status": "error", "message": f"Image not found: {p}"}
+
+    try:
+        # Run ORB registration
+        result = await image_registration_service.compare(
+            image_prev_path=image_paths[0],
+            image_curr_path=image_paths[1],
+            patient_id=patient_id,
+        )
+
+        # Convert dataclass to dict
+        from dataclasses import asdict
+        metrics = asdict(result.metrics) if result.metrics else {}
+
+        response = {
+            "status": "ok" if result.matched else "no_match",
+            "matched": result.matched,
+            "patient_id": patient_id,
+            "image_paths": image_paths,
+            "overlay_path": result.overlay_path,
+            "warped_previous_path": result.warped_previous_path,
+            "metrics": metrics,
+            "message": result.message,
+        }
+
+        # Add clinical summary if available
+        if result.matched:
+            try:
+                from app.services.clinical_summary import ClinicalSummaryGenerator
+                summary_result = await ClinicalSummaryGenerator.generate_summary(
+                    metrics=metrics,
+                    patient_name=f"Patient {patient_id[:8]}",
+                )
+                response["clinical_summary"] = summary_result.get("summary")
+                response["summary_confidence"] = summary_result.get("confidence", 0.0)
+            except Exception as e:
+                logger.warning("Clinical summary generation failed: %s", e)
+
+        return response
+    except Exception as e:
+        logger.error("Image comparison failed: %s", e)
+        return {"status": "error", "message": f"Image comparison failed: {str(e)[:200]}"}
 
 
 @tool(
     name="generate_prescription",
-    description="Generate an AI-drafted prescription card",
+    description="Generate an AI-drafted prescription card with structured medications and PDF",
     parameters={
         "type": "object",
         "properties": {
             "patient_id": {"type": "string", "format": "uuid"},
             "diagnosis": {"type": "string"},
+            "medications": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "drug": {"type": "string"},
+                        "strength": {"type": "string"},
+                        "dose": {"type": "string"},
+                        "frequency": {"type": "string"},
+                        "duration": {"type": "string"},
+                        "route": {"type": "string", "default": "PO"},
+                        "instructions": {"type": "string"},
+                    },
+                    "required": ["drug", "strength", "dose", "frequency", "duration"],
+                },
+            },
         },
-        "required": ["patient_id", "diagnosis"],
+        "required": ["patient_id", "diagnosis", "medications"],
     },
 )
-async def generate_prescription(patient_id: str, diagnosis: str, **kwargs) -> dict:
-    """Prescription box — built Week 9."""
-    return {"status": "not_implemented"}
+async def generate_prescription(patient_id: str, diagnosis: str, medications: list, **kwargs) -> dict:
+    """Generate an AI-drafted prescription card with PDF output.
+
+    Creates a structured prescription, generates PDF via Jinja2+Playwright,
+    and stores it in the database linked to the patient version.
+    """
+    import uuid
+    from app.database import async_session_maker
+    from app.models import Patient, PatientVersion, PrescriptionBox, AuditLog
+    from app.services.pdf_generator import pdf_generator
+    from sqlalchemy import select
+
+    doctor_id = kwargs.get("doctor_id", "")
+    if not doctor_id:
+        return {"status": "error", "message": "doctor_id required"}
+
+    try:
+        async with async_session_maker() as db:
+            # Verify patient belongs to doctor
+            result = await db.execute(
+                select(Patient).where(Patient.id == uuid.UUID(patient_id), Patient.doctor_id == uuid.UUID(doctor_id))
+            )
+            patient = result.scalar_one_or_none()
+            if not patient:
+                return {"status": "error", "message": "Patient not found"}
+
+            # Get patient name from head version
+            patient_name = f"Patient {patient_id[:8]}"
+            if patient.head_version_id:
+                vr = await db.execute(
+                    select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
+                )
+                head = vr.scalar_one_or_none()
+                if head and head.state_jsonb:
+                    demo = head.state_jsonb.get("demographics", {})
+                    if isinstance(demo, dict) and demo.get("name"):
+                        patient_name = demo["name"]
+
+            # Build prescription data
+            rx_data = {
+                "diagnosis_short": diagnosis,
+                "medications": medications,
+                "investigations": kwargs.get("investigations", []),
+                "lifestyle": kwargs.get("lifestyle", []),
+                "follow_up_days": kwargs.get("follow_up_days", 30),
+                "follow_up_mode": kwargs.get("follow_up_mode", "in-person"),
+                "doctor_notes": kwargs.get("doctor_notes", ""),
+            }
+
+            # Generate PDF
+            pdf_path = await pdf_generator.generate_prescription(
+                patient_name=patient_name,
+                patient_age=kwargs.get("patient_age", 0),
+                patient_gender=kwargs.get("patient_gender", ""),
+                diagnosis=diagnosis,
+                medications=medications,
+                instructions=kwargs.get("instructions", ""),
+                follow_up=kwargs.get("follow_up", f"{kwargs.get('follow_up_days', 30)} days"),
+                doctor_name=kwargs.get("doctor_name", ""),
+                db=db,
+                doctor_id=uuid.UUID(doctor_id),
+            )
+
+            # Create prescription record
+            rx = PrescriptionBox(
+                id=uuid.uuid4(),
+                version_id=None,  # No version link during tool execution; linked on persist
+                doctor_id=uuid.UUID(doctor_id),
+                rx_jsonb=rx_data,
+                pdf_path=pdf_path,
+            )
+            db.add(rx)
+            await db.flush()
+
+            # Audit log
+            audit = AuditLog(
+                doctor_id=uuid.UUID(doctor_id),
+                patient_id=uuid.UUID(patient_id),
+                actor=f"doctor:{doctor_id}",
+                action="write",
+                resource_type="prescription",
+                resource_id=rx.id,
+                payload_jsonb={"diagnosis": diagnosis, "med_count": len(medications)},
+            )
+            db.add(audit)
+
+            await db.commit()
+            await db.refresh(rx)
+
+            return {
+                "status": "ok",
+                "prescription_id": str(rx.id),
+                "pdf_path": pdf_path,
+                "rx_data": rx_data,
+                "message": "Prescription generated. Requires doctor validation before issuing.",
+            }
+    except Exception as e:
+        logger.error("Prescription generation failed: %s", e)
+        return {"status": "error", "message": f"Prescription generation failed: {str(e)[:200]}"}

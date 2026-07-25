@@ -37,7 +37,7 @@ Every technology choice was evaluated against:
 | **TTS** | Indic-Parler-TTS | Latest | Apache 2.0 | English + Hindi in one model; 880MB on GPU |
 | **Medical Embeddings** | MedCPT (ncbi) | 768d | MIT | Purpose-built for clinical text retrieval |
 | **Hybrid Embeddings** | BGE-M3 (BAAI) | 1024d | MIT | Dense + sparse + multi-vector; Hindi support |
-| **Image Embeddings** | NV-CLIP | 512d | NIM free | Free via NVIDIA NIM |
+| **Image Embeddings** | BiomedCLIP | 512d | MIT | Runs locally; free, no API needed; SOTA medical image-text |
 | **Vector Database** | Qdrant | 1.12+ | Apache 2.0 | Named vectors; hybrid dense+sparse; payload filtering |
 | **Relational Database** | PostgreSQL | 16 | PostgreSQL | RLS, pgcrypto, PostGIS; mature and reliable |
 | **Cache/Queue** | Redis | 7+ | BSD | arq queue + caching + rate limiting tracking |
@@ -45,11 +45,12 @@ Every technology choice was evaluated against:
 | **Reverse Proxy** | Caddy | 2+ | Apache 2.0 | Auto HTTPS; simple config; Let's Encrypt integration |
 | **OCR (Typed)** | Docling (IBM) | Latest | Apache 2.0 | Table preservation; reading order; Hindi support |
 | **OCR (Scanned)** | Surya | Latest | MIT | Multilingual; layout-aware |
-| **OCR (Handwritten)** | GOT-OCR 2.0 | Latest | MIT | Strong general OCR; transformer-based |
+| **OCR (Handwritten)** | Nanonets-OCR2-1.5B-exp | Latest | Apache 2.0 | SOTA handwritten/printed OCR; free; better than GOT-OCR |
 | **PDF Generation** | Jinja2 + Playwright | Latest | MIT | HTML→PDF with full CSS support; ECharts SVGs |
 | **Image Processing** | OpenCV (ORB) | 4.9+ | Apache 2.0 | Feature matching; homography; free |
 | **Free Maps** | Leaflet.js + OpenStreetMap | Latest | BSD | No API key required; free tile layer |
-| **Authentication** | Google OAuth + JWT | — | — | Widely adopted; no SMS costs |
+| **Authentication (Doctor)** | Google OAuth + JWT + Email/Password (bcrypt) | — | — | Dual auth; no SMS costs; self-registration |
+| **Authentication (Patient)** | OTP via SHA256 phone_hash | — | — | Cross-tenant identity; no password to remember |
 | **Deployment** | Docker Compose | Latest | Apache 2.0 | Reproducible; Oracle Cloud Free Tier compatible |
 
 ---
@@ -61,11 +62,11 @@ Every technology choice was evaluated against:
 | MedGemma-4B-IT (Q4) | ~3 GB | GPU; loaded on demand |
 | faster-whisper large-v3 | ~2 GB | GPU; swapped with MedGemma |
 | Indic-Parler-TTS | ~2 GB | GPU; swapped with Whisper |
+| BiomedCLIP | ~1 GB | GPU; small, can stay loaded |
 | MedCPT + BGE-M3 | ~0 GB | CPU only (sufficient) |
-| NV-CLIP | API call | NIM; no GPU needed |
 
 **Total RTX 3050 VRAM:** 4-6 GB
-**Strategy:** Only one model on GPU at a time. Orchestrator swaps based on incoming request type.
+**Strategy:** Only one large model on GPU at a time. Orchestrator swaps based on incoming request type. BiomedCLIP is small enough to co-reside.
 
 ---
 
@@ -81,3 +82,6 @@ Every technology choice was evaluated against:
 | Redis Queue (RQ) | arq | arq is async-native |
 | LangChain | LangGraph | LangGraph gives graph-based agent control |
 | traditional RAG | Temporal RAG | No temporal awareness; future data leaks |
+| Google Maps API | OpenStreetMap + Leaflet.js | Google Maps costs $200+/month; OSM is free |
+| Practo (paid) | SoloPrac (free) | Practo charges ₹2000-5000/month; SoloPrac is free + open source |
+| Single-tenant Patient | Cross-Clinic User Model | Others bind patient to one doctor; OTP flow creates shareable identity |

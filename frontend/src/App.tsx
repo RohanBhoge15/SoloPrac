@@ -17,6 +17,7 @@ import { PatientReports } from '@/pages/PatientReports'
 import { WeeklyReport } from '@/pages/WeeklyReport'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { useEffect } from 'react'
+import { ToastProvider } from '@/components/ui/Toast'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -64,6 +65,61 @@ function AppRoutes() {
 
   return (
     <Routes>
+      {/* ── Patient portal (/patient/*) ── */}
+      <Route path="/patient/login" element={<PatientLogin />} />
+      <Route element={<PatientLayout />}>
+        <Route
+          path="/patient/dashboard"
+          element={
+            <PatientProtectedRoute>
+              <PatientDashboard />
+            </PatientProtectedRoute>
+          }
+        />
+        <Route
+          path="/patient/search"
+          element={
+            <PatientProtectedRoute>
+              <DoctorSearch />
+            </PatientProtectedRoute>
+          }
+        />
+        <Route
+          path="/patient/appointments"
+          element={
+            <PatientProtectedRoute>
+              <PatientAppointments />
+            </PatientProtectedRoute>
+          }
+        />
+        <Route
+          path="/patient/inbox"
+          element={
+            <PatientProtectedRoute>
+              <PatientInbox />
+            </PatientProtectedRoute>
+          }
+        />
+        <Route
+          path="/patient/reports"
+          element={
+            <PatientProtectedRoute>
+              <PatientReports />
+            </PatientProtectedRoute>
+          }
+        />
+        <Route
+          path="/patient/weekly-report"
+          element={
+            <PatientProtectedRoute>
+              <WeeklyReport />
+            </PatientProtectedRoute>
+          }
+        />
+      </Route>
+      <Route path="/patient/*" element={<Navigate to="/patient/login" replace />} />
+
+      {/* ── Doctor app ── */}
       <Route path="/login" element={!user ? <Login /> : <Navigate to="/dashboard" replace />} />
       <Route
         element={
@@ -86,72 +142,12 @@ function AppRoutes() {
   )
 }
 
-function PatientRoutes() {
-  return (
-    <Routes>
-      <Route path="/patient/login" element={<PatientLogin />} />
-      <Route element={<PatientLayout />}>
-        <Route
-          element={
-            <PatientProtectedRoute>
-              <PatientDashboard />
-            </PatientProtectedRoute>
-          }
-          path="/patient/dashboard"
-        />
-        <Route
-          element={
-            <PatientProtectedRoute>
-              <DoctorSearch />
-            </PatientProtectedRoute>
-          }
-          path="/patient/search"
-        />
-        <Route
-          element={
-            <PatientProtectedRoute>
-              <PatientAppointments />
-            </PatientProtectedRoute>
-          }
-          path="/patient/appointments"
-        />
-        <Route
-          element={
-            <PatientProtectedRoute>
-              <PatientInbox />
-            </PatientProtectedRoute>
-          }
-          path="/patient/inbox"
-        />
-        <Route
-          element={
-            <PatientProtectedRoute>
-              <PatientReports />
-            </PatientProtectedRoute>
-          }
-          path="/patient/reports"
-        />
-        <Route
-          element={
-            <PatientProtectedRoute>
-              <WeeklyReport />
-            </PatientProtectedRoute>
-          }
-          path="/patient/weekly-report"
-        />
-      </Route>
-      <Route path="/patient/*" element={<Navigate to="/patient/login" replace />} />
-    </Routes>
-  )
-}
-
 export default function App() {
   return (
-    <AuthProvider>
-      <Routes>
-        <Route element={<AppRoutes />} />
-        <Route element={<PatientRoutes />} />
-      </Routes>
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
+    </ToastProvider>
   )
 }

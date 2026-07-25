@@ -21,7 +21,7 @@ The entry point for all user queries. A lightweight LLM that classifies intent a
 ```
 patient_qa       → RAG retrieval + synthesis
 image_analysis   → Vision model (Groq 90B-V or MedGemma-4B)
-document_parse   → OCR pipeline (Docling/Surya/GOT-OCR)
+document_parse   → OCR pipeline (Docling/Surya/Nanonets-OCR2)
 scheduling       → Calendar subgraph (9 tools)
 prescription     → JSON Schema + PDF generation
 invoice          → Billing → PDF
@@ -48,7 +48,7 @@ Executes temporal-aware multimodal retrieval from Qdrant. Implements the formal 
 ```python
 score(v, q, t_q) = alpha * cos(MedCPT(q), v.medical_text)
                   + beta  * hybrid_bm25_dense(BGE-M3(q), v.hybrid, v.sparse)
-                  + gamma * cos(NVCLIP(q_img), v.image)  # if query has image
+                  + gamma * cos(BiomedCLIP(q_img), v.image)  # if query has image
                   + delta * temporal_decay(t_q - v.timestamp)
                   + epsilon * clinical_significance(v)
 ```
@@ -66,15 +66,15 @@ Generates the final response grounded in retrieved context. Uses structured outp
 ```
 
 ### 3.4 Vision Analysis Node
-Routes to either Groq Llama-3.2-90B-Vision (general images) or MedGemma-4B (radiology/dermatology) based on image type classification.
+Routes to MedGemma-4B-IT (local) for radiology/dermatology or Groq fallback for general medical images.
 
 ### 3.5 Document Processor Node
-Multi-stage pipeline: file type detection → parser selection (Docling/Surya/GOT-OCR) → text extraction → schema alignment (Feature D) → structured patient data.
+Multi-stage pipeline: file type detection → parser selection (Docling/Surya/Nanonets-OCR2) → text extraction → schema alignment (Feature D) → structured patient data.
 
 ### 3.6 Image Registration Node
 OpenCV ORB feature matching pipeline:
 1. Detect ORB keypoints on new image
-2. Search patient's prior images by NV-CLIP similarity
+2. Search patient's prior images by BiomedCLIP similarity
 3. Match features via BFMatcher + Lowe's ratio test
 4. Compute homography via RANSAC
 5. Generate overlay image
@@ -96,14 +96,30 @@ TOOLS = [
 ]
 ```
 
-### 3.8 Voice Flow
+### 3.8 Voice Scheduling Flow (Hindi + English)
 ```
 [Mic] → faster-whisper/IndicWhisper → [Transcript]
-  → Maverick intent: scheduling only
+  → Maverick intent: scheduling only (5 locked commands)
   → Tool execution (parallel where independent)
   → Approval card to doctor UI
   → Confirm → arq emails → audit log → Indic-Parler-TTS confirmation
 ```
+
+**Five Locked Voice Commands:**
+1. *"Book Priya Sharma for Thursday 3 PM, fever follow-up."*
+2. *"I'm off Friday and Saturday — handle it."* → blocks calendar, smart-rearranges, drafts emails
+3. *"When am I free 30 minutes next week before lunch?"* → top-3 ranked slots
+4. *"Move all diabetic follow-ups due this month to morning slots."* → NL filter → bulk reschedule
+5. *"Cancel Mrs. Patel's Wednesday appointment, she just called."*
+
+**Scope is voice-only-for-scheduling.** All other voice queries politely redirected.
+
+### 3.9 India-Specific Voice Stack
+| Component | Model | Language |
+|-----------|-------|----------|
+| ASR (English) | faster-whisper large-v3 (CTranslate2) | English |
+| ASR (Hindi) | AI4Bharat IndicWhisper | Hindi |
+| TTS (Hindi+English) | Indic-Parler-TTS | Hindi + English |
 
 ---
 
@@ -120,6 +136,9 @@ class AgentState(TypedDict):
     pending_proposals: list     # AI suggestions awaiting approval
     error_count: int
     trace_events: list          # streaming status updates
+    # India-specific
+    voice_language: Literal["en", "hi"] = "en"
+    scheduling_intent: dict | None  # parsed voice intent
 ```
 
 ---

@@ -66,7 +66,7 @@ export function ImageComparison({ patientId, onSaveToRecord }: ImageComparisonPr
       formData.append('file', selectedFile)
 
       const response = await apiClient.post(
-        `/api/v1/patients/${patientId}/images/compare`,
+        `/patients/${patientId}/images/compare`,
         formData,
         { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 }
       )
@@ -82,7 +82,7 @@ export function ImageComparison({ patientId, onSaveToRecord }: ImageComparisonPr
     if (!result?.comparison_id) return
     setSaving(true)
     try {
-      await apiClient.post(`/api/v1/patients/${patientId}/images/comparisons/${result.comparison_id}/save-to-record`)
+      await apiClient.post(`/patients/${patientId}/images/comparisons/${result.comparison_id}/save-to-record`)
       setSaved(true)
       onSaveToRecord?.(result.comparison_id)
     } catch {

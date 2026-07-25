@@ -6,7 +6,7 @@ flowchart TB
         TXT["User Text Query"]
         IMG["Medical Image Upload"]
         DOC["Document Upload"]
-        VOICE_IN["Voice Command"]
+        VOICE_IN["Voice Command<br/>Hindi + English"]
     end
 
     subgraph Router["Intent Router (Llama-3.1-8B)"]
@@ -25,16 +25,24 @@ flowchart TB
     end
 
     subgraph Tools["Tool Layer"]
-        RAG["RAG Patient Context<br/>Qdrant Hybrid Search"]
-        VISION["Vision Analysis<br/>Groq 90B / MedGemma"]
-        DOCP["Document Processor<br/>Docling / Surya / GOT-OCR"]
-        SCHED["Calendar Tools<br/>9 LangGraph Tools"]
+        RAG["RAG Patient Context<br/>Qdrant Hybrid + Temporal Decay"]
+        VISION["Vision Analysis<br/>Groq 90B-V / MedGemma-4B"]
+        DOCP["Document Processor<br/>Docling / Surya / Nanonets-OCR2"]
+        SCHED["Calendar Subgraph<br/>9 LangGraph Tools<br/>Voice Scheduling"]
         PRESC["Prescription Generator<br/>JSON Schema + Playwright"]
         INVC["Invoice Generator<br/>Jinja2 + Playwright"]
-        CERT["Certificate Generator<br/>Type Templates + QR"]
+        CERT["Certificate Generator<br/>Type Templates + QR<br/>Shows Dr. Verification"]
         IMGC["Image Comparator<br/>ORB + Homography + Overlay"]
-        WREP["Weekly Report<br/>ECharts + Playwright"]
+        WREP["Weekly Report<br/>Significance Filter + ECharts"]
         CHAT["General Chat<br/>Maverick Synthesis"]
+    end
+
+    subgraph India["India-Specific Stack"]
+        ASR_H["ASR (Hindi)<br/>IndicWhisper"]
+        ASR_E["ASR (English)<br/>faster-whisper"]
+        TTS["TTS (Hi+En)<br/>Indic-Parler-TTS"]
+        MAP["Free Maps<br/>Leaflet + OSM"]
+        DRUG["Drug DB<br/>CDSCO/Jan Aushadhi"]
     end
 
     subgraph Synth["Synthesis Layer (Maverick)"]
@@ -43,19 +51,22 @@ flowchart TB
     end
 
     subgraph Output["Output Layer"]
-        UI_TEXT["Chat Response"]
+        UI_TEXT["Chat Response<br/>with Version Citations"]
         UI_RX["Prescription Box"]
         PDF["PDF Document<br/>Rx/Invoice/Certificate"]
         UI_IMG["Image Comparison<br/>3-Panel Overlay"]
         UI_CAL["Calendar Update"]
-        TTS["Voice Confirmation<br/>Indic-Parler-TTS"]
+        TTS_OUT["Voice Confirmation<br/>Indic-Parler-TTS"]
         AUDIT["Audit Log"]
     end
 
     TXT --> Router
     IMG --> Router
     DOC --> Router
-    VOICE_IN --> SCHED
+    VOICE_IN --> ASR_H
+    VOICE_IN --> ASR_E
+    ASR_H --> SCHED
+    ASR_E --> SCHED
 
     RAG --> Synth
     VISION --> Synth
@@ -74,17 +85,21 @@ flowchart TB
     SSE --> PDF
     SSE --> UI_IMG
     SSE --> UI_CAL
-    SSE --> TTS
+    SSE --> TTS_OUT
     SSE --> AUDIT
+    SCHED --> MAP
+    SCHED --> DRUG
 
     classDef input fill:#e3f2fd,stroke:#1565c0,color:#000
     classDef router fill:#fff3e0,stroke:#e65100,color:#000
     classDef tools fill:#e8f5e9,stroke:#2e7d32,color:#000
+    classDef india fill:#fff9c4,stroke:#f9a825,color:#000
     classDef synth fill:#fce4ec,stroke:#c62828,color:#000
     classDef output fill:#f3e5f5,stroke:#6a1b9a,color:#000
 
     class TXT,IMG,DOC,VOICE_IN input
     class CLF,Router router
     class RAG,VISION,DOCP,SCHED,PRESC,INVC,CERT,IMGC,WREP,CHAT tools
+    class ASR_H,ASR_E,TTS,MAP,DRUG india
     class RESP,SSE synth
-    class UI_TEXT,UI_RX,PDF,UI_IMG,UI_CAL,TTS,AUDIT output
+    class UI_TEXT,UI_RX,PDF,UI_IMG,UI_CAL,TTS_OUT,AUDIT output

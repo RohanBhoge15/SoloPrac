@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
 import { Badge } from '@/components/ui/Badge'
 import { Plus, X, Printer, Download, FileText, Loader2, AlertCircle, Pill } from 'lucide-react'
+import apiClient from '@/services/api'
 
 interface Medication {
   drug: string
@@ -66,24 +67,18 @@ export function PrescriptionBox({
     setResult(null)
 
     try {
-      const response = await fetch(`/api/v1/patients/${patientId}/prescriptions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('access_token')}` },
-        body: JSON.stringify({
-          patient_name: patientName,
-          patient_age: patientAge,
-          patient_gender: patientGender,
-          diagnosis,
-          medications: medications.filter(m => m.drug.trim()),
-          instructions,
-          follow_up: followUp,
-        }),
+      const response = await apiClient.post(`/patients/${patientId}/prescriptions`, {
+        patient_name: patientName,
+        patient_age: patientAge,
+        patient_gender: patientGender,
+        diagnosis,
+        medications: medications.filter(m => m.drug.trim()),
+        instructions,
+        follow_up: followUp,
       })
-      if (!response.ok) throw new Error('Failed to create prescription')
-      const data = await response.json()
-      setResult(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Generation failed')
+      setResult(response.data)
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'Failed to create prescription')
     } finally {
       setGenerating(false)
     }

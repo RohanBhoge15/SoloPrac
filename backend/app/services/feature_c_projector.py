@@ -4,7 +4,7 @@ Trains W: ℝ^512 → ℝ^1024 using InfoNCE loss on CheXpert image–report pai
 (caption–image alignment) plus curated wound photo–summary pairs from
 the image registration feature.
 
-The projector maps NV-CLIP image embeddings (512d) into BGE-M3 text space
+The projector maps BiomedCLIP image embeddings (512d) into BGE-M3 text space
 (1024d) so that cross-modal search works without a second collection.
 
 Usage:
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -80,7 +81,7 @@ def _cross_entropy(logits: np.ndarray, labels: np.ndarray) -> float:
 @dataclass
 class ProjectorConfig:
     """Training configuration for the linear projector."""
-    input_dim: int = 512       # NV-CLIP dimension
+    input_dim: int = 512       # BiomedCLIP dimension
     output_dim: int = 1024     # BGE-M3 dimension
     learning_rate: float = 0.01
     num_epochs: int = 50
@@ -105,7 +106,7 @@ class ProjectorTrainer:
         Uses simple SGD (no autograd needed — we implement gradient manually).
 
         Args:
-            image_embeddings: NV-CLIP image embeddings, shape (N, 512)
+            image_embeddings: BiomedCLIP image embeddings, shape (N, 512)
             text_embeddings: BGE-M3 text embeddings, shape (N, 1024)
 
         Returns:
@@ -201,7 +202,7 @@ class ProjectorTrainer:
         """Project image embeddings to text space.
 
         Args:
-            image_embeddings: (N, 512) NV-CLIP embeddings
+            image_embeddings: (N, 512) BiomedCLIP embeddings
             W: (1024, 512) trained weight matrix
 
         Returns:
@@ -282,7 +283,7 @@ def generate_chexpert_pairs(
     """Generate CheXpert image–report pairs.
 
     This function prepares the dataset structure. In production, this reads
-    the actual CheXpert dataset and computes embeddings via NV-CLIP and BGE-M3.
+    the actual CheXpert dataset and computes embeddings via BiomedCLIP and BGE-M3.
 
     The stub returns synthetic data with realistic dimensions.
 
@@ -296,13 +297,36 @@ def generate_chexpert_pairs(
     """
     # In production, this would:
     # 1. Load CheXpert images from image_dir
-    # 2. Run NV-CLIP encode on each image
+    # 2. Run BiomedCLIP encode on each image
     # 3. Load corresponding reports
-    # 4. Run BGE-M3 encode on each report
-    # 5. Return aligned pairs
+    # 4. Run BGE-M3 encode on reports
+    # For now, return synthetic
+    return generate_synthetic_pairs(num_pairs=max_pairs, seed=123)
 
-    # For now, generate synthetic pairs with realistic dimensions
-    return generate_synthetic_pairs(num_pairs=max_pairs, seed=42)
+
+# ─── Persistence Helpers ──────────────────────────────────
+
+PROJECTOR_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "uploads", "projector_weights.npy"
+)
+
+
+def save_projector(W: np.ndarray) -> str:
+    """Save trained projector matrix to disk."""
+    os.makedirs(os.path.dirname(PROJECTOR_PATH), exist_ok=True)
+    np.save(PROJECTOR_PATH, W)
+    logger.info("Saved projector matrix to %s (shape=%s)", PROJECTOR_PATH, W.shape)
+    return PROJECTOR_PATH
+
+
+def load_projector() -> Optional[np.ndarray]:
+    """Load projector matrix from disk if available."""
+    if os.path.exists(PROJECTOR_PATH):
+        W = np.load(PROJECTOR_PATH)
+        logger.info("Loaded projector matrix from %s (shape=%s)", PROJECTOR_PATH, W.shape)
+        return W
+    return None
 
 
 def generate_wound_pairs(
@@ -320,7 +344,7 @@ def generate_wound_pairs(
         (image_embeddings, text_embeddings) numpy arrays.
     """
     # In production, this reads from the image_comparisons table
-    # and uses stored NV-CLIP embeddings + Maverick clinical summaries
+    # and uses stored BiomedCLIP embeddings + Maverick clinical summaries
 
     # For now, return synthetic data
     return generate_synthetic_pairs(num_pairs=100, seed=7)

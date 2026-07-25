@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Router Auth Audit ────────────────────────────────────
 
-REQUIRED_AUTH_DEPS = {"get_current_doctor", "get_current_patient"}
+REQUIRED_AUTH_DEPS = {"get_current_doctor", "get_current_user"}
 
 # Paths that should NOT require auth (public endpoints)
 PUBLIC_PATHS = {

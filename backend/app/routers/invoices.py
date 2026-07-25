@@ -24,6 +24,7 @@ from app.database import get_db
 from app.dependencies import get_current_doctor
 from app.models import Doctor, Patient, Invoice, AuditLog
 from app.services.pdf_generator import pdf_generator
+from app.services.notification_generator import generate_and_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ async def create_invoice(
     # Generate invoice number
     invoice_number = _generate_invoice_number()
 
-    # Generate PDF
+    # Generate PDF with dynamic clinic branding
     try:
         pdf_path = await pdf_generator.generate_invoice(
             patient_name=body.get("patient_name", "Patient"),
@@ -73,6 +74,8 @@ async def create_invoice(
             total=total,
             status=status_val,
             notes=notes,
+            db=db,
+            doctor_id=doctor.id,
         )
     except Exception as exc:
         logger.error("PDF generation failed: %s", exc)
@@ -98,18 +101,46 @@ async def create_invoice(
     await db.commit()
     await db.refresh(inv)
 
-    # Audit log
+    # Audit log (non-blocking, use separate session to avoid rollback conflicts)
     try:
-        audit = AuditLog(
-            doctor_id=doctor.id, patient_id=patient.id,
-            actor=f"doctor:{doctor.id}", action="write",
-            resource_type="invoice", resource_id=inv.id,
-            payload_jsonb={"invoice_number": invoice_number, "total": total},
-        )
-        db.add(audit)
-        await db.commit()
+        from app.database import async_session_maker as _audit_session_maker
+        async with _audit_session_maker() as audit_db:
+            from app.database import _current_doctor_id
+            from sqlalchemy import text
+            did = str(doctor.id)
+            await audit_db.execute(
+                text("SELECT set_config('app.current_doctor_id', :did, true)"),
+                {"did": did},
+            )
+            audit = AuditLog(
+                doctor_id=doctor.id, patient_id=patient.id,
+                actor=f"doctor:{doctor.id}", action="write",
+                resource_type="invoice", resource_id=inv.id,
+                payload_jsonb={"invoice_number": invoice_number, "total": total},
+            )
+            audit_db.add(audit)
+            await audit_db.commit()
     except Exception:
-        await db.rollback()
+        pass
+
+    # ── AI Notification to patient ──
+    try:
+        await generate_and_dispatch(
+            db,
+            event_type="invoice_generated",
+            patient_id=patient.id,
+            doctor_id=doctor.id,
+            meta={
+                "resource_type": "invoice",
+                "resource_id": str(inv.id),
+                "pdf_url": f"/api/v1/invoices/{inv.id}/pdf" if pdf_path else None,
+            },
+            patient_name=body.get("patient_name", "Patient"),
+            amount=f"₹{total/100:.2f}",
+            invoice_number=invoice_number,
+        )
+    except Exception as exc:
+        logger.warning("Invoice notification dispatch failed: %s", exc)
 
     return {
         "id": str(inv.id),

@@ -191,12 +191,92 @@ def generate_100_query_set() -> List[Dict[str, Any]]:
     return queries[:100]
 
 
+class FixedPipelineAgent:
+    """Fixed pipeline baseline — non-adaptive, always executes the same steps.
+
+    No routing, no planning, no re-planning, no critic.
+    Always: retrieve context → synthesize response (2 steps).
+    This serves as the non-adaptive baseline for Feature B comparison.
+    """
+
+    def __init__(self):
+        self._initialized = False
+        self._retrieve_fn = None
+        self._synthesize_fn = None
+
+    async def _ensure_initialized(self):
+        if self._initialized:
+            return
+        try:
+            from app.agents.tools import retrieve_patient_context, synthesize_response
+            self._retrieve_fn = retrieve_patient_context
+            self._synthesize_fn = synthesize_response
+            self._initialized = True
+        except ImportError as exc:
+            logger.warning("FixedPipelineAgent: tools unavailable (%s)", exc)
+
+    async def run(
+        self,
+        query: str,
+        doctor_id: UUID,
+        patient_id: Optional[UUID] = None,
+    ) -> Dict[str, Any]:
+        """Run the fixed 2-step pipeline: retrieve → synthesize."""
+        start = time.time()
+        steps = 0
+        errors = 0
+        response_text = ""
+
+        await self._ensure_initialized()
+
+        # Step 1: Retrieve patient context
+        try:
+            if self._retrieve_fn:
+                context = await self._retrieve_fn(
+                    query=query, doctor_id=doctor_id, patient_id=patient_id
+                )
+                steps += 1
+            else:
+                errors += 1
+        except Exception as exc:
+            logger.warning("Fixed pipeline retrieve failed: %s", exc)
+            errors += 1
+            context = None
+
+        # Step 2: Synthesize response
+        try:
+            if self._synthesize_fn and context is not None:
+                response_text = await self._synthesize_fn(
+                    query=query, context=context, doctor_id=doctor_id
+                )
+                steps += 1
+            else:
+                errors += 1
+        except Exception as exc:
+            logger.warning("Fixed pipeline synthesize failed: %s", exc)
+            errors += 1
+
+        took_ms = (time.time() - start) * 1000
+
+        return {
+            "response": str(response_text)[:200] if response_text else "",
+            "took_ms": round(took_ms, 1),
+            "execution_steps": steps,
+            "plan_attempts": 0,
+            "critic_decisions": 0,
+            "replan_count": 0,
+            "errors": errors,
+            "success": errors == 0 and steps > 0,
+        }
+
+
 class FeatureBEvaluator:
     """Evaluate Feature B self-planning agent vs fixed pipeline baseline."""
 
     def __init__(self):
         self.agent = AgentGraph()
         self.planner = SelfPlanner()
+        self.fixed_pipeline = FixedPipelineAgent()
 
     async def run_single_query(
         self,
@@ -253,35 +333,74 @@ class FeatureBEvaluator:
     ) -> Dict[str, Any]:
         """Run full evaluation on the 100-query set.
 
+        Runs both self-planning and fixed-pipeline arms for comparison.
+
         Returns:
             {
                 "self_planning": {...metrics...},
+                "fixed_pipeline": {...metrics...},
                 "overall": {...summary...},
                 "per_intent": {...breakdown by intent...},
                 "per_query": [...],
             }
         """
         queries = generate_100_query_set()
-        logger.info("Feature B eval: %d queries", len(queries))
+        logger.info("Feature B eval: %d queries across both arms", len(queries))
 
-        all_results = []
+        sp_results = []
+        fp_results = []
+
         for q in queries:
             logger.info("Query %d/%d: %s (%s)", q["id"], len(queries), q["query"][:60], q["intent"])
-            result = await self.run_single_query(
+
+            # Self-planning arm
+            sp_result = await self.run_single_query(
                 query=q["query"],
                 doctor_id=doctor_id,
                 patient_id=patient_id,
                 use_self_planning=True,
             )
-            result["query_id"] = q["id"]
-            result["query"] = q["query"]
-            result["intent"] = q["intent"]
-            all_results.append(result)
+            sp_result["query_id"] = q["id"]
+            sp_result["query"] = q["query"]
+            sp_result["intent"] = q["intent"]
+            sp_results.append(sp_result)
 
-        # Per-intent aggregation
+            # Fixed-pipeline arm
+            fp_result = await self.fixed_pipeline.run(
+                query=q["query"],
+                doctor_id=doctor_id,
+                patient_id=patient_id,
+            )
+            fp_result["query_id"] = q["id"]
+            fp_result["query"] = q["query"]
+            fp_result["intent"] = q["intent"]
+            fp_results.append(fp_result)
+
+        def _aggregate(results: List[Dict]) -> Dict[str, Any]:
+            steps_all = [r["execution_steps"] for r in results]
+            replans_all = [r["replan_count"] for r in results]
+            times_all = [r["took_ms"] for r in results]
+            success_count = sum(1 for r in results if r["success"])
+            n = len(results)
+            return {
+                "total_queries": n,
+                "success_rate": round(success_count / n * 100, 1) if n else 0,
+                "avg_steps_to_resolution": round(statistics.mean(steps_all), 1) if steps_all else 0,
+                "median_steps": round(statistics.median(steps_all), 1) if steps_all else 0,
+                "max_steps": max(steps_all) if steps_all else 0,
+                "min_steps": min(steps_all) if steps_all else 0,
+                "avg_replan_count": round(statistics.mean(replans_all), 1) if replans_all else 0,
+                "queries_requiring_replan": sum(1 for r in results if r["replan_count"] > 0),
+                "avg_latency_ms": round(statistics.mean(times_all), 1) if times_all else 0,
+                "p95_latency_ms": round(
+                    sorted(times_all)[int(len(times_all) * 0.95)], 1
+                ) if times_all else 0,
+            }
+
+        # Per-intent aggregation (self-planning)
         per_intent = {}
         for intent in set(q["intent"] for q in queries):
-            intent_results = [r for r in all_results if r["intent"] == intent]
+            intent_results = [r for r in sp_results if r["intent"] == intent]
             per_intent[intent] = {
                 "count": len(intent_results),
                 "avg_steps": round(
@@ -298,36 +417,40 @@ class FeatureBEvaluator:
                 ) if intent_results else 0,
             }
 
-        # Overall metrics
-        steps_all = [r["execution_steps"] for r in all_results]
-        replans_all = [r["replan_count"] for r in all_results]
-        times_all = [r["took_ms"] for r in all_results]
-        success_count = sum(1 for r in all_results if r["success"])
-
+        # Overall metrics for both arms
         report = {
-            "self_planning": {
-                "total_queries": len(all_results),
-                "success_rate": round(success_count / len(all_results) * 100, 1) if all_results else 0,
-                "avg_steps_to_resolution": round(statistics.mean(steps_all), 1) if steps_all else 0,
-                "median_steps": round(statistics.median(steps_all), 1) if steps_all else 0,
-                "max_steps": max(steps_all) if steps_all else 0,
-                "min_steps": min(steps_all) if steps_all else 0,
-                "avg_replan_count": round(statistics.mean(replans_all), 1) if replans_all else 0,
-                "queries_requiring_replan": sum(1 for r in all_results if r["replan_count"] > 0),
-                "avg_latency_ms": round(statistics.mean(times_all), 1) if times_all else 0,
-                "p95_latency_ms": round(
-                    sorted(times_all)[int(len(times_all) * 0.95)], 1
-                ) if times_all else 0,
+            "self_planning": _aggregate(sp_results),
+            "fixed_pipeline": _aggregate(fp_results),
+            "comparison": {
+                "steps_reduction_pct": round(
+                    (1 - (
+                        statistics.mean([r["execution_steps"] for r in sp_results]) /
+                        statistics.mean([r["execution_steps"] for r in fp_results])
+                    )) * 100, 1
+                ) if sp_results and fp_results and statistics.mean([r["execution_steps"] for r in fp_results]) > 0 else None,
+                "success_rate_delta_pp": round(
+                    (
+                        sum(1 for r in sp_results if r["success"]) / len(sp_results) -
+                        sum(1 for r in fp_results if r["success"]) / len(fp_results)
+                    ) * 100, 1
+                ) if sp_results and fp_results else None,
+                "latency_reduction_pct": round(
+                    (1 - (
+                        statistics.mean([r["took_ms"] for r in sp_results]) /
+                        statistics.mean([r["took_ms"] for r in fp_results])
+                    )) * 100, 1
+                ) if sp_results and fp_results and statistics.mean([r["took_ms"] for r in fp_results]) > 0 else None,
             },
             "per_intent": per_intent,
             "evaluated_at": datetime.now(timezone.utc).isoformat(),
         }
 
         logger.info(
-            "Feature B eval complete: success=%.1f%% avg_steps=%.1f avg_replan=%.1f",
+            "Feature B eval complete: SP success=%.1f%% steps=%.1f | FP success=%.1f%% steps=%.1f",
             report["self_planning"]["success_rate"],
             report["self_planning"]["avg_steps_to_resolution"],
-            report["self_planning"]["avg_replan_count"],
+            report["fixed_pipeline"]["success_rate"],
+            report["fixed_pipeline"]["avg_steps_to_resolution"],
         )
 
         return report

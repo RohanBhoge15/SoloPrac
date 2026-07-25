@@ -45,9 +45,22 @@ Remember: "AI Suggestion — Requires Doctor Validation."
 
 
 class MaverickSynthesizer:
-    """Synthesizer using Llama-4 Maverick via NVIDIA NIM."""
+    """Singleton synthesizer using Llama-4 Maverick via NVIDIA NIM.
+
+    Use get_instance() to get the shared singleton.
+    """
+    _instance: Optional["MaverickSynthesizer"] = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
         self._client: Optional[AsyncOpenAI] = None
         self._groq_client: Optional[AsyncOpenAI] = None
         self._init_clients()
@@ -245,13 +258,42 @@ class MaverickSynthesizer:
 
     def _fallback(self, query: str, context: Any, patient_context: Any, intent: Optional[str]) -> Dict[str, Any]:
         """Fallback response when no LLM is available."""
+        # Build a helpful fallback from retrieved context
+        fallback_parts = []
+        if patient_context and isinstance(patient_context, dict):
+            if patient_context.get("query"):
+                fallback_parts.append(f"Based on the query: {patient_context['query']}")
+            if patient_context.get("results"):
+                count = len(patient_context["results"])
+                fallback_parts.append(f"I found {count} relevant version(s) in the patient record.")
+        if context and isinstance(context, dict):
+            if context.get("query_results"):
+                count = len(context["query_results"])
+                fallback_parts.append(f"Retrieved {count} matching records from the timeline.")
+
+        if fallback_parts:
+            response = " ".join(fallback_parts) + "\n\n"
+        else:
+            response = f"I understand your query about '{query[:100]}'. "
+
+        # Check what's missing
+        missing_keys = []
+        if not settings.NIM_API_KEY:
+            missing_keys.append("NIM_API_KEY")
+        if not settings.GROQ_API_KEY:
+            missing_keys.append("GROQ_API_KEY")
+
+        if missing_keys:
+            response += (
+                f"The AI synthesis engine requires {', '.join(missing_keys)} to be configured. "
+                f"Please add them to your .env file and restart the backend. "
+                f"Patient context was retrieved successfully — review it above."
+            )
+        else:
+            response += "The AI service is temporarily unavailable. Please try again shortly."
+
         return {
-            "response": (
-                f"I understand your query about '{query[:100]}'. "
-                f"The AI synthesis engine is being configured. "
-                f"Please ensure NIM_API_KEY is set in your .env file. "
-                f"For now, here's what I know based on the available context."
-            ),
+            "response": response,
             "citations": [],
             "model": "fallback",
             "structured": None,

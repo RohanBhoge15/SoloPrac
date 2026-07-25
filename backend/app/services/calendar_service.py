@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Appointment, Patient, PatientTimePreference, Doctor, AuditLog
 from app.services.email_queue import email_queue
+from app.services.notification_generator import generate_and_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ def get_doctor_settings(doctor: Doctor) -> dict:
         "working_hours": parse_working_hours(settings),
         "auto_email": settings.get("auto_email_on_change", True),
         "max_future_days": settings.get("max_future_booking_days", 30),
+        "max_bookings_per_window": settings.get("max_bookings_per_window"),  # None = unlimited
     }
 
 
@@ -143,6 +145,7 @@ async def find_available_slots(
     dur = duration_minutes or default_dur
     working_hours = settings["working_hours"]
     total_slot_time = dur + buffer
+    max_per_window = settings.get("max_bookings_per_window")
 
     # Get existing appointments for the date range
     existing = await db.execute(
@@ -157,6 +160,7 @@ async def find_available_slots(
 
     # Build occupied slot map: (date_iso, start_minutes) -> appointment
     occupied: Dict[Tuple[str, int], Appointment] = {}
+
     for apt in existing_appts:
         day_key = apt.start_at.date().isoformat()
         occupied[(day_key, apt.start_at.hour * 60 + apt.start_at.minute)] = apt
@@ -171,8 +175,13 @@ async def find_available_slots(
         if weekday in working_hours:
             for wh_start, wh_end in working_hours[weekday]:
                 slot_start = wh_start
+                window_booking_count = 0  # Reset per window
                 while slot_start + dur <= wh_end:
                     slot_end = slot_start + dur
+
+                    # Enforce per-window cap
+                    if max_per_window is not None and window_booking_count >= max_per_window:
+                        break
 
                     # Check if slot conflicts with existing appointment (including buffer)
                     has_conflict = False
@@ -199,6 +208,7 @@ async def find_available_slots(
                             "duration_minutes": dur,
                             "doctor_id": str(doctor_id),
                         })
+                        window_booking_count += 1
 
                     slot_start += total_slot_time
 
@@ -237,6 +247,12 @@ async def create_appointment(
     patient = result.scalar_one_or_none()
     if not patient:
         raise ValueError("Patient not found")
+
+    # Fetch doctor for notification
+    doc_result = await db.execute(
+        select(Doctor).where(Doctor.id == doctor_id)
+    )
+    doctor = doc_result.scalar_one_or_none()
 
     # Check for conflicts
     conflict = await db.execute(
@@ -291,18 +307,28 @@ async def create_appointment(
     await db.commit()
     await db.refresh(apt)
 
-    # Send notification (arq email queue)
+    # Send notification (AI dispatch via WebSocket + in-app + email fallback)
     if send_notification:
         try:
-            await email_queue.enqueue(
-                email_type="booking_confirmation",
-                doctor_id=str(doctor_id),
-                patient_id=str(patient_id),
-                appointment_id=str(apt.id),
-                start_at=start_at.isoformat(),
-            )
+            # Extract patient name from head version state_jsonb
+            patient_name = "Patient"
+            if patient.head_version and patient.head_version.state_jsonb:
+                patient_name = patient.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
+            from app.database import async_session_maker
+            async with async_session_maker() as notify_db:
+                await generate_and_dispatch(
+                    notify_db,
+                    event_type="booking_confirmation",
+                    patient_id=patient_id,
+                    doctor_id=doctor_id,
+                    meta={"resource_type": "appointment", "resource_id": str(apt.id)},
+                    patient_name=patient_name,
+                    doctor_name=doctor.name if hasattr(doctor, 'name') else "Doctor",
+                    date=start_at.strftime("%Y-%m-%d"),
+                    time=start_at.strftime("%H:%M"),
+                )
         except Exception as exc:
-            logger.warning("Failed to enqueue booking notification: %s", exc)
+            logger.warning("Failed to dispatch booking notification: %s", exc)
 
     return {
         "id": str(apt.id),
@@ -414,15 +440,28 @@ async def reschedule_appointment(
 
     if notify_patient:
         try:
-            await email_queue.enqueue(
-                email_type="reschedule_notification",
-                doctor_id=str(doctor_id),
-                patient_id=str(apt.patient_id),
-                appointment_id=str(apt.id),
-                new_start=new_start.isoformat(),
-            )
+            # Fetch patient name from head version
+            pat_result = await db.execute(select(Patient).where(Patient.id == apt.patient_id))
+            pat = pat_result.scalar_one_or_none()
+            pat_name = "Patient"
+            if pat and pat.head_version and pat.head_version.state_jsonb:
+                pat_name = pat.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
+            from app.database import async_session_maker
+            async with async_session_maker() as notify_db:
+                await generate_and_dispatch(
+                    notify_db,
+                    event_type="reschedule_notification",
+                    patient_id=apt.patient_id,
+                    doctor_id=doctor_id,
+                    meta={"resource_type": "appointment", "resource_id": str(apt.id)},
+                    patient_name=pat_name,
+                    old_date=old_start.strftime("%Y-%m-%d"),
+                    old_time=old_start.strftime("%H:%M"),
+                    new_date=new_start.strftime("%Y-%m-%d"),
+                    new_time=new_start.strftime("%H:%M"),
+                )
         except Exception as exc:
-            logger.warning("Failed to enqueue reschedule notification: %s", exc)
+            logger.warning("Failed to dispatch reschedule notification: %s", exc)
 
     return {
         "id": str(apt.id),
@@ -473,15 +512,26 @@ async def cancel_appointment(
 
     if notify_patient:
         try:
-            await email_queue.enqueue(
-                email_type="cancellation_notification",
-                doctor_id=str(doctor_id),
-                patient_id=str(apt.patient_id),
-                appointment_id=str(apt.id),
-                reason=reason,
-            )
+            # Fetch patient name from head version
+            pat_result = await db.execute(select(Patient).where(Patient.id == apt.patient_id))
+            pat = pat_result.scalar_one_or_none()
+            pat_name = "Patient"
+            if pat and pat.head_version and pat.head_version.state_jsonb:
+                pat_name = pat.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
+            from app.database import async_session_maker
+            async with async_session_maker() as notify_db:
+                await generate_and_dispatch(
+                    notify_db,
+                    event_type="cancellation_notification",
+                    patient_id=apt.patient_id,
+                    doctor_id=doctor_id,
+                    meta={"resource_type": "appointment", "resource_id": str(apt.id)},
+                    patient_name=pat_name,
+                    date=apt.start_at.strftime("%Y-%m-%d"),
+                    time=apt.start_at.strftime("%H:%M"),
+                )
         except Exception as exc:
-            logger.warning("Failed to enqueue cancellation notification: %s", exc)
+            logger.warning("Failed to dispatch cancellation notification: %s", exc)
 
     return {"id": str(apt.id), "status": "cancelled"}
 

@@ -3,9 +3,11 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install system dependencies
+# libmagic1 is required by python-magic (ctypes wrapper) for file-type sniffing.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    libmagic1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

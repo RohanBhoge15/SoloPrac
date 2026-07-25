@@ -506,7 +506,7 @@ class EvaluationHarness:
             dense_leak = compute_future_leak_rate(result["dense_only"]["results"], qp["query_time"])
             dense_future_leaks.append(dense_leak)
 
-            dense_latencies.append(result["dense"]["time_ms"])
+            dense_latencies.append(result["dense_only"]["time_ms"])
 
             per_query_results.append({
                 "query_id": i,
@@ -524,6 +524,11 @@ class EvaluationHarness:
                 "recall_at_5": round(statistics.mean(temporal_recalls), 4) if temporal_recalls else 0,
                 "future_leak_rate": round(statistics.mean(temporal_future_leaks), 4) if temporal_future_leaks else 0,
                 "latency": compute_latency_stats(temporal_latencies) if temporal_latencies else {},
+            },
+            "vanilla_medcpt": {
+                "recall_at_5": round(statistics.mean(dense_recalls), 4) if dense_recalls else 0,
+                "future_leak_rate": round(statistics.mean(dense_future_leaks), 4) if dense_future_leaks else 0,
+                "latency": compute_latency_stats(dense_latencies) if dense_latencies else {},
             },
             "dense_only": {
                 "recall_at_5": round(statistics.mean(dense_recalls), 4) if dense_recalls else 0,

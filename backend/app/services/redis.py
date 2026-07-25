@@ -16,15 +16,13 @@ class RedisService:
         if self._client is not None:
             return self._client
 
-        self._client = redis.Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
+        # Use ConnectionPool for proper connection pooling
+        pool = redis.ConnectionPool.from_url(
+            settings.REDIS_URL,
             decode_responses=True,
-            retry_on_timeout=True,
-            socket_connect_timeout=5,
-            socket_keepalive=True,
-            health_check_interval=30,
+            max_connections=20,
         )
+        self._client = redis.Redis(connection_pool=pool)
         # Test connection
         await self._client.ping()
         return self._client
@@ -49,19 +47,12 @@ class RedisService:
         client = await self.connect()
         return await client.ping()
 
-    @asynccontextmanager
-    async def transaction(self):
-        """Simple transaction-like grouping."""
-        client = await self.connect()
-        if client:
-            yield self
-            # Note: Redis async client doesn't support MULTI transactions easily
-            # For now, use pipeline
-            yield self
-
     async def close(self):
-        if self._client:
-            await self._client.close()
+        try:
+            if self._client:
+                await self._client.close()
+        except Exception:
+            pass
 
 
 # Global instance

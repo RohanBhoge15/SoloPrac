@@ -1,5 +1,7 @@
 # Configuration
 
+import os
+import sys
 from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import Field
@@ -30,9 +32,12 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
+    REDIS_PASSWORD: str = ""
 
     @property
     def REDIS_URL(self) -> str:
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     # Qdrant
@@ -56,18 +61,22 @@ class Settings(BaseSettings):
     NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     MAVERICK_MODEL: str = "nvidia/llama-4-maverick-17b-128e-instruct"
     LLAMA_8B_MODEL: str = "nvidia/llama-3.1-8b-instruct"
-    NVCLIP_MODEL: str = "nvidia/nv-clip"
+    BIOMEDCLIP_MODEL: str = "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
     # Groq
     GROQ_API_KEY: str = ""
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
-    VISION_MODEL: str = "llama-3.2-90b-vision-preview"
+    # Vision: MedGemma-4B-IT (local) for medical; fallback to Groq if needed
+    VISION_MODEL: str = "google/medgemma-4b-it"
 
     # Local models
     MEDGEMMA_PATH: str = "/models/medgemma-4b-it"
     WHISPER_PATH: str = "/models/faster-whisper-large-v3"
     INDIC_WHISPER_PATH: str = "/models/indic-whisper"
     PARLER_TTS_PATH: str = "/models/indic-parler-tts"
+
+    # OCR
+    NANONETS_OCR_MODEL: str = "nanonets/Nanonets-OCR2-1.5B-exp"
 
     # Email
     SMTP_HOST: str = "smtp.gmail.com"
@@ -81,6 +90,7 @@ class Settings(BaseSettings):
 
     # Caddy
     DOMAIN: str = "localhost"
+    PORT: int = 8000  # Backend port (used in verify URLs and redirect URIs)
     ACME_EMAIL: str = "admin@soloprac.ai"
 
     # Rate limiting
@@ -101,6 +111,18 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# ─── Startup validation: warn on default secrets ───
+_DEFAULTS_WARNED = False
+if not _DEFAULTS_WARNED:
+    _DEFAULTS_WARNED = True
+    if settings.JWT_SECRET_KEY in ("changeme_generate_strong_secret", ""):
+        print("WARNING: JWT_SECRET_KEY is still set to a default/empty value! Set a strong secret in .env", file=sys.stderr)
+    if not settings.ENCRYPTION_KEY:
+        print("WARNING: ENCRYPTION_KEY is empty! PII encryption will fail at runtime. Set a 32-byte hex key in .env", file=sys.stderr)
+    if settings.POSTGRES_PASSWORD in ("changeme", "soloprac_dev_password_change_me", ""):
+        print("WARNING: POSTGRES_PASSWORD is still a default! Change it in .env for any non-local deployment.", file=sys.stderr)
+
 
 def get_settings() -> Settings:
     return settings

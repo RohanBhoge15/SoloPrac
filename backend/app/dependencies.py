@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.config import get_settings
 from app.database import get_db
-from app.models import Doctor, Patient
+from app.models import Doctor, Patient, User
 from app.schemas import TokenPayload
 from jose import jwt, JWTError
 
@@ -86,11 +86,15 @@ async def get_optional_doctor(
         return None
 
 
-async def get_current_patient(
+async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db),
-) -> Patient:
-    """Extract and validate patient JWT, return the Patient instance."""
+) -> User:
+    """Extract and validate patient JWT, return the User instance.
+
+    The JWT `sub` claim carries the User ID (UUID as string).
+    This User is cross-tenant — not scoped to any doctor.
+    """
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -119,17 +123,42 @@ async def get_current_patient(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # token_data.sub is patient_id (UUID as string)
-    result = await db.execute(select(Patient).where(Patient.id == token_data.sub))
-    patient = result.scalar_one_or_none()
+    # token_data.sub is user_id (UUID as string)
+    result = await db.execute(select(User).where(User.id == token_data.sub))
+    user = result.scalar_one_or_none()
 
-    if not patient:
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Patient not found",
+            detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    return user
+
+
+async def get_patient_for_doctor(
+    doctor_id: UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Patient:
+    """Get the Patient record linking a User to a specific doctor.
+
+    Raises 404 if this user isn't a patient of this doctor.
+    Used by endpoints that need the doctor-scoped Patient row.
+    """
+    result = await db.execute(
+        select(Patient).where(
+            Patient.user_id == user.id,
+            Patient.doctor_id == doctor_id,
+        )
+    )
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="You are not a patient of this doctor",
+        )
     return patient
 
 
@@ -151,12 +180,12 @@ def create_refresh_token(sub: str) -> str:
     return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_patient_token(patient_id: str) -> str:
-    """Create a patient access token (30 days)."""
+def create_user_token(user_id: str) -> str:
+    """Create a user (patient portal) access token (30 days)."""
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=30)
-    payload = TokenPayload(sub=patient_id, exp=expire, iat=now, type="patient")
+    payload = TokenPayload(sub=user_id, exp=expire, iat=now, type="patient")
     return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -169,5 +198,10 @@ def rate_limit_key(request: Request) -> str:
         return f"doctor:{doctor_id}"
     # Fallback to IP
     forwarded = request.headers.get("X-Forwarded-For")
-    ip = forwarded.split(",")[0].strip() if forwarded else request.client.host
+    if forwarded:
+        ip = forwarded.split(",")[0].strip()
+    elif request.client:
+        ip = request.client.host
+    else:
+        ip = "unknown"
     return f"ip:{ip}"

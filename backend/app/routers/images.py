@@ -1,4 +1,4 @@
-"""Image Router — Upload, embed, and search patient images via NV-CLIP + Qdrant.
+"""Image Router — Upload, embed, and search patient images via BiomedCLIP + Qdrant.
 
 Endpoints:
   POST /patients/{id}/images — Upload one or more images (validated for size/type)
@@ -9,7 +9,7 @@ Validation pipeline:
   1. File type check (JPG, PNG, WEBP only)
   2. File size check (max 25MB each, max 5 per request)
   3. Magic byte verification (extension ≠ content)
-  4. NV-CLIP embedding via NIM
+  4. BiomedCLIP embedding (local)
   5. Upsert to Qdrant with patient + doctor isolation
 """
 
@@ -19,7 +19,7 @@ import uuid
 import os
 import glob
 import logging
-import imghdr
+
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -45,16 +45,34 @@ ALLOWED_MIME_TYPES = {
 }
 
 # Magic bytes for validation
+# WebP files start with RIFF but also have a WEBP chunk at byte 8
+# We check the full 12-byte header to avoid false positives on WAV/AVI
 MAGIC_BYTES = {
     b"\xff\xd8\xff": "image/jpeg",
     b"\x89PNG\r\n\x1a\n": "image/png",
-    b"RIFF": "image/webp",
+    b"RIFF\x00\x00\x00\x00WEBP": "image/webp",  # 12-byte WebP header
 }
 
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 MAX_FILES_PER_REQUEST = 5
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "images")
+
+
+async def _check_upload_rate_limit(doctor_id: str) -> bool:
+    """Check if doctor has exceeded upload rate limit (10/min) using Redis."""
+    try:
+        from app.services.redis import redis_service
+        client = await redis_service.connect()
+        key = f"rate_limit:upload:{doctor_id}"
+        current = await client.incr(key)
+        if current == 1:
+            await client.expire(key, 60)
+        return current <= 10  # 10 uploads per minute
+    except Exception:
+        # Fallback: allow if Redis is down
+        logger.warning("Redis unavailable for rate limiting — allowing upload")
+        return True
 
 
 def _ensure_upload_dir():
@@ -119,6 +137,13 @@ async def upload_images(
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(status_code=400, detail=f"Max {MAX_FILES_PER_REQUEST} files per request")
 
+    # Rate limit check
+    if not await _check_upload_rate_limit(str(doctor.id)):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Upload rate limit exceeded. Max 10 uploads per minute.",
+        )
+
     _ensure_upload_dir()
     uploaded = []
 
@@ -138,11 +163,11 @@ async def upload_images(
         with open(filepath, "wb") as f:
             f.write(content)
 
-        # Generate NV-CLIP embedding via NIM
+        # Generate BiomedCLIP embedding (local)
         try:
-            embedding = await embedding_service.encode_nvclip_image(filepath)
+            embedding = await embedding_service.encode_biomedclip_image(filepath)
         except Exception as exc:
-            logger.warning("NV-CLIP embedding failed for %s: %s (proceeding without)", filename, exc)
+            logger.warning("BiomedCLIP embedding failed for %s: %s (proceeding without)", filename, exc)
             embedding = []
 
         # Upsert to Qdrant
@@ -201,7 +226,8 @@ async def list_images(
     # Get comparisons from DB
     result = await db.execute(
         select(ImageComparison)
-        .join(Patient, Patient.id == ImageComparison.version_id)
+        .join(PatientVersion, PatientVersion.id == ImageComparison.version_id)
+        .join(Patient, Patient.id == PatientVersion.patient_id)
         .where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
         .order_by(ImageComparison.created_at.desc())
     )
@@ -276,18 +302,18 @@ async def search_similar_images(
     with open(temp_path, "wb") as f:
         f.write(content)
 
-    # Encode with NV-CLIP
+    # Encode with BiomedCLIP
     try:
-        query_vector = await embedding_service.encode_nvclip_image(temp_path)
+        query_vector = await embedding_service.encode_biomedclip_image(temp_path)
     except Exception as exc:
         os.remove(temp_path)
-        raise HTTPException(status_code=500, detail=f"NV-CLIP encoding failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"BiomedCLIP encoding failed: {exc}")
 
     # Clean up temp file
     os.remove(temp_path)
 
     if not query_vector:
-        raise HTTPException(status_code=500, detail="NV-CLIP produced empty embedding")
+        raise HTTPException(status_code=500, detail="BiomedCLIP produced empty embedding")
 
     # Search Qdrant
     try:
@@ -330,7 +356,7 @@ async def compare_images(
 
     Pipeline:
       1. Validate + save the new image
-      2. Search Qdrant for most similar prior image (NV-CLIP)
+      2. Search Qdrant for most similar prior image (BiomedCLIP)
       3. Run ORB feature matching between new and prior
       4. Compute homography + overlay + metrics
       5. Store comparison in ImageComparison table
@@ -379,11 +405,11 @@ async def compare_images(
     with open(curr_filepath, "wb") as f:
         f.write(content)
 
-    # Generate NV-CLIP embedding for the new image
+    # Generate BiomedCLIP embedding for the new image
     try:
-        curr_embedding = await embedding_service.encode_nvclip_image(curr_filepath)
+        curr_embedding = await embedding_service.encode_biomedclip_image(curr_filepath)
     except Exception as exc:
-        logger.warning("NV-CLIP embedding failed: %s", exc)
+        logger.warning("BiomedCLIP embedding failed: %s", exc)
         curr_embedding = []
 
     # Search for best matching prior image

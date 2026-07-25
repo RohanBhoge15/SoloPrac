@@ -26,58 +26,84 @@ from app.agents.state import AgentState, AgentIntent, AgentToolCall, create_init
 from app.agents.router import IntentRouter
 from app.agents.tools import tool_registry
 from app.agents.planner import SelfPlanner, PlanCritic
+from app.services.langfuse import langfuse_client, trace_agent_step, trace_llm_call
 
 logger = logging.getLogger(__name__)
 
 
 class AgentGraph:
-    """Main agent graph — Feature B: self-planning with critic loop."""
+    """Main agent graph — Feature B: self-planning with critic loop.
+
+    Thread-safe: all mutable state lives in the per-request AgentState dict,
+    not on the instance. _add_trace writes into state['trace_events'].
+    """
 
     def __init__(self):
         self.router = IntentRouter()
         self.planner = SelfPlanner()
         self.critic = PlanCritic()
-        self._trace: List[str] = []
 
-    def _reset_trace(self):
-        self._trace = []
-
-    def _add_trace(self, event: str):
-        self._trace.append(event)
+    def _add_trace(self, state: AgentState, event: str):
+        state.setdefault("trace_events", []).append(event)
         logger.debug("[Agent] %s", event)
 
     async def _router_node(self, state: AgentState) -> str:
         """Classify user intent."""
-        self._add_trace(f"Routing query: '{state['user_query'][:60]}...'")
-        intent, confidence, reasoning = await self.router.classify(state["user_query"])
-        state["intent"] = intent
-        state["confidence"] = confidence
-        state["reasoning"] = reasoning
-        state["trace_events"].append(f"Router: {intent.value} (conf={confidence:.2f})")
+        self._add_trace(state, f"Routing query: '{state['user_query'][:60]}...'")
+
+        async with trace_agent_step(
+            "router", state.get("trace_id", str(uuid.uuid4())),
+            doctor_id=str(state.get("doctor_id")) if state.get("doctor_id") else None,
+            patient_id=str(state.get("patient_id")) if state.get("patient_id") else None,
+            input_data={"query": state["user_query"]},
+        ) as span:
+            intent, confidence, reasoning = await self.router.classify(state["user_query"])
+            state["intent"] = intent
+            state["confidence"] = confidence
+            state["reasoning"] = reasoning
+            state["trace_events"].append(f"Router: {intent.value} (conf={confidence:.2f})")
+            if span:
+                span.set_output({"intent": intent.value, "confidence": confidence, "reasoning": reasoning})
         return "plan"
 
     async def _planner_node(self, state: AgentState) -> str:
         """Feature B: Maverick generates dynamic JSON plan."""
-        self._add_trace(f"Self-planning for {state['intent'].value}")
+        trace_id = state.get("trace_id", str(uuid.uuid4()))
+        state["trace_id"] = trace_id
+        self._add_trace(state, f"Self-planning for {state['intent'].value}")
 
-        # Generate plan using Maverick
-        plan = await self.planner.generate_plan(
-            query=state["user_query"],
-            intent=state["intent"],
-            patient_id=str(state["patient_id"]) if state.get("patient_id") else None,
-            doctor_id=str(state["doctor_id"]) if state.get("doctor_id") else None,
-        )
+        async with trace_agent_step(
+            "planner", trace_id,
+            doctor_id=str(state.get("doctor_id")) if state.get("doctor_id") else None,
+            patient_id=str(state.get("patient_id")) if state.get("patient_id") else None,
+            input_data={"intent": state["intent"].value, "query": state["user_query"][:200]},
+        ) as span:
+            # Generate plan using Maverick
+            plan = await self.planner.generate_plan(
+                query=state["user_query"],
+                intent=state["intent"],
+                patient_id=str(state["patient_id"]) if state.get("patient_id") else None,
+                doctor_id=str(state["doctor_id"]) if state.get("doctor_id") else None,
+            )
 
-        state["plan"] = plan.get("steps", [])
-        state["current_step"] = 0
-        state["replan_count"] = state.get("replan_count", 0)
-        state["trace_events"].append(
-            f"Planner (Feature B): {plan['goal'][:80]} — {len(plan['steps'])} step(s) planned"
-        )
+            state["plan"] = plan.get("steps", [])
+            state["current_step"] = 0
+            state["replan_count"] = state.get("replan_count", 0)
+            state["trace_events"].append(
+                f"Planner (Feature B): {plan['goal'][:80]} — {len(plan['steps'])} step(s) planned"
+            )
 
-        # Log plan for paper evaluation
-        logger.info("Feature B plan: goal=%s steps=%d reasoning=%s",
-                     plan["goal"][:100], len(plan["steps"]), plan["reasoning"][:200])
+            # Log plan for paper evaluation
+            logger.info("Feature B plan: goal=%s steps=%d reasoning=%s",
+                         plan["goal"][:100], len(plan["steps"]), plan["reasoning"][:200])
+
+            if span:
+                span.set_output({
+                    "goal": plan["goal"],
+                    "steps": plan.get("steps", []),
+                    "budget_tokens": plan.get("budget_tokens", 4000),
+                    "reasoning": plan.get("reasoning", ""),
+                })
 
         return "execute"
 
@@ -85,14 +111,19 @@ class AgentGraph:
         """Execute the current step."""
         plan = state.get("plan", [])
         step_idx = state["current_step"]
+        trace_id = state.get("trace_id", str(uuid.uuid4()))
 
         if step_idx >= len(plan):
-            self._add_trace("All steps completed")
+            self._add_trace(state, "All steps completed")
             return "critic"
 
         step = plan[step_idx]
         tool_name = step["tool"]
-        tool_args = step["args"]
+        tool_args = dict(step["args"])  # copy to avoid mutating plan
+
+        # Inject doctor_id from state for tools that need it
+        if state.get("doctor_id"):
+            tool_args.setdefault("doctor_id", str(state["doctor_id"]))
 
         # Resolve dependency results
         for dep_id in step.get("depends_on", []):
@@ -103,7 +134,7 @@ class AgentGraph:
                         tool_args["context"] = tc["result"]
                     break
 
-        self._add_trace(f"Executing step {step_idx + 1}/{len(plan)}: {tool_name}")
+        self._add_trace(state, f"Executing step {step_idx + 1}/{len(plan)}: {tool_name}")
 
         tool_fn = tool_registry.get(tool_name)
         if tool_fn is None:
@@ -116,38 +147,59 @@ class AgentGraph:
             state["current_step"] = step_idx + 1
             return "critic"
 
-        try:
-            result = await tool_fn(**tool_args)
-            state["tool_calls"].append(AgentToolCall(
-                tool_name=tool_name, tool_args=tool_args, result=result, error=None,
-            ))
-            state["trace_events"].append(f"Executor: {tool_name} OK")
+        # Trace tool execution
+        async with trace_agent_step(
+            f"tool:{tool_name}", trace_id,
+            doctor_id=str(state.get("doctor_id")) if state.get("doctor_id") else None,
+            patient_id=str(state.get("patient_id")) if state.get("patient_id") else None,
+            input_data={"tool": tool_name, "args": tool_args},
+        ) as span:
+            try:
+                result = await tool_fn(**tool_args)
+                state["tool_calls"].append(AgentToolCall(
+                    tool_name=tool_name, tool_args=tool_args, result=result, error=None,
+                ))
+                state["trace_events"].append(f"Executor: {tool_name} OK")
 
-            # Store context for downstream use
-            if tool_name == "retrieve_patient_context":
-                state["retrieved_context"] = result
-                state["citations"] = result.get("citations", [])
-            elif tool_name in ("analyze_image", "compare_images"):
-                state["analysis_result"] = result
+                # Store context for downstream use
+                if tool_name == "retrieve_patient_context":
+                    state["retrieved_context"] = result
+                    state["citations"] = result.get("citations", [])
+                elif tool_name in ("analyze_image", "compare_images"):
+                    state["analysis_result"] = result
 
-        except Exception as exc:
-            logger.error("Tool %s failed: %s", tool_name, exc)
-            state["tool_calls"].append(AgentToolCall(
-                tool_name=tool_name, tool_args=tool_args, result=None, error=str(exc),
-            ))
-            state["error_count"] = state.get("error_count", 0) + 1
-            state["trace_events"].append(f"Executor: {tool_name} ERROR — {str(exc)[:100]}")
+                if span:
+                    span.set_output({"status": "ok", "result_preview": str(result)[:200]})
+
+            except Exception as exc:
+                logger.error("Tool %s failed: %s", tool_name, exc)
+                state["tool_calls"].append(AgentToolCall(
+                    tool_name=tool_name, tool_args=tool_args, result=None, error=str(exc),
+                ))
+                state["error_count"] = state.get("error_count", 0) + 1
+                state["trace_events"].append(f"Executor: {tool_name} ERROR \u2014 {str(exc)[:100]}")
+                if span:
+                    span.set_output({"status": "error", "error": str(exc)})
+                    span.set_error(str(exc))
+                # Stop execution — go to critic for evaluation
+                state["current_step"] = step_idx + 1
+                return "critic"
 
         state["current_step"] = step_idx + 1
+        # Track which steps have been executed (for re-plan deduplication)
+        if "executed_step_ids" not in state:
+            state["executed_step_ids"] = set()
+        state["executed_step_ids"].add(step["id"])
         return "execute"
 
     async def _critic_node(self, state: AgentState) -> str:
         """Feature B: Evaluate execution and decide re-plan or finish."""
-        self._add_trace("Critic evaluating execution")
+        self._add_trace(state, "Critic evaluating execution")
 
         plan_steps = state.get("plan", [])
         tool_calls = state.get("tool_calls", [])
         errors = [tc.get("error", "") for tc in tool_calls if tc.get("error")]
+        executed_ids = state.get("executed_step_ids", set())
 
         evaluation = await self.critic.evaluate(
             plan={"goal": f"Plan for: {state['user_query'][:100]}", "steps": plan_steps},
@@ -171,10 +223,29 @@ class AgentGraph:
                 previous_errors=errors,
             )
 
-            state["plan"] = revised.get("steps", plan_steps)
+            # Filter out already-executed successful steps to avoid re-execution
+            new_steps = []
+            for step in revised.get("steps", plan_steps):
+                step_id = step.get("id")
+                # Only include steps that haven't been executed successfully
+                if step_id not in executed_ids:
+                    new_steps.append(step)
+                else:
+                    # Check if the step had an error - if so, allow retry
+                    failed = any(tc.get("tool_name") == step.get("tool") and tc.get("error") 
+                                 for tc in tool_calls)
+                    if failed:
+                        new_steps.append(step)
+
+            if not new_steps:
+                # Nothing new to execute, finish
+                state["trace_events"].append("Re-plan: no new steps to execute, finishing")
+                return "synthesize"
+
+            state["plan"] = new_steps
             state["current_step"] = 0
             state["trace_events"].append(
-                f"Re-plan (round {state['replan_count']}): {revised['goal'][:80]} — {len(state['plan'])} step(s)"
+                f"Re-plan (round {state['replan_count']}): {revised['goal'][:80]} — {len(new_steps)} new step(s)"
             )
             return "execute"
 
@@ -182,7 +253,7 @@ class AgentGraph:
 
     async def _synthesizer_node(self, state: AgentState) -> str:
         """Generate the final response."""
-        self._add_trace("Synthesizing final response")
+        self._add_trace(state, "Synthesizing final response")
 
         # Check if a tool already produced the response
         for tc in reversed(state.get("tool_calls", [])):
@@ -227,7 +298,7 @@ class AgentGraph:
 
     async def _responder_node(self, state: AgentState) -> str:
         """Final formatting."""
-        self._add_trace("Finalizing response")
+        self._add_trace(state, "Finalizing response")
         state["final_response"] = state.get("draft", "I wasn't able to process that request.")
         state["completed_at"] = datetime.now(timezone.utc)
         state["trace_events"].append("Response delivered")
@@ -244,13 +315,15 @@ class AgentGraph:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Run the agent graph and yield events.
 
+        All mutable state lives in the per-request AgentState dict, so
+        multiple concurrent calls to run_stream do not interfere.
+
         Yields:
             {"type": "trace", "message": str}
             {"type": "token", "text": str}
             {"type": "done", "response": str, "trace_events": [...], ...}
             {"type": "error", "message": str}
         """
-        self._reset_trace()
         state = create_initial_state(user_query, doctor_id, patient_id, conversation_id)
         state["replan_count"] = 0
 
@@ -265,7 +338,7 @@ class AgentGraph:
         }
 
         current_node = "router"
-        yield {"type": "trace", "message": "🧠 Understanding your request..."}
+        yield {"type": "trace", "message": "Understanding your request..."}
 
         while current_node != "END":
             fn = node_fns.get(current_node)
@@ -274,16 +347,25 @@ class AgentGraph:
                 break
 
             try:
-                self._add_trace(f"Entering node: {current_node}")
+                self._add_trace(state, f"Entering node: {current_node}")
                 yield {"type": "trace", "message": self._node_label(current_node)}
 
                 next_node = await fn(state)
 
-                # Stream draft tokens
                 if current_node == "synthesize" and state.get("draft"):
                     draft = state["draft"]
-                    for i in range(0, len(draft), 80):
-                        yield {"type": "token", "text": draft[i:i + 80]}
+                    words = draft.split(" ")
+                    buffer = ""
+                    for word in words:
+                        test = buffer + (" " if buffer else "") + word
+                        if len(test) >= 80:
+                            if buffer:
+                                yield {"type": "token", "text": buffer + " "}
+                            buffer = word
+                        else:
+                            buffer = test
+                    if buffer:
+                        yield {"type": "token", "text": buffer}
 
                 current_node = next_node
 
@@ -293,6 +375,11 @@ class AgentGraph:
                 state["error_count"] = (state.get("error_count", 0)) + 1
                 if state["error_count"] >= state.get("max_retries", 2):
                     break
+                node_idx = node_sequence.index(current_node) if current_node in node_sequence else -1
+                if node_idx >= 0 and node_idx + 1 < len(node_sequence):
+                    current_node = node_sequence[node_idx + 1]
+                else:
+                    current_node = "synthesize"
                 continue
 
         yield {

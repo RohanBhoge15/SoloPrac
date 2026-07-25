@@ -1,19 +1,24 @@
 import axios from 'axios'
 
+const API_BASE_URL = '/api/v1'
+
+// Module-level refresh lock — prevents concurrent refresh requests
+let refreshPromise: Promise<string> | null = null
+
 export const apiClient = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE_URL,
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   },
 })
 
-// Request interceptor for auth (doctor or patient)
+// Request interceptor for auth (patient token takes priority over doctor)
 apiClient.interceptors.request.use(
   (config) => {
-    const doctorToken = localStorage.getItem('access_token')
     const patientToken = localStorage.getItem('patient_token')
-    const token = doctorToken || patientToken
+    const doctorToken = localStorage.getItem('access_token')
+    const token = patientToken || doctorToken
     if (token && !config.headers.Authorization) {
       config.headers.Authorization = `Bearer ${token}`
     }
@@ -22,7 +27,7 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
-// Response interceptor for token refresh
+// Response interceptor for token refresh with concurrency lock
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -32,33 +37,43 @@ apiClient.interceptors.response.use(
       originalRequest._retry = true
 
       const refreshToken = localStorage.getItem('refresh_token')
-      if (refreshToken) {
-        try {
-          const response = await axios.post('/api/v1/auth/refresh', { refresh_token: refreshToken })
-          const { access_token, refresh_token: newRefreshToken } = response.data
-          localStorage.setItem('access_token', access_token)
-          localStorage.setItem('refresh_token', newRefreshToken)
-          apiClient.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
-          originalRequest.headers.Authorization = `Bearer ${access_token}`
-          return apiClient(originalRequest)
-        } catch {
-          // Refresh failed, redirect to login
-          localStorage.removeItem('access_token')
-          localStorage.removeItem('refresh_token')
-          localStorage.removeItem('patient_token')
-          localStorage.removeItem('patient_id')
-          window.location.href = '/login'
-        }
-      } else {
-        const patientToken = localStorage.getItem('patient_token')
-        if (patientToken) {
-          // Patient token can't be refreshed, redirect to patient login
-          localStorage.removeItem('patient_token')
-          localStorage.removeItem('patient_id')
-          window.location.href = '/patient/login'
-        } else {
-          window.location.href = '/login'
-        }
+      if (!refreshToken) {
+        const isPatient = !!localStorage.getItem('patient_id')
+        localStorage.clear()
+        window.location.href = isPatient ? '/patient/login' : '/login'
+        return Promise.reject(error)
+      }
+
+      // Use module-level promise lock to prevent concurrent refreshes
+      if (!refreshPromise) {
+        refreshPromise = (async () => {
+          try {
+            const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+              refresh_token: refreshToken,
+            })
+            const { access_token, refresh_token: newRefreshToken } = response.data
+            localStorage.setItem('access_token', access_token)
+            localStorage.setItem('refresh_token', newRefreshToken)
+            return access_token
+          } catch (refreshError) {
+            localStorage.clear()
+            // Prevent infinite redirect loop: don't redirect if already on login
+            if (!window.location.pathname.startsWith('/login')) {
+              window.location.href = '/login'
+            }
+            throw refreshError
+          } finally {
+            refreshPromise = null
+          }
+        })()
+      }
+
+      try {
+        const newToken = await refreshPromise
+        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        return apiClient(originalRequest)
+      } catch (refreshError) {
+        return Promise.reject(refreshError)
       }
     }
 

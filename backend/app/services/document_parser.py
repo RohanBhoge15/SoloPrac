@@ -9,8 +9,8 @@ Routes documents through the pipeline based on detected type:
   │ Scanned │ → │ Surya    │ → │ Docling      │
   │ PDF     │   │ layout   │   │ structure    │
   ├─────────┤   ├──────────┤   ├──────────────┤
-  │ Hand-   │ → │ GOT-OCR  │ → │ MedGemma     │
-  │ written │   │ 2.0      │   │ fallback     │
+  │ Hand-   │ → │ Nanonets-│ → │ MedGemma     │
+  │ written │   │ OCR2     │   │ fallback     │
   ├─────────┤   ├──────────┤   ├──────────────┤
   │ Photo   │ → │ Surya    │ → │ MedGemma     │
   │ (jpg)   │   │          │   │ re-check     │
@@ -44,6 +44,24 @@ from datetime import datetime, timezone
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ─── Schema Aligner (Feature D) ───
+# Lazy import to avoid circular dependency
+_schema_aligner = None
+
+
+def _get_schema_aligner():
+    """Get or create SchemaAligner instance for Feature D zero-shot alignment."""
+    global _schema_aligner
+    if _schema_aligner is None:
+        try:
+            from app.services.schema_aligner import SchemaAligner
+            _schema_aligner = SchemaAligner()
+            logger.info("SchemaAligner (Feature D) initialized for document parsing")
+        except Exception as exc:
+            logger.warning("Could not initialize SchemaAligner: %s", exc)
+            return None
+    return _schema_aligner
 
 # ─── Document Types ─────────────────────────────────
 
@@ -159,7 +177,7 @@ class ParserRouter:
         doc_type, type_confidence = self._classify_document_type(raw_text)
 
         # Step 4: Build structured output
-        structured = self._build_structured(raw_text, doc_type)
+        structured = await self._build_structured(raw_text, doc_type)
 
         elapsed = (datetime.now(timezone.utc) - start).total_seconds() * 1000
 
@@ -226,8 +244,8 @@ class ParserRouter:
         return text, confidence
 
     async def _parse_handwritten(self, file_path: str) -> Tuple[str, float]:
-        """Parse handwritten document: GOT-OCR 2.0 -> MedGemma fallback."""
-        text, confidence = await self._ocr_service.got_ocr_parse(file_path)
+        """Parse handwritten document: Nanonets-OCR2-1.5B-exp -> MedGemma fallback."""
+        text, confidence = await self._ocr_service.nanonnets_ocr_parse(file_path)
         if not text.strip() or confidence < 0.3:
             # Fallback to MedGemma
             text2, conf2 = await self._ocr_service.medgemma_parse(file_path)
@@ -245,16 +263,20 @@ class ParserRouter:
         return text, confidence
 
     async def _parse_unknown(self, file_path: str) -> Tuple[str, float]:
-        """Try all parsers in order, return best result."""
+        """Try all parsers in order, return best result using weighted scoring."""
         best_text = ""
+        best_score = 0.0
         best_conf = 0.0
 
-        for parser_name in ["docling_parse", "surya_parse", "got_ocr_parse", "medgemma_parse"]:
+        for parser_name in ["docling_parse", "surya_parse", "nanonets_ocr_parse", "medgemma_parse"]:
             try:
                 parser_fn = getattr(self._ocr_service, parser_name)
                 text, conf = await parser_fn(file_path)
-                if len(text) > len(best_text) and conf > best_conf:
+                # Weighted score: longer text with decent confidence beats short text with high confidence
+                score = len(text) * conf
+                if score > best_score:
                     best_text = text
+                    best_score = score
                     best_conf = conf
             except Exception:
                 continue
@@ -304,12 +326,27 @@ class ParserRouter:
 
     # ─── Structured Output Builder ───
 
-    def _build_structured(self, text: str, doc_type: DocType) -> Dict[str, Any]:
-        """Build a basic structured representation from raw text.
+    async def _build_structured(self, text: str, doc_type: DocType) -> Dict[str, Any]:
+        """Build structured representation from raw text.
 
-        Advanced structure requires Maverick schema alignment (Feature D),
-        this is a fallback that extracts what we can via patterns.
+        Tries Feature D (SchemaAligner) first for canonical Pydantic schema.
+        Falls back to regex-based extraction if SchemaAligner unavailable or fails.
         """
+        # Try Feature D: Zero-shot schema alignment
+        aligner = _get_schema_aligner()
+        if aligner and doc_type != DocType.GENERAL_DOCUMENT:
+            try:
+                result = await aligner.align(raw_text=text, doc_type=doc_type.value)
+                if result.get("status") == "ok" and result.get("structured"):
+                    structured = result["structured"]
+                    structured["_aligned_by"] = "schema_aligner_feature_d"
+                    structured["_alignment_confidence"] = result.get("confidence", 0.0)
+                    structured["_validation_status"] = result.get("validation", "unknown")
+                    return structured
+            except Exception as exc:
+                logger.warning("SchemaAligner failed for %s: %s, falling back to regex", doc_type, exc)
+
+        # Fallback: basic regex-based extraction (original behavior)
         result = {
             "type": doc_type.value,
             "extracted_at": datetime.now(timezone.utc).isoformat(),
@@ -401,11 +438,62 @@ class OCRService:
             return await self._tesseract_fallback(file_path)
         return "", 0.0
 
+    async def nanonets_ocr_parse(self, file_path: str) -> Tuple[str, float]:
+        """Parse handwritten/printed text using Nanonets-OCR2-1.5B-exp.
+
+        This is a SOTA open-source OCR model (Apache 2.0) that handles:
+        - Handwritten text
+        - Printed text
+        - Tables and forms
+        - Multiple languages
+
+        Falls back to Tesseract if Nanonets-OCR isn't available.
+        """
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from PIL import Image
+            import torch
+
+            model_name = settings.NANONETS_OCR_MODEL
+
+            # Cache model and tokenizer
+            if not hasattr(self, "_nanonets_model") or self._nanonets_model is None:
+                logger.info("Loading Nanonets-OCR2-1.5B model...")
+                self._nanonets_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+                self._nanonets_model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    trust_remote_code=True,
+                )
+                logger.info("Nanonets-OCR2 loaded successfully")
+
+            tokenizer = self._nanonets_tokenizer
+            model = self._nanonets_model
+
+            with Image.open(file_path) as image:
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                prompt = "Extract all text from this document."
+                inputs = tokenizer(prompt, images=image, return_tensors="pt").to(model.device)
+                outputs = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
+                text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                if text.strip():
+                    return text, 0.90  # High confidence for SOTA model
+        except ImportError:
+            logger.info("Nanonets-OCR not installed, falling back to Tesseract")
+            return await self._tesseract_fallback(file_path, psm=13)
+        except Exception as exc:
+            logger.warning("Nanonets-OCR parsing failed: %s, falling back", exc)
+            return await self._tesseract_fallback(file_path)
+        return "", 0.0
+
     async def got_ocr_parse(self, file_path: str) -> Tuple[str, float]:
-        """Parse handwritten text using GOT-OCR 2.0.
+        """Parse handwritten text using GOT-OCR 2.0 (DEPRECATED - kept for fallback).
 
         Falls back to Tesseract with handwriting config if GOT-OCR isn't installed.
         """
+        logger.warning("GOT-OCR 2.0 is deprecated; use Nanonets-OCR2-1.5B-exp instead")
         try:
             from got_ocr import GOTOCR
             model = GOTOCR()
@@ -424,22 +512,30 @@ class OCRService:
         """Parse image using MedGemma-4B local VLM as fallback.
 
         Falls back to basic Tesseract if MedGemma isn't loaded.
+        Model is cached after first load to avoid reloading on every call.
         """
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
-            model_name = settings.MEDGEMMA_PATH or "/models/medgemma-4b-it"
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            model = AutoModelForCausalLM.from_pretrained(model_name)
-
             from PIL import Image
-            image = Image.open(file_path)
 
-            prompt = "Extract all text from this medical document."
-            inputs = tokenizer(prompt, return_tensors="pt")
-            outputs = model.generate(**inputs, max_new_tokens=512)
-            text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            if text.strip():
-                return text, 0.75
+            model_name = settings.MEDGEMMA_PATH or "/models/medgemma-4b-it"
+
+            # Cache model and tokenizer to avoid reloading on every call
+            if not hasattr(self, "_medgemma_model") or self._medgemma_model is None:
+                self._medgemma_tokenizer = AutoTokenizer.from_pretrained(model_name)
+                self._medgemma_model = AutoModelForCausalLM.from_pretrained(model_name)
+
+            tokenizer = self._medgemma_tokenizer
+            model = self._medgemma_model
+
+            # Open image and pass to VLM (was previously ignored)
+            with Image.open(file_path) as image:
+                prompt = "Extract all text from this medical document."
+                inputs = tokenizer(prompt, images=image, return_tensors="pt")
+                outputs = model.generate(**inputs, max_new_tokens=512)
+                text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                if text.strip():
+                    return text, 0.75
         except ImportError:
             logger.info("MedGemma not available, falling back to Tesseract")
             return await self._tesseract_fallback(file_path)

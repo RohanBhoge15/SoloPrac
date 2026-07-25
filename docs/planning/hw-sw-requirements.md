@@ -177,7 +177,7 @@ services:
 ### 2.5 External API Accounts (All Free Tier)
 | Service | Account | Free Tier Limits |
 |:--------|:--------|:-----------------|
-| **NVIDIA NIM** | nvidia.com | Generous; Llama-4 Maverick + Llama-3.1-8B + NV-CLIP |
+| **NVIDIA NIM** | nvidia.com | Generous; Llama-4 Maverick + Llama-3.1-8B + BiomedCLIP |
 | **Groq Cloud** | console.groq.com | 14,400 req/day for Llama-3.2-90B-Vision |
 | **Google Cloud** | console.cloud.google.com | OAuth 2.0 credentials (free) |
 | **SMTP** | Gmail / SendGrid | 500 emails/day (Gmail) or 100/day (SendGrid free) |

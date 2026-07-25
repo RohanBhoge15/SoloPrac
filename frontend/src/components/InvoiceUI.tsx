@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { Plus, X, Printer, Download, FileText, Loader2, AlertCircle } from 'lucide-react'
+import apiClient from '@/services/api'
 
 interface InvoiceItem {
   description: string
@@ -56,22 +57,16 @@ export function InvoiceUI({ patientId, patientName, className }: InvoiceUIProps)
     setResult(null)
 
     try {
-      const response = await fetch(`/api/v1/patients/${patientId}/invoices`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('access_token')}` },
-        body: JSON.stringify({
-          patient_name: patientName,
-          items: items.filter(i => i.description.trim()),
-          tax_rate: taxRate,
-          status,
-          notes,
-        }),
+      const response = await apiClient.post(`/patients/${patientId}/invoices`, {
+        patient_name: patientName,
+        items: items.filter(i => i.description.trim()),
+        tax_rate: taxRate,
+        status,
+        notes,
       })
-      if (!response.ok) throw new Error('Failed to create invoice')
-      const data = await response.json()
-      setResult(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Generation failed')
+      setResult(response.data)
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'Failed to create invoice')
     } finally {
       setGenerating(false)
     }

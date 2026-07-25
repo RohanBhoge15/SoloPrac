@@ -2,7 +2,7 @@
 # Each write mints an immutable version; the chain is content-addressed via SHA256.
 
 import uuid
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,8 @@ from app.models import AuditLog
 router = APIRouter()
 
 
-def _check_patient_ownership(patient: Patient, doctor_id: uuid.UUID):
+def _check_patient_ownership(patient: Patient | None, doctor_id: uuid.UUID) -> None:
+    """Raise 404 if patient doesn't belong to the doctor."""
     if not patient or patient.doctor_id != doctor_id:
         raise HTTPException(status_code=404, detail="Patient not found")
 
@@ -44,10 +45,20 @@ async def _mint_version(
     summary: Optional[str] = None,
     tags: Optional[list[str]] = None,
     clinical_significance: float = 0.0,
-    commit: bool = True,
 ) -> PatientVersion:
-    """Create a new version in the chain and update head pointer."""
-    # Compute next version number atomically
+    """Create a new version in the chain and update head pointer.
+
+    Uses SELECT FOR UPDATE on the patient row to prevent concurrent
+    version number conflicts.
+    """
+    # Lock the patient row to prevent concurrent version creation
+    # Use SELECT ... FOR UPDATE on Patient row (real locking, not a no-op write)
+    await db.execute(
+        select(Patient).where(Patient.id == patient.id).with_for_update()
+    )
+    await db.flush()
+
+    # Compute next version number atomically (now safe under row lock)
     result = await db.execute(
         select(func.coalesce(func.max(PatientVersion.version_number), 0))
         .where(PatientVersion.patient_id == patient.id)
@@ -100,18 +111,118 @@ async def _mint_version(
             "Version audit log write failed (non-blocking): %s", exc
         )
 
-    if commit:
-        await db.commit()
-    else:
-        # caller will commit
-        pass
-
     return version
 
 
 # ────────────────────────────────────────────
 # Patient CRUD
 # ────────────────────────────────────────────
+
+@router.get("/search", response_model=List[dict])
+async def search_patients(
+    q: str = Query(..., min_length=1, description="Search query"),
+    limit: int = Query(20, ge=1, le=100),
+    doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search patients by name, phone, email, etc. across versions."""
+    # Search in head version demographics
+    # Use DB-side text search on patient version state_jsonb for better perf
+    from sqlalchemy import text
+    q_safe = q.lower()
+    # Search via jsonb containment + text pattern on head version demographics
+    # We join patient -> head_version ON head_version_id = patient_versions.id
+    # and search demographics text fields within state_jsonb
+    # Use a lateral join approach for PostgreSQL jsonb search
+    # First, find all patients for this doctor, then narrow via head version search
+    join_query = (
+        select(Patient)
+        .outerjoin(PatientVersion, PatientVersion.id == Patient.head_version_id)
+        .where(Patient.doctor_id == doctor.id)
+        .limit(limit)
+    )
+    # Apply text search on the head version's state_jsonb demographics
+    # PostgreSQL 16 supports jsonb_path_exists or jsonb_text_pattern
+    # Use a simple ILIKE on demographics extracted as text
+    name_condition = func.lower(
+        func.coalesce(
+            PatientVersion.state_jsonb["demographics"]["name"].astext(), ''
+        )
+    ).contains(q_safe)
+    phone_condition = func.lower(
+        func.coalesce(
+            PatientVersion.state_jsonb["demographics"]["phone"].astext(), ''
+        )
+    ).contains(q_safe)
+    email_condition = func.lower(
+        func.coalesce(
+            PatientVersion.state_jsonb["demographics"]["email"].astext(), ''
+        )
+    ).contains(q_safe)
+
+    result = await db.execute(
+        join_query.where(name_condition | phone_condition | email_condition)
+    )
+    all_patients = result.scalars().all()
+
+    output = []
+    for p in all_patients:
+        name = f"Patient {str(p.id)[:8]}"
+        if p.head_version_id and p.head_version and p.head_version.state_jsonb:
+            demo = p.head_version.state_jsonb.get("demographics", {})
+            if isinstance(demo, dict) and demo.get("name"):
+                name = demo["name"]
+        output.append({
+            "id": str(p.id),
+            "name": name,
+            "head_version_id": str(p.head_version_id) if p.head_version_id else None,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        })
+    return output
+
+
+@router.get("/", response_model=List[dict])
+async def list_patients(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    doctor=Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all patients for the current doctor, newest first."""
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(Patient)
+        .options(selectinload(Patient.head_version))
+        .where(Patient.doctor_id == doctor.id)
+        .order_by(Patient.updated_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    patients = result.scalars().all()
+    output = []
+    for p in patients:
+        head = None
+        if p.head_version:
+            head = {
+                "id": str(p.head_version.id),
+                "version_number": p.head_version.version_number,
+                "state_jsonb": p.head_version.state_jsonb,
+                "edit_type": p.head_version.edit_type,
+                "summary": p.head_version.summary,
+                "timestamp": p.head_version.timestamp.isoformat() if p.head_version.timestamp else None,
+            }
+        output.append({
+            "id": str(p.id),
+            "doctor_id": str(p.doctor_id),
+            "user_id": str(p.user_id) if p.user_id else None,
+            "head_version_id": str(p.head_version_id) if p.head_version_id else None,
+            "consent_for_share": p.consent_for_share,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "head_version": head,
+        })
+    return output
+
 
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=PatientVersionRead)
 async def create_patient(
@@ -352,3 +463,105 @@ async def patch_patient_fields(
         clinical_significance=0.3,
     )
     return _build_version_number(new_version)
+
+
+# ────────────────────────────────────────────
+# Manual Patient Creation (walk-in, no app user)
+# ────────────────────────────────────────────
+from app.models import PatientVersion as _PV
+from app.services.encryption import encrypt_value
+
+
+@router.post("/manual", status_code=status.HTTP_201_CREATED)
+async def create_patient_manual(
+    body: dict,
+    doctor=Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually create a patient record under the current doctor.
+
+    Used for walk-in patients who don't use the patient portal.
+    Body: { name, phone (optional), email (optional) }
+    The patient is created with a v1 version and owned by this doctor.
+    No User record is created — the patient exists only in this clinic's scope.
+    """
+    name = body.get("name", "").strip()
+    phone = body.get("phone", "").strip()
+    email = body.get("email", "").strip()
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Patient name is required")
+
+    # Encrypt PII if provided
+    phone_enc = None
+    email_enc = None
+    if phone:
+        try:
+            phone_enc = await encrypt_value(db, phone, "patient-phone")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to encrypt phone: {exc}")
+    if email:
+        try:
+            email_enc = await encrypt_value(db, email, "patient-email")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to encrypt email: {exc}")
+
+    patient = Patient(
+        doctor_id=doctor.id,
+        user_id=None,  # not an app user
+        phone_enc=phone_enc,
+        email_enc=email_enc,
+    )
+    db.add(patient)
+    await db.flush()
+
+    # Mint v1 version
+    initial_state = {
+        "demographics": {
+            "name": name,
+            "phone": phone or None,
+            "email": email or None,
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    version = _PV(
+        patient_id=patient.id,
+        doctor_id=doctor.id,
+        version_number=1,
+        state_jsonb=initial_state,
+        version_hash=_PV.compute_hash(initial_state),
+        author=f"doctor:{doctor.id}",
+        edit_type="manual",
+        summary=f"Manual registration: {name}",
+        tags=["demographics"],
+        clinical_significance=0.0,
+    )
+    db.add(version)
+    await db.flush()
+
+    patient.head_version_id = version.id
+    await db.commit()
+    await db.refresh(patient)
+
+    # Audit log
+    try:
+        audit = AuditLog(
+            doctor_id=doctor.id,
+            actor=f"doctor:{doctor.id}",
+            action="write",
+            resource_type="patient",
+            resource_id=patient.id,
+            payload_jsonb={"method": "manual_registration"},
+        )
+        db.add(audit)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+
+    return {
+        "id": str(patient.id),
+        "name": name,
+        "has_phone": bool(phone),
+        "has_email": bool(email),
+        "message": "Patient created — no app user linked",
+    }

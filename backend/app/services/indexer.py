@@ -232,7 +232,11 @@ async def reindex_patient_job(ctx, patient_id: str):
             .where(PatientVersion.patient_id == patient.id)
             .order_by(PatientVersion.version_number)
         )
-        version_list = versions.scalars().all()
+        # Use yield_per to avoid loading all versions into memory at once
+        version_list = []
+        for v in versions.yield_per(50):
+            version_list.append(v)
+
         results = []
         for version in version_list:
             try:

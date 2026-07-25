@@ -3,21 +3,41 @@
 import os
 import json
 import uuid
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Literal
 from contextlib import asynccontextmanager
 
+import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, Filter, FieldCondition,
     Range, MatchValue, SearchRequest, SearchParams, UpdateStatus,
     PayloadSchemaType, SparseVectorParams, SparseVector,
-    NamedVector, NamedVectorList, ScoredPoint,
+    NamedVector, ScoredPoint,
 )
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ─── Projector (Feature C) ───
+# Lazy import to avoid circular dependency
+_projector_matrix: Optional[np.ndarray] = None
+
+
+def _get_projector() -> Optional[np.ndarray]:
+    """Get cached projector matrix (W: 512→1024) for BiomedCLIP → BGE-M3 projection."""
+    global _projector_matrix
+    if _projector_matrix is not None:
+        return _projector_matrix
+    try:
+        from app.services.feature_c_projector import load_projector
+        _projector_matrix = load_projector()
+        return _projector_matrix
+    except Exception:
+        return None
+
 
 # ─── Collection Config ───
 PATIENT_VERSION_COLLECTION = "patient_versions"
@@ -25,7 +45,7 @@ PATIENT_VERSION_COLLECTION = "patient_versions"
 VECTOR_CONFIG = {
     "medical_text": {"size": 768, "distance": Distance.COSINE},    # MedCPT
     "hybrid": {"size": 1024, "distance": Distance.COSINE},         # BGE-M3 dense
-    "image": {"size": 512, "distance": Distance.COSINE},           # NV-CLIP
+    "image": {"size": 512, "distance": Distance.COSINE},           # BiomedCLIP
 }
 
 SPARSE_VECTOR_NAME = "sparse"
@@ -41,25 +61,29 @@ class QdrantService:
         if self._client is not None:
             return self._client
 
-        self._client = QdrantClient(
-            host=settings.QDRANT_HOST,
-            port=settings.QDRANT_PORT,
-            timeout=10,
-        )
+        def _create_client():
+            return QdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_PORT,
+                timeout=10,
+            )
+
+        self._client = await asyncio.to_thread(_create_client)
         # Test connection
-        self._client.get_collections()
+        await asyncio.to_thread(self._client.get_collections)
         await self._ensure_collection()
         return self._client
 
     async def _ensure_collection(self):
         """Create collection with named vectors if it doesn't exist."""
         client = await self.connect()
-        collections = client.get_collections().collections
-        names = [c.name for c in collections]
+        collections = await asyncio.to_thread(client.get_collections)
+        names = [c.name for c in collections.collections]
 
         if PATIENT_VERSION_COLLECTION not in names:
             logger.info(f"Creating collection: {PATIENT_VERSION_COLLECTION}")
-            client.create_collection(
+            await asyncio.to_thread(
+                client.create_collection,
                 collection_name=PATIENT_VERSION_COLLECTION,
                 vectors_config={
                     "medical_text": VectorParams(size=768, distance=Distance.COSINE),
@@ -72,36 +96,20 @@ class QdrantService:
                 on_disk_payload=True,
             )
             # Create payload indexes for filtering
-            client.create_payload_index(
-                collection_name=PATIENT_VERSION_COLLECTION,
-                field_name="patient_id",
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-            client.create_payload_index(
-                collection_name=PATIENT_VERSION_COLLECTION,
-                field_name="doctor_id",
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-            client.create_payload_index(
-                collection_name=PATIENT_VERSION_COLLECTION,
-                field_name="timestamp",
-                field_schema=PayloadSchemaType.DATETIME,
-            )
-            client.create_payload_index(
-                collection_name=PATIENT_VERSION_COLLECTION,
-                field_name="modality",
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-            client.create_payload_index(
-                collection_name=PATIENT_VERSION_COLLECTION,
-                field_name="version_number",
-                field_schema=PayloadSchemaType.INTEGER,
-            )
-            client.create_payload_index(
-                collection_name=PATIENT_VERSION_COLLECTION,
-                field_name="clinical_significance",
-                field_schema=PayloadSchemaType.FLOAT,
-            )
+            for field_name, field_schema in [
+                ("patient_id", PayloadSchemaType.KEYWORD),
+                ("doctor_id", PayloadSchemaType.KEYWORD),
+                ("timestamp", PayloadSchemaType.DATETIME),
+                ("modality", PayloadSchemaType.KEYWORD),
+                ("version_number", PayloadSchemaType.INTEGER),
+                ("clinical_significance", PayloadSchemaType.FLOAT),
+            ]:
+                await asyncio.to_thread(
+                    client.create_payload_index,
+                    collection_name=PATIENT_VERSION_COLLECTION,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                )
 
     # ─── Point Operations ───
 
@@ -110,10 +118,7 @@ class QdrantService:
         client = await self.connect()
 
         # Generate point ID (use version_id if available, else generate)
-        point_id = str(uuid.uuid4())
-        version_id = version_data.get("version_id")
-        if version_id:
-            point_id = str(version_id)
+        point_id = str(version_data.get("version_id", uuid.uuid4()))
 
         # Build point
         point = PointStruct(
@@ -145,8 +150,8 @@ class QdrantService:
             },
         )
 
-        client = await self.connect()
-        client.upsert(
+        await asyncio.to_thread(
+            client.upsert,
             collection_name=PATIENT_VERSION_COLLECTION,
             points=[point],
             wait=True,
@@ -165,22 +170,7 @@ class QdrantService:
         sparse_vector: Optional[Dict[str, List]] = None,
         timestamp_lte: Optional[str] = None,
     ) -> List[ScoredPoint]:
-        """Hybrid search with temporal filter and doctor isolation.
-
-        Args:
-            patient_id: UUID of the patient.
-            doctor_id: UUID of the doctor (for RLS isolation).
-            query_vector: Dense query vector for the named vector.
-            vector_name: Which named vector to search ('medical_text', 'hybrid', 'image').
-            limit: Max results.
-            score_threshold: Minimum similarity score.
-            use_hybrid: Enable hybrid (dense + sparse) search for text vectors.
-            sparse_vector: Dict with 'indices' and 'values' lists for sparse search.
-            timestamp_lte: Only return versions at or before this timestamp (ISO-8601).
-
-        Returns:
-            List of scored Qdrant points.
-        """
+        """Hybrid search with temporal filter and doctor isolation."""
         client = await self.connect()
 
         # Build filter: doctor isolation + patient + optional time
@@ -211,7 +201,6 @@ class QdrantService:
                     with_payload=True,
                 ),
             ]
-            # Add sparse search request if we have sparse data
             if sparse.indices and sparse.values:
                 search_requests.append(
                     SearchRequest(
@@ -223,12 +212,12 @@ class QdrantService:
                     )
                 )
 
-            results = client.search_batch(
+            results = await asyncio.to_thread(
+                client.search_batch,
                 collection_name=PATIENT_VERSION_COLLECTION,
                 requests=search_requests,
             )
 
-            # Reciprocal rank fusion of results
             if len(results) > 1:
                 fused = self._reciprocal_rank_fusion(
                     [list(r) for r in results],
@@ -239,7 +228,8 @@ class QdrantService:
             return results[0][:limit] if results else []
 
         # Dense-only search
-        results = client.search(
+        results = await asyncio.to_thread(
+            client.search,
             collection_name=PATIENT_VERSION_COLLECTION,
             query_vector=(vector_name, query_vector),
             query_filter=filter_obj,
@@ -260,7 +250,6 @@ class QdrantService:
                 point_id = str(point.id)
                 scores[point_id] = scores.get(point_id, 0.0) + 1.0 / (k + rank + 1)
 
-        # Build result list sorted by fused score
         scored_points = {}
         for rank_list in result_lists:
             for point in rank_list:
@@ -272,8 +261,16 @@ class QdrantService:
         fused = []
         for pid in sorted_ids[:top_n]:
             pt = scored_points[pid]
-            pt.score = scores[pid]
-            fused.append(pt)
+            # Copy to avoid mutating shared Qdrant response objects
+            fused.append(ScoredPoint(
+                id=pt.id,
+                version=pt.version,
+                score=scores[pid],
+                payload=pt.payload,
+                vector=pt.vector,
+                shard_key=pt.shard_key,
+                order_value=pt.order_value,
+            ))
         return fused
 
     async def search_image_similar(
@@ -283,12 +280,34 @@ class QdrantService:
         image_vector: List[float],
         limit: int = 10,
         score_threshold: float = 0.4,
+        use_projector: bool = True,
     ) -> List[ScoredPoint]:
-        """Image-only similarity search (ORB + NV-CLIP fallback)."""
+        """Image-only similarity search.
+
+        If a trained projector (Feature C) is available and use_projector=True,
+        projects the BiomedCLIP 512d vector to BGE-M3 1024d space and searches
+        the 'hybrid' vector instead of 'image' vector for cross-modal retrieval.
+        """
         client = await self.connect()
-        return client.search(
+
+        # Try to use projector for cross-modal search (Feature C)
+        W = _get_projector() if use_projector else None
+        query_vec = image_vector
+        vector_name = "image"
+
+        if W is not None:
+            import numpy as np
+            # Project BiomedCLIP (512) -> BGE-M3 (1024)
+            img_np = np.array(image_vector, dtype=np.float32).reshape(1, -1)
+            projected = img_np @ W.T  # (1, 1024)
+            query_vec = projected[0].tolist()
+            vector_name = "hybrid"
+            logger.debug("Feature C: Using projector for cross-modal image search")
+
+        return await asyncio.to_thread(
+            client.search,
             collection_name=PATIENT_VERSION_COLLECTION,
-            query_vector=("image", image_vector),
+            query_vector=(vector_name, query_vec),
             query_filter=Filter(must=[
                 FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
                 FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
@@ -301,7 +320,8 @@ class QdrantService:
     async def delete_version(self, version_id: str) -> bool:
         """Delete a version point."""
         client = await self.connect()
-        result = client.delete(
+        result = await asyncio.to_thread(
+            client.delete,
             collection_name=PATIENT_VERSION_COLLECTION,
             points_selector=[uuid.UUID(version_id)],
             wait=True,
@@ -311,7 +331,8 @@ class QdrantService:
     async def get_version(self, version_id: str) -> Optional[ScoredPoint]:
         """Get a single version by ID."""
         client = await self.connect()
-        results = client.retrieve(
+        results = await asyncio.to_thread(
+            client.retrieve,
             collection_name=PATIENT_VERSION_COLLECTION,
             ids=[uuid.UUID(version_id)],
             with_payload=True,
@@ -322,7 +343,8 @@ class QdrantService:
     async def get_patient_versions(self, patient_id: str, doctor_id: str, limit: int = 100) -> List[ScoredPoint]:
         """Get all versions for a patient (for timeline)."""
         client = await self.connect()
-        results = client.scroll(
+        results = await asyncio.to_thread(
+            client.scroll,
             collection_name=PATIENT_VERSION_COLLECTION,
             scroll_filter=Filter(must=[
                 FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
@@ -331,13 +353,51 @@ class QdrantService:
             limit=limit,
             with_payload=True,
             with_vectors=False,
-            order_by="timestamp",
         )
         return results[0]
 
+    async def get_patient_vectors(
+        self,
+        patient_id: str,
+        doctor_id: str,
+        vector_name: str = "medical_text",
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Fetch a patient's version vectors for trajectory analysis (Feature E).
+
+        Returns a list of {"version_number", "timestamp", "vector"} sorted by
+        version_number ascending (oldest first). Versions lacking the named
+        vector are skipped.
+        """
+        client = await self.connect()
+        points, _ = await asyncio.to_thread(
+            client.scroll,
+            collection_name=PATIENT_VERSION_COLLECTION,
+            scroll_filter=Filter(must=[
+                FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
+                FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
+            ]),
+            limit=limit,
+            with_payload=True,
+            with_vectors=[vector_name],
+        )
+        out = []
+        for p in points:
+            vec = (p.vector or {}).get(vector_name) if isinstance(p.vector, dict) else None
+            if not vec:
+                continue
+            out.append({
+                "version_number": (p.payload or {}).get("version_number", 0),
+                "timestamp": (p.payload or {}).get("timestamp"),
+                "vector": vec,
+            })
+        out.sort(key=lambda r: r["version_number"])
+        return out
+
     async def count_versions(self, patient_id: str, doctor_id: str) -> int:
         client = await self.connect()
-        count = client.count(
+        count = await asyncio.to_thread(
+            client.count,
             collection_name=PATIENT_VERSION_COLLECTION,
             count_filter=Filter(must=[
                 FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),

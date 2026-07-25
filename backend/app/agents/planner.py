@@ -183,7 +183,7 @@ class SelfPlanner:
                 logger.error("Plan generation failed (attempt %d/%d): %s", attempts, self._max_plan_attempts, exc)
 
         # Fallback: generate a minimal static plan
-        return self._fallback_plan(query, intent, patient_id)
+        return self._fallback_plan(query, intent, patient_id, doctor_id)
 
     def _validate_plan(self, raw: Dict) -> Optional[Dict]:
         """Validate plan structure and fix common issues."""
@@ -219,7 +219,7 @@ class SelfPlanner:
             "reasoning": str(raw.get("reasoning", ""))[:500],
         }
 
-    def _fallback_plan(self, query: str, intent: AgentIntent, patient_id: Optional[str]) -> Dict:
+    def _fallback_plan(self, query: str, intent: AgentIntent, patient_id: Optional[str], doctor_id: Optional[str] = None) -> Dict:
         """Fallback static plan when Maverick isn't available."""
         steps = []
         if intent == AgentIntent.PATIENT_QA and patient_id:
@@ -227,6 +227,7 @@ class SelfPlanner:
                 {"id": 1, "tool": "retrieve_patient_context", "args": {
                     "patient_id": patient_id,
                     "query": query,
+                    "doctor_id": doctor_id or "",
                     "k": 8,
                 }, "depends_on": []},
                 {"id": 2, "tool": "synthesize_response", "args": {
@@ -331,7 +332,7 @@ class PlanCritic:
 
         prompt = (
             f"Evaluate this execution:\n\n"
-            f"{json.dumps(critic_context, indent=2)}\n\n"
+            f"{json.dumps(critic_context, indent=2, default=str)}\n\n"
             f"Should we re-plan or finish?"
         )
 

@@ -222,6 +222,10 @@ export interface RiskAlert {
   triggered_at: string
   acknowledged_by?: string
   acknowledged_at?: string
+  // UI display fields (may be populated by store mapping)
+  patient_name?: string
+  message?: string
+  detected_at?: string
 }
 
 export interface AuditLog {

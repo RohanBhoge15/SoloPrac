@@ -6,10 +6,15 @@ Suitable for mentor review, capstone presentation, and demo video.
 
 ---
 
-## 1. Login (30s)
+## 1. Login & Verification (60s)
 1. Open `http://localhost:5173`
-2. Click "Login with Google" (or use test credentials for dev)
-3. Show doctor dashboard loads with patient list
+2. Click "Register with Email" → enter email + password + name → new doctor created (`verification_status: unverified`)
+3. Show you can access dashboard immediately as unverified doctor (private practice works)
+4. Click "Upload License" → submit registration number + license PDF → status becomes `pending_verification`
+5. Login as admin → `GET /admin/verifications/pending` → see pending doctor
+6. Click "Approve" → doctor becomes `verified`
+7. Logout, login as the verified doctor → profile shows "Verified Practice" badge
+8. (Alt: Click "Login with Google" to use OAuth flow)
 
 ## 2. Patient Timeline + Versioning (45s)
 1. Click any patient → Timeline view loads
@@ -30,7 +35,7 @@ Suitable for mentor review, capstone presentation, and demo video.
 ## 4. Document Parsing + OCR (30s)
 1. Go to Scratchpad (`/scratchpad`)
 2. Upload a prescription PDF/image
-3. Show: parsing → schema alignment → extracted fields
+3. Show: parsing → schema alignment → extracted fields (Nanonets-OCR2 for handwritten)
 4. Click "Save to Patient" → document linked to patient
 
 ## 5. Image Registration + Comparison (45s)
@@ -67,11 +72,12 @@ Suitable for mentor review, capstone presentation, and demo video.
 
 ## 9. Patient Portal (30s)
 1. Open `/patient/login` in new tab/incognito
-2. Enter phone → receive OTP → login
+2. Enter phone → receive OTP → SHA256 phone_hash lookup → login (cross-tenant User)
 3. Show Patient Dashboard with appointment count + notifications
-4. Search for a doctor → Leaflet map with doctor locations
-5. Click doctor → see available slots → book appointment
-6. Show Inbox with real-time notifications via WebSocket
+4. Search for a doctor → Leaflet map with doctor locations (**only verified doctors shown**)
+5. Click doctor → see profile with `verification_status` badge ("Verified Practice" / "Practice Account")
+6. See available slots → book appointment (creates Patient row under that doctor with user_id)
+7. Show Inbox with real-time notifications via WebSocket
 
 ## 10. Weekly Reports + Risk Alerts (30s)
 1. Go to Weekly Report page

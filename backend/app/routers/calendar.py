@@ -218,6 +218,7 @@ async def get_working_hours(
         "working_hours_json": settings.get("working_hours_json", {}),
         "buffer_minutes": settings.get("buffer_minutes_between_consults", DEFAULT_BUFFER_MINUTES),
         "default_duration": settings.get("default_consult_duration", DEFAULT_DURATION_MINUTES),
+        "max_bookings_per_window": settings.get("max_bookings_per_window"),
     }
 
 
@@ -251,10 +252,17 @@ async def update_working_hours(
         if not isinstance(dd, int) or dd < 5 or dd > 120:
             raise HTTPException(status_code=400, detail="default_duration must be 5-120")
         settings["default_consult_duration"] = dd
+    if "max_bookings_per_window" in body:
+        mb = body["max_bookings_per_window"]
+        if mb is not None:
+            if not isinstance(mb, int) or mb < 1 or mb > 100:
+                raise HTTPException(status_code=400, detail="max_bookings_per_window must be 1-100")
+        settings["max_bookings_per_window"] = mb
 
     doc.settings = settings
     await db.commit()
 
     return {"status": "ok", "working_hours_json": settings.get("working_hours_json", {}),
             "buffer_minutes": settings.get("buffer_minutes_between_consults", DEFAULT_BUFFER_MINUTES),
-            "default_duration": settings.get("default_consult_duration", DEFAULT_DURATION_MINUTES)}
+            "default_duration": settings.get("default_consult_duration", DEFAULT_DURATION_MINUTES),
+            "max_bookings_per_window": settings.get("max_bookings_per_window")}

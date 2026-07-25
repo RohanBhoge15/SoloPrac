@@ -24,11 +24,7 @@ from app.services.feature_b_eval import FeatureBEvaluator, generate_100_query_se
 from app.services.feature_c_projector import ProjectorTrainer, generate_synthetic_pairs
 from app.services.feature_c_eval import evaluate_projector, run_qualitative_panel
 from app.services.feature_e_clustering import run_full_evaluation as run_feature_e_eval
-from app.services.research_data_mgmt import (
-    export_langfuse_metrics,
-    verify_data_anonymization,
-    get_research_data_report,
-)
+from app.services.research_data_mgmt import verify_data_anonymization
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +147,28 @@ async def evaluate_feature_e(
 
 
 @router.get("/research-data")
-async def get_research_data():
-    """Get research data management report for the paper."""
-    return get_research_data_report()
+async def get_research_data(
+    doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get research data management report for the paper.
+
+    Queries live DB for real counts where available.
+    Never fabricates values — returns null/unavailable when infra is down.
+    """
+    from app.services.research_data_mgmt import get_research_data_report as _get_report
+    return await _get_report(doctor_id=doctor.id, db=db)
 
 
 @router.post("/langfuse-export")
-async def export_langfuse():
-    """Export Langfuse metrics for the paper."""
-    return export_langfuse_metrics()
+async def export_langfuse(
+    doctor: Doctor = Depends(get_current_doctor),
+):
+    """Export Langfuse metrics computed from live evaluation harnesses.
+
+    Each Feature (A-F) runs its evaluation harness and returns real computed
+    metrics. If a harness fails (infra unavailable), returns {status: "unavailable"}.
+    Never fabricates or hardcodes metric values.
+    """
+    from app.services.research_data_mgmt import export_langfuse_metrics as _export
+    return await _export(doctor_id=doctor.id)

@@ -9,13 +9,36 @@ from sqlalchemy import (
     Column, String, Text, DateTime, ForeignKey, Integer, Float, Boolean,
     BigInteger, Index, UniqueConstraint, event,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, INET, ARRAY as PG_ARRAY, GEOGRAPHY
+from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, INET, ARRAY as PG_ARRAY
 from sqlalchemy.orm import relationship, declared_attr
+from sqlalchemy import text
 from app.database import Base
 
 
 def utc_now():
     return datetime.now(timezone.utc)
+
+
+class User(Base):
+    """Cross-tenant app user — no doctor scope, no RLS.
+
+    A user authenticates via OTP (phone). They can be a patient at
+    multiple clinics; each visit creates a separate Patient row
+    scoped to that doctor.
+    """
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    phone = Column(String(20), nullable=False)
+    phone_hash = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    # No RLS — this table is intentionally cross-tenant
+
+    def __repr__(self):
+        return f"<User(id={self.id}, phone={self.phone[-4:]})>"
 
 
 class Doctor(Base):
@@ -25,11 +48,19 @@ class Doctor(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
     speciality = Column(String(100), default="General Practice")
-    location = Column(GEOGRAPHY(geometry_type="POINT", srid=4326), nullable=True)
+    location = Column(String(255), nullable=True)  # coordinates as "lat,lng"
     clinic_name = Column(String(255))
     clinic_address = Column(Text)
     phone = Column(String(50))
     registration_number = Column(String(100))
+    password_hash = Column(String(255), nullable=True)
+    verification_status = Column(
+        String(20), nullable=False, default="unverified",
+        comment="unverified | pending_verification | verified | rejected"
+    )
+    license_document_path = Column(String(500), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
     settings = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
@@ -47,6 +78,7 @@ class Patient(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     head_version_id = Column(UUID(as_uuid=True), ForeignKey("patient_versions.id"), nullable=True)
     phone_enc = Column(BYTEA)
     email_enc = Column(BYTEA)
@@ -55,6 +87,7 @@ class Patient(Base):
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     doctor = relationship("Doctor", back_populates="patients")
+    user = relationship("User")
     versions = relationship(
         "PatientVersion",
         back_populates="patient",
@@ -148,6 +181,7 @@ class PrescriptionBox(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     version_id = Column(UUID(as_uuid=True), ForeignKey("patient_versions.id", ondelete="CASCADE"), nullable=False)
+    patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False, index=True)
     doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False)
     rx_jsonb = Column(JSONB, nullable=False)
     pdf_path = Column(String(500))
@@ -259,7 +293,8 @@ class PatientNotification(Base):
     kind = Column(String(50), nullable=False)
     subject = Column(String(255), nullable=False)
     body = Column(Text, nullable=False)
-    channel = Column(PG_ARRAY(String), default=["in_app"])
+    channel = Column(PG_ARRAY(String), default=list)
+    meta = Column(JSONB, nullable=True)  # resource linkage: {resource_type, resource_id, pdf_url, ...}
     read = Column(Boolean, default=False)
     delivered_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), default=utc_now)
@@ -271,7 +306,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False, index=True)
+    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="SET NULL"), nullable=True, index=True)
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL"), nullable=True)
     actor = Column(String(100), nullable=False)
     action = Column(String(50), nullable=False)
@@ -289,10 +324,23 @@ class AuditLog(Base):
     )
 
 
+class ReportVerification(Base):
+    __tablename__ = "report_verifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False)
+    verification_code = Column(String(100), unique=True, nullable=False, index=True)
+    report_type = Column(String(20), nullable=False, default="weekly_report")
+    generated_at = Column(DateTime(timezone=True), default=utc_now)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class ImageComparison(Base):
     __tablename__ = "image_comparisons"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False, index=True)
     version_id = Column(UUID(as_uuid=True), ForeignKey("patient_versions.id", ondelete="CASCADE"), nullable=False)
     current_image_path = Column(String(500), nullable=False)
     matched_version_id = Column(UUID(as_uuid=True), ForeignKey("patient_versions.id"), nullable=True)
@@ -304,5 +352,6 @@ class ImageComparison(Base):
     clinical_summary = Column(Text)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
+    doctor = relationship("Doctor")
     version = relationship("PatientVersion", foreign_keys=[version_id])
     matched_version = relationship("PatientVersion", foreign_keys=[matched_version_id])

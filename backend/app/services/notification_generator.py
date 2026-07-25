@@ -36,6 +36,7 @@ EVENT_TYPES = [
     "reschedule_notification",
     "cancellation_notification",
     "report_available",
+    "prescription_issued",
     "invoice_generated",
     "certificate_issued",
 ]
@@ -65,6 +66,12 @@ PROMPT_TEMPLATES: Dict[str, str] = {
         "Generate a notification that a new medical report is available. "
         "Patient: {patient_name}. Report type: {report_type}. "
         "Output JSON with 'subject' and 'body'. Explain what the report contains briefly."
+    ),
+    "prescription_issued": (
+        "Generate a notification that a new prescription has been issued. "
+        "Patient: {patient_name}. Doctor: {doctor_name} ({doctor_speciality}) at {clinic_name}. "
+        "Medications prescribed: {medications}. "
+        "Output JSON with 'subject' and 'body' fields. The body should briefly list the prescribed medications."
     ),
     "invoice_generated": (
         "Generate an invoice notification. "
@@ -98,6 +105,10 @@ FALLBACK_TEMPLATES: Dict[str, Dict[str, str]] = {
     "report_available": {
         "subject": "New Report Available",
         "body": "Dear {patient_name}, a new {report_type} report is now available in your portal.",
+    },
+    "prescription_issued": {
+        "subject": "Prescription Issued - {doctor_name}",
+        "body": "Dear {patient_name}, Dr. {doctor_name} has issued a new prescription. Medications: {medications}.",
     },
     "invoice_generated": {
         "subject": "Invoice #{invoice_number} Generated",
@@ -174,6 +185,7 @@ async def create_patient_notification(
     subject: str,
     body: str,
     channels: list = None,
+    meta: dict = None,
 ) -> dict:
     """Create a patient notification record and push via WebSocket."""
     from app.models import PatientNotification
@@ -187,6 +199,7 @@ async def create_patient_notification(
         subject=subject[:255],
         body=body,
         channel=channels or ["in_app"],
+        meta=meta,
     )
     db_session.add(notification)
     await db_session.commit()
@@ -195,7 +208,7 @@ async def create_patient_notification(
     # Push via WebSocket
     try:
         from app.routers.portal import ws_manager
-        await ws_manager.notify_patient(str(patient_id), {
+        payload = {
             "type": "notification",
             "data": {
                 "id": str(notification.id),
@@ -204,7 +217,10 @@ async def create_patient_notification(
                 "body": body,
                 "created_at": notification.created_at.isoformat() if notification.created_at else None,
             },
-        })
+        }
+        if meta:
+            payload["data"]["meta"] = meta
+        await ws_manager.notify_patient(str(patient_id), payload)
     except Exception as exc:
         logger.warning("WebSocket push failed: %s", exc)
 
@@ -213,6 +229,7 @@ async def create_patient_notification(
         "kind": event_type,
         "subject": subject,
         "body": body,
+        "meta": meta,
     }
 
 
@@ -221,6 +238,7 @@ async def generate_and_dispatch(
     event_type: str,
     patient_id,
     doctor_id,
+    meta: dict = None,
     **context,
 ) -> dict:
     """Generate notification and dispatch via WebSocket + email.
@@ -249,6 +267,7 @@ async def generate_and_dispatch(
         db_session, patient_id, doctor_id,
         event_type, content["subject"], content["body"],
         channels=channels,
+        meta=meta,
     )
 
     # Email fallback

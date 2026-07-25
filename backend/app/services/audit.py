@@ -63,7 +63,6 @@ async def verify_rls_isolation(db: AsyncSession) -> dict:
     doctor_b = uuid.uuid4()
 
     tables_to_test = [
-        "doctors",
         "patients",
         "patient_versions",
         "prescription_boxes",

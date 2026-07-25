@@ -1,11 +1,11 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { cn } from '@/utils/helpers'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
-import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File } from 'lucide-react'
+import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File, Search } from 'lucide-react'
 
 interface ParsedDocument {
   doc_id: string
@@ -29,11 +29,11 @@ interface UploadingFile {
   error?: string
 }
 
-const MOCK_PATIENTS = [
-  { id: '1', initials: 'PS', name: 'Priya Sharma' },
-  { id: '2', initials: 'RK', name: 'Rajesh Kumar' },
-  { id: '3', initials: 'AP', name: 'Anita Patel' },
-]
+interface PatientSummary {
+  id: string
+  initials: string
+  name: string
+}
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   prescription: 'Prescription',
@@ -60,6 +60,39 @@ export function Scratchpad() {
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [patients, setPatients] = useState<PatientSummary[]>([])
+  const [patientsLoading, setPatientsLoading] = useState(false)
+  const [patientSearch, setPatientSearch] = useState('')
+
+  // Fetch real patients on mount
+  useEffect(() => {
+    let cancelled = false
+    setPatientsLoading(true)
+    apiClient.get('/patients', { params: { limit: 200 } })
+      .then(res => {
+        if (cancelled) return
+        const data = res.data ?? []
+        const mapped: PatientSummary[] = data.map((p: any) => {
+          const demo = p.head_version?.state_jsonb?.demographics ?? {}
+          const name = demo.name ?? `Patient ${p.id.slice(0, 8)}`
+          return {
+            id: p.id,
+            initials: name.split(' ').map((n: string) => n[0]).join(''),
+            name,
+          }
+        })
+        setPatients(mapped)
+      })
+      .catch((err) => {
+        console.warn('[Scratchpad] Failed to load patients:', err)
+      })
+      .finally(() => { if (!cancelled) setPatientsLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const filteredPatients = patientSearch.trim()
+    ? patients.filter(p => p.name.toLowerCase().includes(patientSearch.toLowerCase()))
+    : patients
 
   const handleDrop = useCallback(async (droppedFiles: FileList | File[]) => {
     const newFiles: UploadingFile[] = Array.from(droppedFiles).map((f) => ({
@@ -81,13 +114,12 @@ export function Scratchpad() {
 
       try {
         const formData = new FormData()
-        // Find the original file object
         const fileObj = Array.from(droppedFiles).find(f => f.name === nf.name)
         if (fileObj) {
           formData.append('file', fileObj)
         }
 
-        const response = await apiClient.post('/api/v1/documents/parse', formData, {
+        const response = await apiClient.post('/documents/parse', formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
           timeout: 60000,
         })
@@ -145,7 +177,7 @@ export function Scratchpad() {
     try {
       const formData = new FormData()
       formData.append('patient_id', selectedPatient)
-      await apiClient.post(`/api/v1/documents/${selectedDocId}/save-to-patient`, formData)
+      await apiClient.post(`/documents/${selectedDocId}/save-to-patient`, formData)
       setSaving(false)
       setSaved(true)
       setTimeout(() => {
@@ -162,6 +194,8 @@ export function Scratchpad() {
 
   const openSaveDialog = (docId: string) => {
     setSelectedDocId(docId)
+    setSelectedPatient(null)
+    setPatientSearch('')
     setShowSaveDialog(true)
   }
 
@@ -358,10 +392,10 @@ export function Scratchpad() {
         </div>
       )}
 
-      {/* Save to Patient Dialog */}
+      {/* Save to Patient Dialog — Real Patient List */}
       {showSaveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => !saving && setShowSaveDialog(false)}>
-          <div className="bg-white dark:bg-gray-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl border border-gray-200 dark:border-gray-700" onClick={e => e.stopPropagation()}>
+          <div className="bg-white dark:bg-gray-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl border border-gray-200 dark:border-gray-700 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Save to Patient Record</h3>
 
             {saved ? (
@@ -375,25 +409,52 @@ export function Scratchpad() {
                 <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
                   Select a patient to save this parsed document as a new versioned record entry.
                 </p>
-                <div className="space-y-2 mb-6">
-                  {MOCK_PATIENTS.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => setSelectedPatient(p.id)}
-                      className={cn(
-                        'flex items-center gap-3 w-full p-3 rounded-lg border transition-colors text-left',
-                        selectedPatient === p.id
-                          ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                          : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      )}
-                    >
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
-                        <span className="text-xs font-medium text-primary-700 dark:text-primary-300">{p.initials}</span>
-                      </div>
-                      <span className="font-medium text-gray-900 dark:text-white">{p.name}</span>
-                    </button>
-                  ))}
+
+                {/* Patient search */}
+                <div className="relative mb-4">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  <Input
+                    value={patientSearch}
+                    onChange={e => setPatientSearch(e.target.value)}
+                    placeholder="Search patients..."
+                    className="pl-10"
+                  />
                 </div>
+
+                {/* Patient list */}
+                <div className="space-y-2 mb-6 overflow-y-auto flex-1 max-h-[300px]">
+                  {patientsLoading ? (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                    </div>
+                  ) : filteredPatients.length === 0 ? (
+                    <p className="text-center text-sm text-gray-500 py-4">
+                      {patientSearch ? 'No patients match your search' : 'No patients found. Create a patient first.'}
+                    </p>
+                  ) : (
+                    filteredPatients.slice(0, 30).map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => setSelectedPatient(p.id)}
+                        className={cn(
+                          'flex items-center gap-3 w-full p-3 rounded-lg border transition-colors text-left',
+                          selectedPatient === p.id
+                            ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                            : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                        )}
+                      >
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
+                          <span className="text-xs font-medium text-primary-700 dark:text-primary-300">{p.initials}</span>
+                        </div>
+                        <span className="font-medium text-gray-900 dark:text-white">{p.name}</span>
+                        {selectedPatient === p.id && (
+                          <CheckCircle className="h-4 w-4 text-primary-600 ml-auto" />
+                        )}
+                      </button>
+                    ))
+                  )}
+                </div>
+
                 <div className="flex items-center justify-end gap-3">
                   <Button variant="outline" onClick={() => setShowSaveDialog(false)} disabled={saving}>
                     Cancel

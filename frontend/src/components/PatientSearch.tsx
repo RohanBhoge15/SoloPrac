@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
 import { Input } from '@/components/ui/Input'
-import { Search, User, X } from 'lucide-react'
+import { Search, User, X, Loader2 } from 'lucide-react'
+import apiClient from '@/services/api'
 
 interface PatientSearchResult {
   id: string
@@ -14,19 +15,6 @@ interface PatientSearchResult {
   gender?: string
   lastVisit?: string
 }
-
-const MOCK_PATIENTS: PatientSearchResult[] = [
-  { id: '1', initials: 'PS', name: 'Priya Sharma', age: 45, gender: 'Female', lastVisit: '2 days ago' },
-  { id: '2', initials: 'RK', name: 'Rajesh Kumar', age: 32, gender: 'Male', lastVisit: 'Yesterday' },
-  { id: '3', initials: 'AP', name: 'Anita Patel', age: 58, gender: 'Female', lastVisit: '1 week ago' },
-  { id: '4', initials: 'MA', name: 'Mohammed Ali', age: 28, gender: 'Male', lastVisit: 'Today' },
-  { id: '5', initials: 'SD', name: 'Sunita Devi', age: 41, gender: 'Female', lastVisit: '3 days ago' },
-  { id: '6', initials: 'VK', name: 'Vikram Khanna', age: 35, gender: 'Male', lastVisit: '5 days ago' },
-  { id: '7', initials: 'LP', name: 'Lata Patil', age: 62, gender: 'Female', lastVisit: '2 weeks ago' },
-  { id: '8', initials: 'AJ', name: 'Arun Joshi', age: 50, gender: 'Male', lastVisit: '1 day ago' },
-  { id: '9', initials: 'SS', name: 'Sneha Sharma', age: 27, gender: 'Female', lastVisit: 'Today' },
-  { id: '10', initials: 'DK', name: 'Deepak Kulkarni', age: 55, gender: 'Male', lastVisit: '4 days ago' },
-]
 
 interface PatientSearchProps {
   onSelect?: (patient: PatientSearchResult) => void
@@ -45,29 +33,49 @@ export function PatientSearch({
   const [results, setResults] = useState<PatientSearchResult[]>([])
   const [isOpen, setIsOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
+  const [loading, setLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  const debounceRef = useRef<NodeJS.Timeout>()
 
-  const filterPatients = (searchQuery: string) => {
+  const fetchPatients = useCallback(async (searchQuery: string) => {
     if (!searchQuery.trim()) {
       setResults([])
-      return []
+      return
     }
-    const q = searchQuery.toLowerCase()
-    return MOCK_PATIENTS.filter(
-      p =>
-        p.name.toLowerCase().includes(q) ||
-        p.initials.toLowerCase().includes(q)
-    )
-  }
+    setLoading(true)
+    try {
+      const res = await apiClient.get('/patients/search', { params: { q: searchQuery, limit: 15 } })
+      const patients = (res.data ?? []).map((p: any) => {
+        const demo = p.head_version?.state_jsonb?.demographics ?? {}
+        const name = demo.name ?? `Patient ${p.id.slice(0, 8)}`
+        return {
+          id: p.id,
+          initials: name.split(' ').map((n: string) => n[0]).join(''),
+          name,
+          age: demo.age,
+          gender: demo.gender,
+          lastVisit: p.updated_at ? new Date(p.updated_at).toLocaleDateString() : undefined,
+        }
+      })
+      setResults(patients)
+    } catch (e) {
+      console.error('Patient search failed:', e)
+      setResults([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
   const handleInputChange = (value: string) => {
     setQuery(value)
-    const filtered = filterPatients(value)
-    setResults(filtered)
-    setIsOpen(filtered.length > 0)
     setActiveIndex(-1)
+
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      fetchPatients(value)
+    }, 150)
   }
 
   const handleSelect = (patient: PatientSearchResult) => {
@@ -104,7 +112,6 @@ export function PatientSearch({
     }
   }
 
-  // Scroll active item into view
   useEffect(() => {
     if (activeIndex >= 0 && listRef.current) {
       const item = listRef.current.children[activeIndex] as HTMLElement
@@ -112,7 +119,6 @@ export function PatientSearch({
     }
   }, [activeIndex])
 
-  // Close on click outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       const target = e.target as HTMLElement
@@ -142,9 +148,7 @@ export function PatientSearch({
           value={query}
           onChange={e => handleInputChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          onFocus={() => {
-            if (results.length > 0) setIsOpen(true)
-          }}
+          onFocus={() => { if (results.length > 0) setIsOpen(true) }}
           placeholder={placeholder}
           aria-label="Search patients"
           aria-expanded={isOpen}
@@ -165,6 +169,9 @@ export function PatientSearch({
           >
             <X className="h-4 w-4" />
           </button>
+        )}
+        {loading && (
+          <Loader2 className="absolute right-10 top-1/2 h-4 w-4 -translate-y-1/2 text-primary-500 animate-spin" />
         )}
       </div>
 
@@ -214,7 +221,7 @@ export function PatientSearch({
       )}
 
       {/* No Results */}
-      {isOpen && query && results.length === 0 && (
+      {isOpen && query && results.length === 0 && !loading && (
         <div className="absolute z-50 mt-1 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg p-4 text-center">
           <p className="text-sm text-gray-500 dark:text-gray-400">
             No patients found for "{query}"

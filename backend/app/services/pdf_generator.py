@@ -4,36 +4,32 @@ Single pipeline for all three document types (Prescription, Invoice, Certificate
 Each type has a Jinja2 template with clinic letterhead, inline Tailwind CSS,
 and a shared Playwright rendering step.
 
+Clinic branding is pulled dynamically from the Doctor model — every doctor
+gets their own clinic name, address, phone, and registration on their PDFs.
+
 Usage:
     from app.services.pdf_generator import PDFGenerator
     pdf = PDFGenerator()
-    path = await pdf.generate_prescription(data)
-    path = await pdf.generate_invoice(data)
-    path = await pdf.generate_certificate(data, cert_type="sick_leave")
+    path = await pdf.generate_prescription(data, db=db, doctor_id=doc.id)
 """
 
 from __future__ import annotations
 
 import os
 import uuid
+import base64
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional
+from uuid import UUID
 from jinja2 import Environment, BaseLoader, TemplateNotFound
 from playwright.async_api import async_playwright
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "pdfs")
-
-CLINIC_DEFAULTS = {
-    "clinic_name": "SoloPrac Clinic",
-    "clinic_address": "Aundh, Pune, Maharashtra",
-    "clinic_phone": "+91-9876543210",
-    "clinic_email": "clinic@soloprac.ai",
-    "doctor_name": "Dr. Rohan Bhoge",
-    "registration_number": "MH-12345",
-}
 
 # ─── Jinja2 Templates (inline) ─────────────────────
 
@@ -157,6 +153,189 @@ CERTIFICATE_TEMPLATE = """<!DOCTYPE html>
 <div class="disclaimer" style="font-size:7pt;color:#94a3b8;text-align:center;font-style:italic;">AI Suggestion — Requires Doctor Validation.</div>
 </body></html>"""
 
+# ─── Weekly Report Template ──────────────────────────
+
+WEEKLY_REPORT_TEMPLATE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  body { font-family: 'Inter', Arial, sans-serif; font-size: 10pt; line-height: 1.5; margin: 0; padding: 20px; color: #1a1a1a; }
+  .letterhead { text-align: center; border-bottom: 3px solid #2563eb; padding-bottom: 10px; margin-bottom: 20px; }
+  .letterhead .name { font-size: 18pt; font-weight: bold; color: #1e40af; }
+  .letterhead .details { font-size: 8pt; color: #64748b; margin-top: 4px; }
+  .report-header { margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid #e2e8f0; }
+  .report-header h1 { font-size: 14pt; color: #1e40af; margin: 0 0 4px 0; text-align: center; }
+  .report-header .subtitle { font-size: 9pt; color: #64748b; text-align: center; margin: 4px 0; }
+  .patient-info { display: flex; justify-content: space-between; margin-bottom: 16px; font-size: 9pt; padding: 8px; background: #f8fafc; border-radius: 6px; }
+  .patient-info div { line-height: 1.6; }
+  .section { margin-bottom: 16px; }
+  .section-title { font-size: 10pt; font-weight: bold; color: #1e40af; padding-bottom: 4px; border-bottom: 1px solid #e2e8f0; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+  .section-title .badge { font-size: 7pt; padding: 1px 6px; border-radius: 4px; font-weight: bold; text-transform: uppercase; }
+  .badge-critical { background: #fef2f2; color: #dc2626; }
+  .badge-notable { background: #fffbeb; color: #ca8a04; }
+  .badge-routine { background: #dbeafe; color: #2563eb; }
+  .badge-informational { background: #f1f5f9; color: #64748b; }
+  .event { margin-bottom: 10px; padding: 8px; background: #fafafa; border-radius: 6px; border-left: 3px solid #e2e8f0; }
+  .event-critical { border-left-color: #dc2626; background: #fef2f2; }
+  .event-notable { border-left-color: #ca8a04; background: #fffbeb; }
+  .event-routine { border-left-color: #2563eb; background: #eff6ff; }
+  .event-informational { border-left-color: #94a3b8; background: #f8fafc; }
+  .event-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .event-date { font-size: 8pt; color: #64748b; font-weight: 500; }
+  .event-summary { font-size: 9pt; color: #1a1a1a; line-height: 1.5; }
+  .event-meta { font-size: 7.5pt; color: #64748b; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .event-meta span { background: #f1f5f9; padding: 1px 6px; border-radius: 3px; }
+  .score-breakdown { font-size: 7pt; color: #94a3b8; margin-top: 4px; }
+  .images-section { margin-top: 20px; }
+  .images-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-top: 8px; }
+  .image-card { border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; background: #fff; }
+  .image-card img { width: 100%; height: 90px; object-fit: cover; }
+  .image-card .caption { font-size: 7pt; padding: 4px; color: #64748b; text-align: center; background: #f8fafc; border-top: 1px solid #e2e8f0; }
+  .footer { margin-top: 30px; font-size: 7pt; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 12px; }
+  .disclaimer { font-size: 6.5pt; color: #94a3b8; text-align: center; margin-top: 4px; font-style: italic; }
+  .signature-block { margin-top: 24px; text-align: right; font-size: 9pt; }
+  .qr-section { text-align: center; margin-top: 16px; }
+  .qr-section img { width: 70px; height: 70px; }
+  .qr-section p { font-size: 7pt; color: #64748b; margin-top: 4px; }
+</style></head><body>
+<div class="letterhead">
+  <div class="name">{{ clinic.clinic_name }}</div>
+  <div class="details">{{ clinic.clinic_address }} | {{ clinic.clinic_phone }} | {{ clinic.clinic_email }}</div>
+</div>
+
+<div class="report-header">
+  <h1>{{ title }}</h1>
+  <div class="subtitle">{{ description }}</div>
+  <div class="subtitle">Period: {{ period_start }} to {{ period_end }} | Generated: {{ generated_at }}</div>
+</div>
+
+<div class="patient-info">
+  <div><strong>Patient:</strong> {{ patient_name }}<br><strong>Age/Sex:</strong> {{ patient_age }}/{{ patient_gender }}<br><strong>MRN:</strong> {{ patient_mrn }}</div>
+  <div><strong>Doctor:</strong> {{ clinic.doctor_name }}<br><strong>Reg No:</strong> {{ clinic.registration_number }}</div>
+</div>
+
+{% if layout == "clinical" %}
+  {% if critical %}
+  <div class="section">
+    <div class="section-title">
+      <span class="badge badge-critical">Critical ({{ critical_count }})</span>
+      Critical Findings
+    </div>
+    {% for e in critical %}
+    <div class="event event-critical">
+      <div class="event-header"><span class="event-date">{{ e.date }}</span></div>
+      <div class="event-summary">{{ e.summary }}</div>
+      <div class="event-meta">
+        <span>v{{ e.version }}</span>
+        <span>Score: {{ e.score }}</span>
+        <span>Tier: {{ e.tier }}</span>
+        {% if e.edit_type %}<span>{{ e.edit_type }}</span>{% endif %}
+      </div>
+      {% if e.components %}
+      <div class="score-breakdown">
+        {% for k, v in e.components.items() %}{{ k }}: {{ v }} {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if notable %}
+  <div class="section">
+    <div class="section-title">
+      <span class="badge badge-notable">Notable ({{ notable_count }})</span>
+      Notable Findings
+    </div>
+    {% for e in notable %}
+    <div class="event event-notable">
+      <div class="event-header"><span class="event-date">{{ e.date }}</span></div>
+      <div class="event-summary">{{ e.summary }}</div>
+      <div class="event-meta">
+        <span>v{{ e.version }}</span>
+        <span>Score: {{ e.score }}</span>
+        <span>Tier: {{ e.tier }}</span>
+        {% if e.edit_type %}<span>{{ e.edit_type }}</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if routine %}
+  <div class="section">
+    <div class="section-title">
+      <span class="badge badge-routine">Routine ({{ routine_count }})</span>
+      Routine Events
+    </div>
+    {% for e in routine %}
+    <div class="event event-routine">
+      <div class="event-header"><span class="event-date">{{ e.date }}</span></div>
+      <div class="event-summary">{{ e.summary }}</div>
+      <div class="event-meta"><span>v{{ e.version }}</span><span>Score: {{ e.score }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+{% endif %}
+
+{% if layout == "executive" %}
+  <div class="section">
+    <div class="section-title">Key Findings</div>
+    {% for e in sections %}
+    <div class="event event-{{ e.tier }}">
+      <div class="event-header"><span class="event-date">{{ e.date }}</span></div>
+      <div class="event-summary">{{ e.summary }}</div>
+      <div class="event-meta"><span>Score: {{ e.score }}</span><span>Tier: {{ e.tier }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% if layout == "family_friendly" %}
+  <div class="section">
+    <div class="section-title">Your Health Summary</div>
+    <p style="font-size: 9pt; color: #374151; margin-bottom: 12px;">{{ introduction }}</p>
+    {% for e in sections %}
+    <div class="event event-{{ e.tier }}">
+      <div class="event-header"><span class="event-date">{{ e.date }}</span></div>
+      <div class="event-summary" style="font-size: 9.5pt;">{{ e.summary }}</div>
+    </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+{% if images and images|length > 0 %}
+<div class="images-section">
+  <div class="section-title">Clinical Images</div>
+  <div class="images-grid">
+    {% for img in images %}
+    <div class="image-card">
+      <img src="{{ img.url }}" alt="{{ img.caption }}">
+      <div class="caption">{{ img.caption }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="signature-block">
+  <p>{{ clinic.doctor_name }}</p>
+  <p style="font-size: 8pt; color: #64748b;">{{ clinic.registration_number }}</p>
+  <p style="font-size: 8pt; color: #64748b;">{{ clinic.clinic_name }}</p>
+</div>
+
+{% if qr_code %}
+<div class="qr-section">
+  <img src="{{ qr_code }}" alt="Verification QR Code">
+  <p>Verify at: {{ verify_url }}</p>
+</div>
+{% endif %}
+
+<div class="footer">
+  Generated by SoloPrac AI on {{ now }} | {{ clinic.clinic_name }}
+</div>
+<div class="disclaimer">AI Suggestion — Requires Doctor Validation. This report is computer-generated and should be reviewed by a healthcare professional.</div>
+</body></html>"""
+
 
 # ─── Template Loader ────────────────────────────────
 
@@ -166,6 +345,7 @@ class _InlineLoader(BaseLoader):
             "prescription": PRESCRIPTION_TEMPLATE,
             "invoice": INVOICE_TEMPLATE,
             "certificate": CERTIFICATE_TEMPLATE,
+            "weekly_report": WEEKLY_REPORT_TEMPLATE,
         }
 
     def get_source(self, environment, template):
@@ -179,16 +359,61 @@ _jinja_env = Environment(loader=_InlineLoader(), autoescape=True)
 
 # ─── PDF Generator ──────────────────────────────────
 
+# Fallback clinic defaults when no doctor info is available
+FALLBACK_CLINIC = {
+    "clinic_name": "SoloPrac Clinic",
+    "clinic_address": "Aundh, Pune, Maharashtra",
+    "clinic_phone": "+91-9876543210",
+    "clinic_email": "clinic@soloprac.ai",
+    "doctor_name": "Doctor",
+    "registration_number": "",
+}
+
 class PDFGenerator:
-    """Shared Jinja2 → Playwright → PDF generation for all document types."""
+    """Shared Jinja2 → Playwright → PDF generation for all document types.
+
+    Clinic branding is pulled from the Doctor model dynamically.
+    Pass db + doctor_id to use real doctor branding; omitting them
+    falls back to default values.
+    """
 
     def __init__(self, output_dir: Optional[str] = None):
         self.output_dir = output_dir or OUTPUT_DIR
         os.makedirs(self.output_dir, exist_ok=True)
 
-    def _prepare_context(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge clinic defaults into the template context."""
-        context = dict(CLINIC_DEFAULTS)
+    async def _get_clinic_context(
+        self,
+        db: Optional[AsyncSession] = None,
+        doctor_id: Optional[UUID] = None,
+    ) -> dict:
+        """Pull clinic branding from Doctor model dynamically.
+
+        Reads both direct Doctor fields and doctor.settings JSONB.
+        Falls back to FALLBACK_CLINIC if no db/doctor_id provided.
+        """
+        if db is not None and doctor_id is not None:
+            from app.models import Doctor
+            try:
+                result = await db.execute(select(Doctor).where(Doctor.id == doctor_id))
+                doc = result.scalar_one_or_none()
+                if doc:
+                    settings = doc.settings or {}
+                    return {
+                        "clinic_name": settings.get("clinic_name") or doc.clinic_name or FALLBACK_CLINIC["clinic_name"],
+                        "clinic_address": settings.get("clinic_address") or doc.clinic_address or FALLBACK_CLINIC["clinic_address"],
+                        "clinic_phone": settings.get("clinic_phone") or doc.phone or FALLBACK_CLINIC["clinic_phone"],
+                        "clinic_email": settings.get("clinic_email") or FALLBACK_CLINIC["clinic_email"],
+                        "doctor_name": doc.name or FALLBACK_CLINIC["doctor_name"],
+                        "registration_number": doc.registration_number or "",
+                    }
+            except Exception as exc:
+                logger.warning("Failed to load clinic context from DB: %s", exc)
+
+        return dict(FALLBACK_CLINIC)
+
+    def _prepare_context(self, data: Dict[str, Any], clinic: dict) -> Dict[str, Any]:
+        """Merge clinic branding into the template context."""
+        context = {"clinic": clinic}
         context.update(data)
         context["now"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         # Format monetary values with ₹ symbol
@@ -225,17 +450,20 @@ class PDFGenerator:
         instructions: str = "",
         follow_up: str = "",
         doctor_name: str = "",
+        db: Optional[AsyncSession] = None,
+        doctor_id: Optional[UUID] = None,
     ) -> str:
         filename = f"rx_{uuid.uuid4().hex[:12]}.pdf"
         path = os.path.join(self.output_dir, filename)
+        clinic = await self._get_clinic_context(db, doctor_id)
+        # If doctor_name explicitly passed, use it
+        if doctor_name:
+            clinic = dict(clinic, doctor_name=doctor_name)
         context = self._prepare_context({
             "patient_name": patient_name, "patient_age": patient_age,
             "patient_gender": patient_gender, "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "diagnosis": diagnosis, "medications": medications or [], "instructions": instructions, "follow_up": follow_up,
-        })
-        if doctor_name:
-            context["clinic"] = dict(CLINIC_DEFAULTS)
-            context["clinic"]["doctor_name"] = doctor_name
+        }, clinic)
         return await self._render_to_pdf("prescription", context, path)
 
     # ─── Invoice ───
@@ -251,14 +479,17 @@ class PDFGenerator:
         total: float = 0.0,
         status: str = "pending",
         notes: str = "",
+        db: Optional[AsyncSession] = None,
+        doctor_id: Optional[UUID] = None,
     ) -> str:
         filename = f"inv_{uuid.uuid4().hex[:12]}.pdf"
         path = os.path.join(self.output_dir, filename)
+        clinic = await self._get_clinic_context(db, doctor_id)
         context = self._prepare_context({
             "patient_name": patient_name, "invoice_number": invoice_number,
             "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "items": items or [], "subtotal": subtotal, "tax": tax, "total": total, "status": status, "notes": notes,
-        })
+        }, clinic)
         return await self._render_to_pdf("invoice", context, path)
 
     # ─── Certificate ───
@@ -273,16 +504,138 @@ class PDFGenerator:
         verification_code: str = "",
         verify_url: str = "",
         date: str = "",
+        db: Optional[AsyncSession] = None,
+        doctor_id: Optional[UUID] = None,
     ) -> str:
         filename = f"cert_{uuid.uuid4().hex[:12]}.pdf"
         path = os.path.join(self.output_dir, filename)
+        clinic = await self._get_clinic_context(db, doctor_id)
         context = self._prepare_context({
             "patient_name": patient_name, "patient_age": patient_age, "cert_type": cert_type,
             "body": body, "recommended_rest": recommended_rest,
             "verification_code": verification_code, "verify_url": verify_url,
             "date": date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        })
+        }, clinic)
         return await self._render_to_pdf("certificate", context, path)
+
+    # ─── Weekly Report ───
+
+    async def generate_weekly_report(
+        self,
+        report_data: Dict[str, Any],
+        db: Optional[AsyncSession] = None,
+        doctor_id: Optional[UUID] = None,
+    ) -> str:
+        """Generate a weekly clinical report PDF from the report data structure."""
+        filename = f"weekly_report_{uuid.uuid4().hex[:12]}.pdf"
+        path = os.path.join(self.output_dir, filename)
+        clinic = await self._get_clinic_context(db, doctor_id)
+
+        # Extract and format data for template
+        layout = report_data.get("layout", "clinical")
+        patient_name = report_data.get("patient_name", "Patient")
+        patient_age = report_data.get("patient_age", 0)
+        patient_gender = report_data.get("patient_gender", "")
+        patient_mrn = report_data.get("patient_mrn", str(uuid.uuid4())[:8])
+
+        # Build sections based on layout
+        sections = report_data.get("sections", [])
+        critical = report_data.get("critical", [])
+        notable = report_data.get("notable", [])
+        routine = report_data.get("routine", [])
+
+        # Format dates
+        def fmt_date(dt_str):
+            if not dt_str:
+                return ""
+            try:
+                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                return dt.strftime("%b %d")
+            except:
+                return dt_str[:10] if dt_str else ""
+
+        # Format events for template
+        def format_events(events):
+            formatted = []
+            for e in events:
+                formatted.append({
+                    "date": fmt_date(e.get("created_at") or e.get("date")),
+                    "summary": e.get("summary", ""),
+                    "version": e.get("version", e.get("version_number", "")),
+                    "score": e.get("significance_score", e.get("score", 0)),
+                    "tier": e.get("tier", ""),
+                    "edit_type": e.get("edit_type", ""),
+                    "components": e.get("score_components") or e.get("components"),
+                })
+            return formatted
+
+        critical_fmt = format_events(critical)
+        notable_fmt = format_events(notable)
+        routine_fmt = format_events(routine)
+        sections_fmt = format_events(sections)
+
+        # Images from report_data — embed as base64 data URIs for Playwright rendering
+        images = []
+        if report_data.get("images"):
+            for img in report_data["images"]:
+                filepath = img.get("url", "")
+                url = filepath
+                caption = img.get("caption") or img.get("filename", "Clinical Image")
+                # Convert local file paths to base64 data URIs so Playwright can render them
+                if filepath and not filepath.startswith("http") and not filepath.startswith("data:"):
+                    try:
+                        with open(filepath, "rb") as f_img:
+                            img_bytes = f_img.read()
+                        # Determine MIME type from extension
+                        ext = os.path.splitext(filepath)[1].lower()
+                        mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+                        mime = mime_map.get(ext, "image/jpeg")
+                        b64 = base64.b64encode(img_bytes).decode()
+                        url = f"data:{mime};base64,{b64}"
+                    except (FileNotFoundError, OSError) as exc:
+                        logger.warning("Could not read image for PDF: %s (%s)", filepath, exc)
+                        url = "data:image/svg+xml;base64," + base64.b64encode(
+                            b'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120"><rect width="200" height="120" fill="#f1f5f9" rx="4"/><text x="100" y="65" text-anchor="middle" fill="#94a3b8" font-size="11" font-family="sans-serif">Image unavailable</text></svg>'
+                        ).decode()
+                images.append({"url": url, "caption": caption})
+
+        # QR code verification data
+        qr_code = report_data.get("qr_code", "")
+        verify_url = report_data.get("verify_url", "")
+
+        # Build period strings
+        now = datetime.now(timezone.utc)
+        week_ago = now - timedelta(days=7)
+        period_start = week_ago.strftime("%Y-%m-%d")
+        period_end = now.strftime("%Y-%m-%d")
+        generated_at = now.strftime("%Y-%m-%d %H:%M UTC")
+
+        # Build context for template
+        data = {
+            "layout": layout,
+            "title": report_data.get("title", "Weekly Clinical Report"),
+            "description": report_data.get("description", "Weekly clinical summary"),
+            "period_start": period_start,
+            "period_end": period_end,
+            "generated_at": generated_at,
+            "patient_name": patient_name,
+            "patient_age": patient_age,
+            "patient_gender": patient_gender,
+            "patient_mrn": patient_mrn,
+            "critical_count": len(critical_fmt),
+            "notable_count": len(notable_fmt),
+            "routine_count": len(routine_fmt),
+            "critical": critical_fmt,
+            "notable": notable_fmt,
+            "routine": routine_fmt,
+            "sections": sections_fmt,
+            "images": images,
+            "qr_code": qr_code,
+            "verify_url": verify_url,
+        }
+
+        context = self._prepare_context(data, clinic)
+        return await self._render_to_pdf("weekly_report", context, path)
 
 
 pdf_generator = PDFGenerator()

@@ -1,14 +1,16 @@
 # SoloPrac AI
 
-> A multimodal, agentic clinical operating system for solo medical practitioners, built around a **version-controlled patient intelligence layer**.
+> A multimodal, agentic clinical operating system for solo medical practitioners in India, built around a **version-controlled patient intelligence layer** with **tiered doctor verification** and **cross-clinic patient identity**.
 
 ## 🎯 Vision
 
-Every solo GP deserves clinical intelligence that matches hospital systems — without the cost, complexity, or vendor lock-in. SoloPrac AI makes this possible by combining:
+Every solo GP in India deserves clinical intelligence that matches hospital systems — without the cost, complexity, or vendor lock-in. SoloPrac AI makes this possible by combining:
 
 - **Version-controlled patient records** — Immutable, Git-like history for every patient
 - **Temporal-aware AI** — RAG that knows *when* information was true
 - **Voice-first scheduling** — "I'm off Friday, handle it" in Hindi + English
+- **Tiered doctor verification** — Self-register instantly, verify for public trust
+- **Cross-clinic patient identity** — One person can visit multiple doctors without duplicate accounts
 - **Zero-cost deployment** — Runs entirely on free tiers (Oracle Cloud, NVIDIA NIM, Groq)
 
 ---
@@ -55,7 +57,7 @@ Every solo GP deserves clinical intelligence that matches hospital systems — w
 |---------|-------------|
 | **Temporal Multimodal RAG (Feature A)** | Retrieves with temporal decay, clinical significance, and cross-modal fusion |
 | **Self-Planning Agent (Feature B)** | Dynamic plan-execute-critic loop for clinical queries |
-| **Cross-Modal Retrieval (Feature C)** | NV-CLIP → BGE-M3 projector for image↔text search |
+| **Cross-Modal Retrieval (Feature C)** | BiomedCLIP → BGE-M3 projector for image↔text search |
 | **Zero-Shot Schema Alignment (Feature D)** | LLM maps any document to canonical patient schema |
 | **Trajectory Clustering (Feature E)** | HDBSCAN + Mahalanobis for proactive risk alerts |
 | **Significance-Aware Reports (Feature F)** | Tiered clinical significance filtering for weekly digests |
@@ -63,7 +65,7 @@ Every solo GP deserves clinical intelligence that matches hospital systems — w
 ### Document & Image Processing
 | Feature | Description |
 |---------|-------------|
-| **Smart Document Engine** | Auto-routes: Docling (typed PDF) → Surya (scanned) → GOT-OCR (handwritten) → MedGemma fallback |
+| **Smart Document Engine** | Auto-routes: Docling (typed PDF) → Surya (scanned) → Nanonets-OCR2 (handwritten) → MedGemma fallback |
 | **Wound/Skin Comparison** | ORB feature matching + homography overlay + AI clinical summary |
 | **Scratchpad** | Drag-drop any PDF/image → extract → "Save to Patient" |
 
@@ -104,10 +106,12 @@ Every solo GP deserves clinical intelligence that matches hospital systems — w
 |---------|---------|--------------|
 | **A — Temporal Multimodal RAG** | Sec III | Time-aware clinical retrieval with formal scoring |
 | **B — Self-Planning Agent** | Sec IV | Dynamic plan-execute-critic for medical workflows |
-| **C — Cross-Modal Retrieval** | Sec V | Linear projector NV-CLIP→BGE-M3 with InfoNCE |
+| **C — Cross-Modal Retrieval** | Sec V | Linear projector BiomedCLIP→BGE-M3 with InfoNCE |
 | **D — Schema Alignment** | Sec VI | Zero-shot document-to-EMR mapping with critic loop |
 | **E — Trajectory Clustering** | Sec VI | HDBSCAN + Mahalanobis on clinical embeddings |
 | **F — Significance Reports** | Sec VI | Tiered clinical significance for automated digests |
+
+> **Evaluation methodology:** See [`docs/research/research_features_evaluation_method.md`](docs/research/research_features_evaluation_method.md) for how to produce real, publishable numbers (baselines, ablation tables, LLM-as-judge, datasets) for each feature.
 
 ---
 
@@ -164,24 +168,28 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ## 🧪 Running Evaluations
 
+> **Methodology:** For how to turn these endpoints into publishable paper numbers (baselines, ablation tables, datasets, doctor study), see [`docs/research/research_features_evaluation_method.md`](docs/research/research_features_evaluation_method.md).
+
+Evaluations run via API endpoints (no separate scripts needed):
+
 ```bash
-# Feature A: Temporal RAG evaluation
-python -m evals.temporal_rag
+# Feature A: Full eval suite (Temporal RAG + baselines)
+curl -X POST http://localhost:8000/api/v1/evaluation/run
 
-# Feature B: Self-planning agent
-python -m evals.self_planning
+# Feature B: Self-planning (100-query test set)
+curl -X POST http://localhost:8000/api/v1/evaluation/feature-b
 
-# Feature C: Cross-modal projector
-python -m evals.cross_modal
+# Feature C: Cross-modal projector (trains + evaluates)
+curl -X POST "http://localhost:8000/api/v1/evaluation/feature-c?num_pairs=200"
 
-# Feature D: Schema alignment
-python -m evals.schema_alignment
+# Feature E: Trajectory clustering (synthetic cohort)
+curl -X POST "http://localhost:8000/api/v1/evaluation/feature-e?num_patients=100"
 
-# Feature E: Trajectory clustering
-python -m evals.trajectory_clustering
+# Feature F: Likert study design
+curl -X GET http://localhost:8000/api/v1/weekly-report/likert-study
 
-# Feature F: Weekly reports
-python -m evals.weekly_reports
+# Feature D: Schema alignment (via document upload)
+curl -X POST -F "file=@prescription.pdf" http://localhost:8000/api/v1/documents/parse
 ```
 
 ---
@@ -192,15 +200,17 @@ python -m evals.weekly_reports
 SoloPrac/
 ├── backend/                    # FastAPI application
 │   ├── app/
-│   │   ├── api/               # API routes
-│   │   ├── core/              # Config, security, database
-│   │   ├── models/            # SQLAlchemy models
-│   │   ├── schemas/           # Pydantic schemas
-│   │   ├── services/          # Business logic
-│   │   ├── agents/            # LangGraph agents
-│   │   ├── workers/           # arq background jobs
-│   │   └── main.py            # FastAPI entrypoint
-│   ├── tests/
+│   │   ├── routers/            # API route handlers
+│   │   ├── services/           # Business logic + research features
+│   │   ├── agents/             # LangGraph agent (planner, router, tools)
+│   │   ├── middleware/         # Audit log, RLS identity middleware
+│   │   ├── uploads/            # Uploaded documents, images
+│   │   ├── config.py           # Settings via pydantic-settings
+│   │   ├── database.py         # Async SQLAlchemy + init_db
+│   │   ├── dependencies.py     # FastAPI deps (get_current_doctor, rate limit)
+│   │   ├── models.py           # SQLAlchemy models (User, Doctor, Patient, etc.)
+│   │   ├── schemas.py          # Pydantic schemas
+│   │   └── main.py             # FastAPI entrypoint
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── frontend/                   # React 19 + Vite
@@ -212,6 +222,8 @@ SoloPrac/
 │   │   ├── store/             # Zustand stores
 │   │   └── main.tsx
 │   ├── package.json
+│   ├── tailwind.config.js
+│   ├── tsconfig.json
 │   └── Dockerfile
 ├── docs/
 │   ├── architecture/          # System, DB, Agent architecture
@@ -219,8 +231,8 @@ SoloPrac/
 │   ├── planning/              # Proposal, feasibility, Gantt, requirements
 │   └── images/                # Mermaid diagrams (PNG + source)
 ├── docker-compose.yml
-├── docker-compose.prod.yml
-├── .gitignore
+├── Caddyfile
+├── init-schema.sql
 └── README.md
 ```
 
@@ -233,9 +245,9 @@ SoloPrac/
 | **Frontend** | React 19, Vite, TypeScript, Tailwind, shadcn/ui, Framer Motion, TanStack Query, Zustand, cmdk, Leaflet |
 | **Backend** | FastAPI, Pydantic v2, SQLAlchemy 2.0, arq, LangGraph |
 | **Database** | PostgreSQL 16 + PostGIS, Qdrant, Redis |
-| **LLMs** | Llama-4 Maverick (NIM), Llama-3.1-8B (NIM), Llama-3.2-90B-V (Groq), MedGemma-4B (local) |
-| **AI/ML** | MedCPT, BGE-M3, NV-CLIP, faster-whisper, IndicWhisper, Indic-Parler-TTS, OpenCV ORB |
-| **Document** | Docling, Surya, GOT-OCR 2.0 |
+| **LLMs** | Llama-4 Maverick (NIM), Llama-3.1-8B (NIM), MedGemma-4B (local) |
+| **AI/ML** | MedCPT, BGE-M3, BiomedCLIP, faster-whisper, IndicWhisper, Indic-Parler-TTS, OpenCV ORB |
+| **Document** | Docling, Surya, Nanonets-OCR2-1.5B-exp |
 | **PDF** | Jinja2, Playwright, ECharts |
 | **Observability** | Langfuse (self-hosted) |
 | **Infrastructure** | Docker Compose, Caddy, Oracle Cloud Free Tier |

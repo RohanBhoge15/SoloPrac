@@ -6,6 +6,16 @@ from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
+# ─── User ──────────────────────────────────────
+class UserRead(BaseModel):
+    id: UUID
+    phone: str
+    name: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ─── Patient ───────────────────────────────────
 class PatientBase(BaseModel):
     phone: Optional[str] = None
@@ -20,6 +30,7 @@ class PatientCreate(PatientBase):
 class PatientRead(BaseModel):
     id: UUID
     doctor_id: UUID
+    user_id: Optional[UUID] = None
     head_version_id: Optional[UUID] = None
     consent_for_share: bool = False
     created_at: datetime
@@ -223,3 +234,82 @@ class DoctorSettingsUpdate(BaseModel):
     buffer_minutes: Optional[int] = Field(None, ge=0, le=60)
     default_duration: Optional[int] = Field(None, ge=5, le=120)
     auto_email: Optional[bool] = None
+    notification_preferences: Optional[Dict[str, Dict[str, Any]]] = None
+
+
+class DoctorProfileUpdate(BaseModel):
+    """Update doctor's profile fields — name, clinic, contact, etc."""
+    name: Optional[str] = Field(None, max_length=255)
+    speciality: Optional[str] = Field(None, max_length=100)
+    clinic_name: Optional[str] = Field(None, max_length=255)
+    clinic_address: Optional[str] = None
+    phone: Optional[str] = Field(None, max_length=50)
+    registration_number: Optional[str] = Field(None, max_length=100)
+    clinic_logo_path: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ─── Doctor Registration & Verification ──────────────
+class DoctorRegister(BaseModel):
+    """Onboard a new doctor via email/password."""
+    email: str = Field(..., max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+    name: str = Field(..., max_length=255)
+    phone: Optional[str] = Field(None, max_length=50)
+
+
+class DoctorLogin(BaseModel):
+    """Login with email and password."""
+    email: str
+    password: str
+
+
+class DoctorVerificationSubmit(BaseModel):
+    """Submit documents for verification."""
+    registration_number: str = Field(..., max_length=100)
+    # license_document is handled as a file upload separately
+
+
+class DoctorProfileRead(BaseModel):
+    """Full doctor profile returned to the doctor."""
+    id: UUID
+    email: str
+    name: str
+    speciality: Optional[str] = None
+    clinic_name: Optional[str] = None
+    clinic_address: Optional[str] = None
+    phone: Optional[str] = None
+    registration_number: Optional[str] = None
+    verification_status: str = "unverified"
+    license_document_path: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    verified_at: Optional[datetime] = None
+    location: Optional[str] = None
+    settings: dict = {}
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VerificationPending(BaseModel):
+    """A doctor pending verification review (admin view)."""
+    id: UUID
+    email: str
+    name: str
+    speciality: Optional[str] = None
+    clinic_name: Optional[str] = None
+    clinic_address: Optional[str] = None
+    phone: Optional[str] = None
+    registration_number: Optional[str] = None
+    license_document_path: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VerificationAction(BaseModel):
+    """Admin action on a verification request."""
+    doctor_id: UUID
+    reason: Optional[str] = Field(None, max_length=500, description="Rejection reason")

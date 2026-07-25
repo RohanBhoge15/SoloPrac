@@ -13,9 +13,9 @@ export function PatientAppointments() {
 
   useEffect(() => {
     if (!patientId) { setLoading(false); return }
-    apiClient.get('/api/patient/me/appointments', { params: { patient_id: patientId } })
+    apiClient.get('/patient/me/appointments')
       .then(r => setAppointments(r.data || []))
-      .catch(() => {})
+      .catch(() => console.warn('Failed to load appointments'))
       .finally(() => setLoading(false))
   }, [patientId])
 

@@ -18,7 +18,7 @@ export function PatientLogin() {
     setLoading(true)
     setError(null)
     try {
-      await apiClient.post('/api/public/auth/send-otp', { phone })
+      await apiClient.post('/public/auth/send-otp', { phone })
       setMode('otp')
     } catch {
       setError('Failed to send OTP. Please try again.')
@@ -32,12 +32,27 @@ export function PatientLogin() {
     setLoading(true)
     setError(null)
     try {
-      const res = await apiClient.post('/api/public/auth/verify-otp', { phone, otp })
+      const res = await apiClient.post('/public/auth/verify-otp', { phone, otp })
       localStorage.setItem('patient_token', res.data.token)
       localStorage.setItem('patient_id', res.data.patient_id)
       window.location.href = '/patient/dashboard'
     } catch {
       setError('Invalid or expired OTP')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDevLogin = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await apiClient.post('/public/auth/dev-login')
+      localStorage.setItem('patient_token', res.data.token)
+      localStorage.setItem('patient_id', res.data.patient_id)
+      window.location.href = '/patient/dashboard'
+    } catch {
+      setError('Dev login failed')
     } finally {
       setLoading(false)
     }
@@ -76,6 +91,16 @@ export function PatientLogin() {
             <ArrowRight className="h-4 w-4 ml-2" />
           </Button>
           <p className="text-xs text-center text-gray-400">Use any 6-digit OTP for demo. Patient data is for demo purposes.</p>
+          {import.meta.env.DEV && (
+            <Button
+              variant="outline"
+              className="w-full border-dashed border-amber-400 text-amber-700 dark:text-amber-400"
+              onClick={handleDevLogin}
+              disabled={loading}
+            >
+              Dev login (patient)
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>

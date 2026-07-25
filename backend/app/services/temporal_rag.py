@@ -5,7 +5,7 @@ Given query `q` at time `t_q`, patient `p`, doctor `d`, retrieve top-`k` version
     score(v_i, q, t_q) =
           α · cos(MedCPT(q), v_i.medical_text)
         + β · hybrid_score(BGE-M3(q), v_i.hybrid, v_i.sparse)
-        + γ · cos(NVCLIP(q_img), v_i.image)          [if query has image]
+        + γ · cos(BiomedCLIP(q_img), v_i.image)          [if query has image]
         + δ · temporal_decay(t_q − v_i.timestamp)
         + ε · clinical_significance(v_i)
     subject to: v_i.timestamp ≤ t_q,  v_i.doctor_id == d
@@ -26,6 +26,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import math
 import logging
 from datetime import datetime, timezone
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 ALPHA = 0.30  # MedCPT text similarity weight
 BETA = 0.25   # BGE-M3 hybrid (dense + sparse) weight
-GAMMA = 0.20  # NV-CLIP image similarity weight
+GAMMA = 0.20  # BiomedCLIP image similarity weight
 DELTA = 0.15  # Temporal decay weight
 EPSILON = 0.10  # Clinical significance weight
 
@@ -209,7 +210,7 @@ class TemporalMultimodalRetriever:
             query_time: Query timestamp (defaults to now). Used for temporal decay
                 and future-leak prevention (v_i.timestamp ≤ query_time).
             k: Number of results to return.
-            image_path: Optional path to an image for NV-CLIP query.
+            image_path: Optional path to an image for BiomedCLIP query.
 
         Returns:
             {
@@ -266,9 +267,9 @@ class TemporalMultimodalRetriever:
 
         if image_path:
             try:
-                image_vector = await embedding_service.encode_nvclip_image(image_path)
+                image_vector = await embedding_service.encode_biomedclip_image(image_path)
             except Exception as exc:
-                logger.warning("NV-CLIP encoding failed: %s", exc)
+                logger.warning("BiomedCLIP encoding failed: %s", exc)
 
         # ── Step 2: Multi-modal search ──
         all_hits: List[List[ScoredPoint]] = []
@@ -276,7 +277,8 @@ class TemporalMultimodalRetriever:
         # Medical text search (MedCPT 768d)
         if medcpt_vector:
             try:
-                text_hits = qdrant_service._client.search(
+                text_hits = await asyncio.to_thread(
+                    qdrant_service._client.search,
                     collection_name=PATIENT_VERSION_COLLECTION,
                     query_vector=("medical_text", medcpt_vector),
                     query_filter=base_filter,
@@ -291,7 +293,8 @@ class TemporalMultimodalRetriever:
         # Hybrid search (BGE-M3 dense 1024d + sparse)
         if hybrid_dense:
             try:
-                hybrid_hits = qdrant_service._client.search(
+                hybrid_hits = await asyncio.to_thread(
+                    qdrant_service._client.search,
                     collection_name=PATIENT_VERSION_COLLECTION,
                     query_vector=("hybrid", hybrid_dense),
                     query_filter=base_filter,
@@ -307,7 +310,8 @@ class TemporalMultimodalRetriever:
         if sparse_indices and sparse_values:
             try:
                 sparse = SparseVector(indices=sparse_indices, values=sparse_values)
-                sparse_hits = qdrant_service._client.search(
+                sparse_hits = await asyncio.to_thread(
+                    qdrant_service._client.search,
                     collection_name=PATIENT_VERSION_COLLECTION,
                     query_vector=sparse,
                     query_filter=base_filter,
@@ -319,10 +323,11 @@ class TemporalMultimodalRetriever:
             except Exception as exc:
                 logger.warning("Sparse search failed: %s", exc)
 
-        # Image search (NV-CLIP 512d)
+        # Image search (BiomedCLIP 512d)
         if image_vector:
             try:
-                image_hits = qdrant_service._client.search(
+                image_hits = await asyncio.to_thread(
+                    qdrant_service._client.search,
                     collection_name=PATIENT_VERSION_COLLECTION,
                     query_vector=("image", image_vector),
                     query_filter=base_filter,
@@ -388,6 +393,11 @@ class TemporalMultimodalRetriever:
             payload = point.payload
             ts_str = payload.get("timestamp", "")
             ts = self._parse_timestamp(ts_str)
+            days_elapsed = (query_time - ts).total_seconds() / 86400 if ts else 0.0
+            modality = payload.get("modality", "text")
+            tags = payload.get("tags", []) or []
+            point_decay = temporal_decay(days_elapsed, modality)
+            point_sig = clinical_significance_from_tags(tags)
 
             result_item = {
                 "rank": i + 1,
@@ -398,10 +408,10 @@ class TemporalMultimodalRetriever:
                 "author": payload.get("author", ""),
                 "edit_type": payload.get("edit_type", ""),
                 "summary": payload.get("summary", ""),
-                "tags": payload.get("tags", []) or [],
+                "tags": tags,
                 "timestamp": ts_str,
-                "clinical_significance": sig_score,
-                "temporal_decay": round(decay, 4),
+                "clinical_significance": point_sig,
+                "temporal_decay": round(point_decay, 4),
             }
             results.append(result_item)
 
@@ -470,7 +480,8 @@ class TemporalMultimodalRetriever:
         if not query_vector:
             return {"results": [], "citations": [], "meta": {"total_results": 0}}
 
-        hits = qdrant_service._client.search(
+        hits = await asyncio.to_thread(
+            qdrant_service._client.search,
             collection_name=PATIENT_VERSION_COLLECTION,
             query_vector=("medical_text", query_vector),
             query_filter=base_filter,

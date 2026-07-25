@@ -22,6 +22,7 @@ from app.database import get_db
 from app.dependencies import get_current_doctor
 from app.models import Doctor, Patient, PatientVersion, PrescriptionBox, AuditLog
 from app.services.pdf_generator import pdf_generator
+from app.services.notification_generator import generate_and_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ async def create_prescription(
     instructions = body.get("instructions", "")
     follow_up = body.get("follow_up", "")
 
-    # Generate PDF
+    # Generate PDF with dynamic clinic branding
     try:
         pdf_path = await pdf_generator.generate_prescription(
             patient_name=body.get("patient_name", "Patient"),
@@ -59,15 +60,25 @@ async def create_prescription(
             instructions=instructions,
             follow_up=follow_up,
             doctor_name=doctor.name,
+            db=db,
+            doctor_id=doctor.id,
         )
     except Exception as exc:
         logger.error("PDF generation failed: %s", exc)
         pdf_path = None
 
+    # Ensure patient has a head version before referencing it
+    if not patient.head_version_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Patient has no versioned record. Create a patient version first.",
+        )
+
     # Store in DB
     rx = PrescriptionBox(
         id=uuid.uuid4(),
-        version_id=uuid.uuid4(),
+        version_id=patient.head_version_id,
+        patient_id=patient.id,
         doctor_id=doctor.id,
         rx_jsonb=body,
         pdf_path=pdf_path,
@@ -88,6 +99,28 @@ async def create_prescription(
         await db.commit()
     except Exception:
         await db.rollback()
+
+    # ── AI Notification to patient ──
+    med_names = ", ".join(m.get("drug", "") for m in meds) if meds else diagnosis
+    try:
+        await generate_and_dispatch(
+            db,
+            event_type="prescription_issued",
+            patient_id=patient.id,
+            doctor_id=doctor.id,
+            meta={
+                "resource_type": "prescription",
+                "resource_id": str(rx.id),
+                "pdf_url": f"/api/v1/prescriptions/{rx.id}/pdf" if pdf_path else None,
+            },
+            patient_name=body.get("patient_name", "Patient"),
+            doctor_name=doctor.name,
+            doctor_speciality=doctor.speciality or "General Practice",
+            clinic_name=doctor.clinic_name or "Clinic",
+            medications=med_names,
+        )
+    except Exception as exc:
+        logger.warning("Prescription notification dispatch failed: %s", exc)
 
     return {
         "id": str(rx.id),
@@ -110,9 +143,7 @@ async def list_prescriptions(
     """List all prescriptions for a patient."""
     result = await db.execute(
         select(PrescriptionBox)
-        .join(PatientVersion, PatientVersion.id == PrescriptionBox.version_id)
-        .join(Patient, Patient.id == PatientVersion.patient_id)
-        .where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
+        .where(PrescriptionBox.patient_id == patient_id, PrescriptionBox.doctor_id == doctor.id)
         .order_by(desc(PrescriptionBox.created_at))
         .limit(limit)
     )
@@ -136,7 +167,10 @@ async def get_prescription(
 ):
     """Get a single prescription detail."""
     result = await db.execute(
-        select(PrescriptionBox).where(PrescriptionBox.id == prescription_id)
+        select(PrescriptionBox).where(
+            PrescriptionBox.id == prescription_id,
+            PrescriptionBox.doctor_id == doctor.id,
+        )
     )
     rx = result.scalar_one_or_none()
     if not rx:
@@ -158,7 +192,10 @@ async def download_prescription_pdf(
 ):
     """Download prescription PDF."""
     result = await db.execute(
-        select(PrescriptionBox).where(PrescriptionBox.id == prescription_id)
+        select(PrescriptionBox).where(
+            PrescriptionBox.id == prescription_id,
+            PrescriptionBox.doctor_id == doctor.id,
+        )
     )
     rx = result.scalar_one_or_none()
     if not rx or not rx.pdf_path:

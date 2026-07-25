@@ -16,12 +16,14 @@ export function PatientInbox() {
 
   useEffect(() => {
     if (!patientId) { setLoading(false); return }
-    apiClient.get('/api/patient/me/inbox', { params: { limit: 20 } })
+    apiClient.get('/patient/me/inbox', { params: { limit: 20 } })
       .then(r => {
         setNotifications(r.data || [])
         setUnreadCount((r.data || []).filter((n: any) => !n.read).length)
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.warn('[Inbox] Failed to load notifications:', err)
+      })
       .finally(() => setLoading(false))
   }, [patientId])
 
@@ -36,7 +38,7 @@ export function PatientInbox() {
 
   const markAsRead = async (id: string) => {
     try {
-      await apiClient.patch(`/api/patient/me/inbox/${id}/read`)
+      await apiClient.patch(`/patient/me/inbox/${id}/read`)
     } catch {}
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
     setUnreadCount(prev => Math.max(0, prev - 1))
@@ -65,9 +67,19 @@ export function PatientInbox() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-medium text-sm text-gray-900 dark:text-white">{n.subject}</span>
                     {!n.read && <Badge className="bg-blue-500 text-white text-[10px]">New</Badge>}
+                    {n.doctor && (
+                      <Badge variant="outline" className="text-[10px] text-gray-600 dark:text-gray-400">
+                        Dr. {n.doctor.name} {n.doctor.speciality ? `· {n.doctor.speciality}` : ''} {n.doctor.clinic_name ? `({n.doctor.clinic_name})` : ''}
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">{n.body}</p>
                   <p className="text-xs text-gray-400 mt-1 flex items-center gap-1"><Clock className="h-3 w-3" />{new Date(n.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                  {n.meta && n.meta.pdf_url && (
+                    <a href={n.meta.pdf_url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary-600 dark:text-primary-400 hover:underline mt-2 inline-block">
+                      View document →
+                    </a>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="outline" className="text-[10px]">{n.kind}</Badge>

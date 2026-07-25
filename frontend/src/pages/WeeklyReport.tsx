@@ -61,8 +61,8 @@ export function WeeklyReport() {
 
   const loadPatients = async () => {
     try {
-      const res = await apiClient.get('/api/v1/patients')
-      setPatients(res.data?.patients || [])
+      const res = await apiClient.get('/patients')
+      setPatients(res.data || [])
     } catch {}
   }
 
@@ -73,7 +73,7 @@ export function WeeklyReport() {
     setReport(null)
     setAiSummary(null)
     try {
-      const res = await apiClient.post(`/api/v1/patients/${selectedPatient}/weekly-report`, null, {
+      const res = await apiClient.post(`/patients/${selectedPatient}/weekly-report`, null, {
         params: { layout, days },
       })
       setReport(res.data)
@@ -88,7 +88,7 @@ export function WeeklyReport() {
     if (!selectedPatient) return
     setLoadingSummary(true)
     try {
-      const res = await apiClient.post(`/api/v1/weekly-report/${selectedPatient}/ai-summary`, null, {
+      const res = await apiClient.post(`/weekly-report/${selectedPatient}/ai-summary`, null, {
         params: { layout, days },
       })
       setAiSummary(res.data?.ai_summary?.summary || 'AI summary not available')

@@ -1,4 +1,4 @@
-"""Feature E — Trajectory Clustering for Proactive Risk Alerts (paper-simulated).
+"""Feature E — Trajectory Clustering for Proactive Risk Alerts.
 
 Approach:
 1. Trajectory embedding: mean-pool medical_text vectors of last N versions +
@@ -6,14 +6,18 @@ Approach:
 2. Clustering: HDBSCAN over patient population → cohort labels
 3. Anomaly detection: Mahalanobis distance > d_thresh from cluster centroid → alert
 
-Implementation note: Evaluated on synthetic data + simulation. Real-time
-WebSocket is stubbed for the paper. UI shows a "Risk Alerts" panel but
-populated from simulated runs.
+This module holds the algorithm + a synthetic-data evaluation harness (used for
+the IEEE paper's offline precision/recall on injected deteriorations). The live
+production path — running this over real patients, persisting alerts, and
+pushing them to the doctor dashboard over WebSocket — lives in
+`app.services.risk_scan` and runs on an arq cron schedule.
 
 Usage:
-    from app.services.feature_e_clustering import TrajectoryClusterer
-    clusterer = TrajectoryClusterer()
-    results = clusterer.cluster_and_detect(trajectories)
+    # Offline evaluation (synthetic):
+    from app.services.feature_e_clustering import run_full_evaluation
+    report = run_full_evaluation(num_patients=100, inject_deteriorations=10)
+
+    # Live scan (real data): see app.services.risk_scan.scan_doctor
 """
 
 from __future__ import annotations
@@ -428,7 +432,7 @@ def evaluate_precision_at_injected(
     false_negatives = len(injected_patient_ids - alert_patients)
 
     precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-    recall = true_positives / injected_patient_ids if injected_patient_ids else 0
+    recall = true_positives / len(injected_patient_ids) if injected_patient_ids else 0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
 
     logger.info("Feature E eval: precision=%.3f recall=%.3f f1=%.3f", precision, recall, f1)

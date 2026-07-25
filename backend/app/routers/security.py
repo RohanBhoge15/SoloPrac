@@ -67,6 +67,36 @@ async def upload_security_status(
     }
 
 
+@router.get("/rate-limits")
+async def rate_limit_status(
+    doctor=Depends(get_current_doctor),
+):
+    """Get current upload rate limit usage for the authenticated doctor."""
+    try:
+        from app.services.redis import redis_service
+        client = await redis_service.connect()
+        key = f"rate_limit:upload:{doctor.id}"
+        current = await client.get(key)
+        used = int(current) if current else 0
+        remaining = max(0, MAX_UPLOADS_PER_MINUTE - used)
+        return {
+            "doctor_id": str(doctor.id),
+            "limit_per_minute": MAX_UPLOADS_PER_MINUTE,
+            "used": used,
+            "remaining": remaining,
+            "reset_in_seconds": await client.ttl(key) if used > 0 else 60,
+        }
+    except Exception as e:
+        logger.warning("Failed to fetch rate limit from Redis: %s", e)
+        return {
+            "doctor_id": str(doctor.id),
+            "limit_per_minute": MAX_UPLOADS_PER_MINUTE,
+            "used": 0,
+            "remaining": MAX_UPLOADS_PER_MINUTE,
+            "note": "Rate limit data unavailable (Redis not configured)",
+        }
+
+
 @router.post("/verify-upload")
 async def verify_upload(
     file: UploadFile = File(...),

@@ -38,7 +38,7 @@ Build a **free-tier, AI-powered clinical operating system** for solo practitione
 ### Research Objectives (IEEE Paper Contributions)
 1. **Feature A:** Temporal Multimodal RAG — formalize time-aware clinical retrieval
 2. **Feature B:** Self-Planning Agent — dynamic plan-execute-critic for medical workflows
-3. **Feature C:** Cross-Modal Retrieval — NV-CLIP to BGE-M3 projector for image↔text search
+3. **Feature C:** Cross-Modal Retrieval — BiomedCLIP to BGE-M3 projector for image↔text search
 4. **Feature D:** Zero-Shot Schema Alignment — LLM-based document-to-EMR mapping
 5. **Feature E:** Trajectory Clustering — HDBSCAN + Mahalanobis for risk alerts
 6. **Feature F:** Significance-Aware Reports — clinical tier filtering for weekly digests
@@ -62,6 +62,10 @@ Build a **free-tier, AI-powered clinical operating system** for solo practitione
 | Image Registration | ORB matching + overlay + clinical summary |
 | Calendar + Voice | 9 tools + ASR/TTS + 5 voice commands |
 | Patient Portal | Search, book, reports, notifications |
+| **User/Patient Separation** | Cross-clinic identity via `users` table + `patient.user_id` FK (NEW) |
+| **Doctor Verification** | Tiered trust: unverified → pending_verification → verified → rejected (NEW) |
+| **Email/Password Auth** | bcrypt registration + login alongside Google OAuth (NEW) |
+| **India DPDP Act** | Consent management, data erasure API, audit trail export (planned) |
 | Billing + Certificates | AI-generated PDFs via shared pipeline |
 | Security & Observability | RLS, audit, Langfuse, rate limiting |
 
@@ -71,6 +75,7 @@ Build a **free-tier, AI-powered clinical operating system** for solo practitione
 - SMS notifications (requires paid gateway; email + in-app covered)
 - Real-time trajectory WebSocket (Feature E simulated for paper)
 - Multi-clinic enterprise features
+- NMC API direct integration (admin review used as fallback)
 
 ---
 

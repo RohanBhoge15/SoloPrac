@@ -19,8 +19,11 @@ from app.middleware import audit_log_middleware, doctor_identity_middleware
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    from app.routers.portal import ws_manager
+    await ws_manager.start_subscriber()
     yield
     # Shutdown
+    await ws_manager.stop_subscriber()
     await close_db()
 
 
@@ -39,12 +42,17 @@ app = FastAPI(
     redoc_url="/redoc" if settings.DEBUG else None,
 )
 
-# ── Middleware Stack (order matters!) ──
+# ── Middleware Stack (order matters! LIFO — last added wraps first) ──
 
 # 1. CORS
+# Only allow FRONTEND_URL from settings (no hardcoded localhost in production)
+cors_origins = [settings.FRONTEND_URL]
+if settings.DEBUG:
+    cors_origins.extend(["http://localhost:5173", "http://localhost:5174"])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL, "http://localhost:5173", "http://localhost:5174"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -63,11 +71,11 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-# 4. Doctor identity (RLS session variable)
-app.middleware("http")(doctor_identity_middleware)
-
-# 5. Audit log + security headers
+# 4. Audit log + security headers (wraps everything below)
 app.middleware("http")(audit_log_middleware)
+
+# 5. Doctor identity (RLS context var) — runs AFTER audit, BEFORE route handler
+app.middleware("http")(doctor_identity_middleware)
 
 # ── API Routes ──
 app.include_router(api_router)

@@ -1,4 +1,6 @@
-import { useState } from 'react'
+'use client'
+
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -6,17 +8,14 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
-import { TimelineScrubber, type VersionNode } from '@/components/TimelineScrubber'
+import { TimelineScrubber } from '@/components/TimelineScrubber'
 import { ContextPanel } from '@/components/ContextPanel'
 import { ChatUI } from '@/components/ChatUI'
 import { ImageComparison } from '@/components/ImageComparison'
-import { Edit, Plus, Clock, FileText, ArrowUpDown, Search, Save, X, Check, Loader2 } from 'lucide-react'
-
-const MOCK_VERSIONS: VersionNode[] = [
-  { id: 'v1', version_number: 3, author: 'doctor:1', edit_type: 'manual', summary: 'Updated phone number', tags: ['phone'], clinical_significance: 0.3, timestamp: '2026-07-18T10:30:00Z' },
-  { id: 'v2', version_number: 2, author: 'agent:rag', edit_type: 'ai_suggestion', summary: 'Added HbA1c from lab report', tags: ['lab'], clinical_significance: 0.8, timestamp: '2026-07-15T14:20:00Z' },
-  { id: 'v3', version_number: 1, author: 'doctor:1', edit_type: 'manual', summary: 'Initial patient record', tags: ['demographics'], clinical_significance: 1.0, timestamp: '2026-07-01T09:00:00Z' },
-]
+import { Edit, Plus, Clock, FileText, ArrowUpDown, Search, Save, X, Check, Loader2, AlertCircle, RefreshCw, Download } from 'lucide-react'
+import { usePatientStore } from '@/store'
+import { useNotificationStore } from '@/store'
+import apiClient from '@/services/api'
 
 interface Demographics {
   name: string
@@ -28,34 +27,164 @@ interface Demographics {
   dob: string
 }
 
+interface DocumentItem {
+  name: string
+  type: string
+  date: string
+  size: string
+  id: string
+}
+
 export function PatientDetail() {
   const { id } = useParams()
+  const {
+    activeHead,
+    timeline, timelineLoading,
+    fetchTimeline, patchFields, setActivePatient,
+  } = usePatientStore()
+
   const [activeVersion, setActiveVersion] = useState<number | null>(null)
   const [showTimeline, setShowTimeline] = useState(true)
   const [showContextPanel, setShowContextPanel] = useState(true)
   const [editMode, setEditMode] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [editedFields, setEditedFields] = useState<Partial<Demographics>>({})
+  const [documents, setDocuments] = useState<DocumentItem[]>([])
+  const [documentsLoading, setDocumentsLoading] = useState(true)
+  const [reportLayout, setReportLayout] = useState<'clinical' | 'executive' | 'family_friendly'>('clinical')
+  const [reportDownloading, setReportDownloading] = useState(false)
+  const [patientError, setPatientError] = useState<string | null>(null)
 
-  const [demographics, setDemographics] = useState<Demographics>({
-    name: 'Priya Sharma',
-    age: 45,
-    gender: 'Female',
-    phone: '+91-9876543210',
-    email: 'priya.sharma@email.com',
-    address: 'Flat 302, Sunrise Apartments, Aundh, Pune',
-    dob: '1979-03-15',
-  })
+  // Get the notification store for email/websocket notifications
+  const pushNotification = useNotificationStore(state => state.pushNotification)
 
-  const diagnoses = ['Type 2 Diabetes Mellitus', 'Hypertension']
-  const medications = [
-    { drug: 'Metformin', strength: '500 mg', dose: '1 tab', frequency: 'BD' },
-    { drug: 'Amlodipine', strength: '5 mg', dose: '1 tab', frequency: 'OD' },
-  ]
+  // Handle weekly report PDF download
+  const handleDownloadWeeklyReport = async () => {
+    if (!id) return
+    setReportDownloading(true)
+    try {
+      const res = await apiClient.get(`/patients/${id}/weekly-report/pdf`, {
+        params: { layout: reportLayout },
+        responseType: 'blob',
+      })
+      // Create blob download
+      const blob = new Blob([res.data], { type: 'application/pdf' })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `weekly-report-${id}-${reportLayout}-${new Date().toISOString().slice(0, 10)}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+
+      // Push notification to doctor (will trigger email if patient has email)
+      pushNotification({
+        id: crypto.randomUUID(),
+        kind: 'weekly_report_ready',
+        subject: 'Weekly Report Generated',
+        body: `Weekly clinical report (${reportLayout}) generated and downloaded for patient ${displayDemographics.name || id}`,
+        read: false,
+        created_at: new Date().toISOString(),
+        meta: { patientId: id, layout: reportLayout },
+      })
+    } catch (err) {
+      console.error('Failed to download weekly report:', err)
+      pushNotification({
+        id: crypto.randomUUID(),
+        kind: 'error',
+        subject: 'Report Generation Failed',
+        body: 'Failed to generate weekly report PDF. Please try again.',
+        read: false,
+        created_at: new Date().toISOString(),
+        meta: { patientId: id },
+      })
+    } finally {
+      setReportDownloading(false)
+    }
+  }
+
+  // Fetch patient data on mount
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+
+    const load = async () => {
+      try {
+        const [headRes, patientRes] = await Promise.all([
+          apiClient.get(`/patients/${id}/head`).catch(() => null),
+          apiClient.get(`/patients/${id}`).catch(() => null),
+        ])
+        if (cancelled) return
+        if (headRes?.data) usePatientStore.setState({ activeHead: headRes.data })
+        if (patientRes?.data) {
+          setActivePatient(patientRes.data)
+        }
+        fetchTimeline(id)
+        if (!patientRes?.data && !headRes?.data) {
+          setPatientError('Patient not found')
+        }
+      } catch {
+        if (!cancelled) setPatientError('Failed to load patient')
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [id, fetchTimeline, setActivePatient])
+
+  // Load patient documents (invoices)
+  useEffect(() => {
+    if (!id) return
+    setDocumentsLoading(true)
+    apiClient.get(`/patients/${id}/invoices`)
+      .then(res => {
+        const invDocs: DocumentItem[] = (res.data ?? []).map((i: any) => ({
+          name: `Invoice ${i.invoice_number}.pdf`,
+          type: 'invoice',
+          date: i.generated_at?.slice(0, 10) ?? '',
+          size: 'PDF',
+          id: i.id,
+        }))
+        setDocuments(invDocs)
+      })
+      .catch((err) => {
+        console.warn('[PatientDetail] Failed to load invoices:', err)
+      })
+      .finally(() => setDocumentsLoading(false))
+  }, [id])
+
+  const state = activeHead?.state_jsonb ?? {}
+  const demographicsRaw = state.demographics ?? {} as any
+  const clinical = state.clinical ?? {} as any
+
+  const demographics: Demographics = {
+    name: demographicsRaw.name ?? 'Unknown',
+    age: demographicsRaw.age ?? 0,
+    gender: demographicsRaw.gender ?? 'Not specified',
+    phone: demographicsRaw.phone ?? '',
+    email: demographicsRaw.email ?? '',
+    address: demographicsRaw.address ?? '',
+    dob: demographicsRaw.dob ?? '',
+  }
+
+  const diagnoses: string[] = clinical.diagnoses ?? []
+  const medications: any[] = clinical.medications ?? []
 
   const handleSelectVersion = (versionNumber: number) => {
     setActiveVersion(versionNumber)
+    if (id) {
+      apiClient.get(`/patients/${id}/at_version/${versionNumber}`)
+        .then(res => {
+          if (res.data?.state_jsonb) {
+            usePatientStore.setState({ activeHead: { ...activeHead, state_jsonb: res.data.state_jsonb, version_number: versionNumber } as any })
+          }
+        })
+        .catch((err) => {
+          console.warn('[PatientDetail] Failed to load version:', err)
+        })
+    }
   }
 
   const handleCompare = (_v1: number, v2: number) => {
@@ -64,16 +193,15 @@ export function PatientDetail() {
 
   const handleCiteVersion = (versionNumber: number) => {
     setActiveVersion(versionNumber)
-    // Scroll to timeline
-    const el = document.querySelector('[data-ver="' + versionNumber + '"]')
+    const el = document.querySelector(`[data-ver="${versionNumber}"]`)
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
   const toggleEditMode = () => {
     if (editMode) {
-      // Cancel edit
       setEditMode(false)
       setEditedFields({})
+      setSaveError(null)
     } else {
       setEditMode(true)
     }
@@ -84,18 +212,45 @@ export function PatientDetail() {
   }
 
   const handleSaveEdit = async () => {
+    if (!id || !activeHead) return
     setSaving(true)
-    // Simulate API call
-    await new Promise(r => setTimeout(r, 1000))
-    setDemographics(prev => ({ ...prev, ...editedFields }))
-    setSaving(false)
-    setEditMode(false)
-    setEditedFields({})
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaveError(null)
+    try {
+      const result = await patchFields(id, editedFields as Record<string, unknown>, activeHead.version_number)
+      if (result) {
+        setSaving(false)
+        setEditMode(false)
+        setEditedFields({})
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+      } else {
+        setSaveError('Failed to save. The record may have been updated by another session. Reload and retry.')
+        setSaving(false)
+      }
+    } catch (e: any) {
+      setSaveError(e?.response?.data?.detail || 'Failed to save changes')
+      setSaving(false)
+    }
   }
 
   const displayDemographics: Demographics = { ...demographics, ...editedFields }
+
+  if (patientError) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Card className="max-w-md w-full">
+          <CardContent className="p-6 text-center">
+            <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Patient Not Found</h2>
+            <p className="text-gray-500 dark:text-gray-400 mb-4">{patientError}</p>
+            <Button onClick={() => window.location.reload()}>
+              <RefreshCw className="h-4 w-4 mr-2" /> Retry
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -106,7 +261,7 @@ export function PatientDetail() {
             <div className="flex items-center gap-4">
               <div className="h-16 w-16 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center">
                 <span className="text-2xl font-bold text-primary-700 dark:text-primary-300">
-                  {demographics.name.split(' ').map(n => n[0]).join('')}
+                  {displayDemographics.name.split(' ').map(n => n[0]).join('')}
                 </span>
               </div>
               <div>
@@ -146,15 +301,28 @@ export function PatientDetail() {
             </div>
           </div>
 
+          {saveError && (
+            <div className="mt-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300 flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {saveError}
+            </div>
+          )}
+
           {/* Timeline Scrubber */}
           {showTimeline && (
             <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
               <TimelineScrubber
-                versions={MOCK_VERSIONS}
+                versions={timeline}
                 activeVersion={activeVersion}
                 onSelectVersion={handleSelectVersion}
                 onCompare={handleCompare}
               />
+              {timelineLoading && (
+                <div className="text-center py-4 text-gray-500 dark:text-gray-400">
+                  <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />
+                  Loading timeline...
+                </div>
+              )}
             </div>
           )}
         </CardContent>
@@ -197,7 +365,7 @@ export function PatientDetail() {
                             className="w-40 h-7 text-xs text-right"
                           />
                         ) : (
-                          <span className="font-medium text-gray-900 dark:text-white text-sm">{String(v)}</span>
+                          <span className="font-medium text-gray-900 dark:text-white text-sm">{String(v) || '—'}</span>
                         )}
                       </div>
                     ))}
@@ -216,24 +384,33 @@ export function PatientDetail() {
                     <div>
                       <h4 className="font-medium text-gray-900 dark:text-white mb-2">Diagnoses</h4>
                       <div className="flex flex-wrap gap-2">
-                        {diagnoses.map((d, i) => (
-                          <Badge key={i} variant="default" className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
-                            {d}
-                          </Badge>
-                        ))}
+                        {diagnoses.length > 0 ? (
+                          diagnoses.map((d, i) => (
+                            <Badge key={i} variant="default" className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+                              {d}
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-sm text-gray-500 dark:text-gray-400">No diagnoses recorded</span>
+                        )}
                       </div>
                     </div>
                     <div>
                       <h4 className="font-medium text-gray-900 dark:text-white mb-2">Current Medications</h4>
                       <div className="space-y-2">
-                        {medications.map((m, i) => (
-                          <div key={i} className="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                            <div className="flex-1">
-                              <p className="font-medium text-gray-900 dark:text-white">{m.drug} {m.strength}</p>
-                              <p className="text-sm text-gray-500 dark:text-gray-400">{m.dose} &bull; {m.frequency}</p>
+                        {medications.length > 0 ? (
+                          medications.map((m, i) => (
+                            <div key={i} className="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                              <div className="flex-1">
+                                <p className="font-medium text-gray-900 dark:text-white">{m.drug} {m.strength}</p>
+                                <p className="text-sm text-gray-500 dark:text-gray-400">{m.dose} &bull; {m.frequency}</p>
+                                {m.duration && <p className="text-xs text-gray-400">{m.duration}</p>}
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          ))
+                        ) : (
+                          <span className="text-sm text-gray-500 dark:text-gray-400">No medications recorded</span>
+                        )}
                       </div>
                     </div>
                   </CardContent>
@@ -249,13 +426,13 @@ export function PatientDetail() {
                 </CardHeader>
                 <CardContent>
                   <TimelineScrubber
-                    versions={MOCK_VERSIONS}
+                    versions={timeline}
                     activeVersion={activeVersion}
                     onSelectVersion={handleSelectVersion}
                     onCompare={handleCompare}
                   />
                   <div className="mt-6 space-y-4">
-                    {MOCK_VERSIONS.map((v) => (
+                    {timeline.map((v) => (
                       <div
                         key={v.version_number}
                         className={cn(
@@ -306,23 +483,60 @@ export function PatientDetail() {
                   <Button>Upload</Button>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-3">
-                    {[
-                      { name: 'Lab Report - HbA1c.pdf', type: 'lab', date: 'Jul 15', size: '245 KB' },
-                      { name: 'Prescription - Jun 20.pdf', type: 'prescription', date: 'Jun 20', size: '180 KB' },
-                      { name: 'Referral Letter.pdf', type: 'referral', date: 'May 10', size: '310 KB' },
-                    ].map((doc, i) => (
-                      <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                        <div className="flex items-center gap-3">
-                          <FileText className="h-8 w-8 text-primary-600" />
-                          <div>
-                            <p className="font-medium text-gray-900 dark:text-white">{doc.name}</p>
-                            <p className="text-sm text-gray-500 dark:text-gray-400">{doc.type} &bull; {doc.date} &bull; {doc.size}</p>
+                  {documentsLoading ? (
+                    <div className="text-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+                    </div>
+                  ) : documents.length === 0 ? (
+                    <p className="text-center text-gray-500 py-8">No documents uploaded yet</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {documents.map((doc, i) => (
+                        <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                          <div className="flex items-center gap-3">
+                            <FileText className="h-8 w-8 text-primary-600" />
+                            <div>
+                              <p className="font-medium text-gray-900 dark:text-white">{doc.name}</p>
+                              <p className="text-sm text-gray-500 dark:text-gray-400">{doc.type} &bull; {doc.date} &bull; {doc.size}</p>
+                            </div>
                           </div>
+                          <Button variant="ghost" size="icon">View</Button>
                         </div>
-                        <Button variant="ghost" size="icon">View</Button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Weekly Report section */}
+                  <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-white">Weekly Clinical Report</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">Download the recent weekly report as PDF</p>
                       </div>
-                    ))}
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={reportLayout}
+                          onChange={e => setReportLayout(e.target.value as 'clinical' | 'executive' | 'family_friendly')}
+                          className="px-2 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-xs"
+                        >
+                          <option value="clinical">Clinical</option>
+                          <option value="executive">Executive</option>
+                          <option value="family_friendly">Family</option>
+                        </select>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleDownloadWeeklyReport}
+                          disabled={reportDownloading}
+                        >
+                          {reportDownloading ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Download className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -349,28 +563,22 @@ export function PatientDetail() {
             <div className="sticky top-24">
               <ContextPanel
                 patient={{
-                  name: demographics.name,
-                  age: demographics.age,
-                  gender: demographics.gender,
+                  name: displayDemographics.name,
+                  age: displayDemographics.age,
+                  gender: displayDemographics.gender,
                   id: id || '',
                 }}
                 vitals={{
-                  bp_systolic: 140,
-                  bp_diastolic: 90,
-                  heart_rate: 78,
-                  weight: 72,
-                  date: '2026-07-15',
+                  bp_systolic: clinical.vitals?.[0]?.bp_systolic ?? 140,
+                  bp_diastolic: clinical.vitals?.[0]?.bp_diastolic ?? 90,
+                  heart_rate: clinical.vitals?.[0]?.heart_rate ?? 78,
+                  weight: clinical.vitals?.[0]?.weight ?? 72,
+                  date: clinical.vitals?.[0]?.date ?? '2026-07-15',
                 }}
                 medications={medications}
                 diagnoses={diagnoses}
-                nextAppointment={{
-                  date: '2026-07-25 at 10:00 AM',
-                  reason: 'Diabetes follow-up',
-                }}
-                alerts={[
-                  { severity: 'high', message: 'HbA1c rising 0.5% in 90 days' },
-                  { severity: 'low', message: 'Patient due for annual review' },
-                ]}
+                nextAppointment={null}
+                alerts={[]}
               />
             </div>
           </div>

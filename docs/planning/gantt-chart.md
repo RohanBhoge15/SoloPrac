@@ -55,10 +55,10 @@ gantt
 
 | Week | Rohan (Backend/Arch/RAG) | Ranveer (Frontend/OCR) | Nihal (AI/Image/Voice) | Dev (Security/Planning) |
 |:----:|:-------------------------|:-----------------------|:-----------------------|:------------------------|
-| **5** | LangGraph main agent; Maverick synth node; SSE streaming; Tool integration | Chat UI + mic button; SSE EventSource hook; Streaming animation; Agent trace UI | NV-CLIP (512d) pipeline; Qdrant image vector; Hybrid search API; Image upload endpoint | Prompt injection defense; JSON Schema enforcement; Doctor ID injection; Session mgmt |
+| **5** | LangGraph main agent; Maverick synth node; SSE streaming; Tool integration | Chat UI + mic button; SSE EventSource hook; Streaming animation; Agent trace UI | BiomedCLIP (512d) pipeline; Qdrant image vector; Hybrid search API; Image upload endpoint | Prompt injection defense; JSON Schema enforcement; Doctor ID injection; Session mgmt |
 | **6** | **Feature A**: temporal_multimodal_retrieve(); RRF fusion; Temporal decay; Significance scoring | Citation chips [v12]; Click→scrubber; Right rail context; Inline edit mode | MIMIC-IV synthetic data; Evaluation harness (Recall@5, leak rate, p95); Baseline BM25/MedCPT | Qdrant filter enforcement; RAG audit logging; LLM rate limits; Future-leak validation |
-| **7** | Docling + Surya + GOT-OCR; Parser router (4 types); Scratchpad route | Drag-drop upload; Scratchpad /scratchpad; "Save to patient"; Progress + preview | **Feature D**: Maverick schema alignment; Few-shot prompt (3 ex); Pydantic validate; MedGemma fallback | Magic-byte validation; Upload allowlist; OCR sanitization; Upload rate limits |
-| **8** | ORB feature matching; Homography (RANSAC); Overlay generation; Comparison API | 3-panel view (Prev/Curr/Overlay); Opacity slider; Metrics display; "Add to record" btn | Maverick clinical summary; Versioned comparison entry; NV-CLIP embeddings; Feature C pair collection | Encrypted image storage; Size/format validation; Image audit log; RLS for images |
+| **7** | Docling + Surya + Nanonets-OCR2; Parser router (4 types); Scratchpad route | Drag-drop upload; Scratchpad /scratchpad; "Save to patient"; Progress + preview | **Feature D**: Maverick schema alignment; Few-shot prompt (3 ex); Pydantic validate; MedGemma fallback | Magic-byte validation; Upload allowlist; OCR sanitization; Upload rate limits |
+| **8** | ORB feature matching; Homography (RANSAC); Overlay generation; Comparison API | 3-panel view (Prev/Curr/Overlay); Opacity slider; Metrics display; "Add to record" btn | Maverick clinical summary; Versioned comparison entry; BiomedCLIP embeddings; Feature C pair collection | Encrypted image storage; Size/format validation; Image audit log; RLS for images |
 
 ---
 

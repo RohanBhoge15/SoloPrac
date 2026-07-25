@@ -2,7 +2,13 @@
 
 ## 1. Overview
 
-SoloPrac AI is a **multimodal, agentic clinical operating system** for solo medical practitioners. The system is designed around a **version-controlled patient intelligence layer** where every consultation mints a new immutable version (like a Git commit), every AI suggestion is auditable, and every retrieval is temporally aware.
+SoloPrac AI is a **multimodal, agentic clinical operating system** for solo medical practitioners in India. The system is designed around a **version-controlled patient intelligence layer** where every consultation mints a new immutable version (like a Git commit), every AI suggestion is auditable, and every retrieval is temporally aware.
+
+Key architectural innovations:
+- **Tiered Doctor Verification** — Self-register for private practice, verify for public trust
+- **Cross-Clinic Patient Identity** — One user can be a patient at multiple clinics via `User` → `Patient` relationship
+- **India-First Stack** — Hindi voice, Indian drug DB, OpenStreetMap, DPDP Act compliance, NMC verification
+- **Free-Tier Only** — Zero hosting cost on Oracle Cloud Free Tier + NVIDIA NIM + Groq free tiers
 
 This document describes the complete system architecture, module decomposition, and API design.
 
@@ -79,7 +85,7 @@ Single entry point classifying user intent and dispatching to the correct tool/m
 - `synthesize_response` — Llama-4 Maverick response generation
 - `analyze_image` — Groq 90B-V / MedGemma-4B vision analysis
 - `compare_images` — ORB feature matching + overlay generation
-- `parse_document` — Docling / Surya / GOT-OCR pipeline
+- `parse_document` — Docling / Surya / Nanonets-OCR2 pipeline
 - `generate_prescription_box` — Structured JSON Rx → PDF
 - `generate_invoice` — Line item billing → PDF
 - `generate_certificate` — Medical certificate → PDF with QR verification
@@ -90,10 +96,10 @@ Single entry point classifying user intent and dispatching to the correct tool/m
 Primary chat interface with temporal-aware retrieval. Supports text and image input with inline citations to specific patient versions.
 
 ### Module 4 — Image Registration for Clinical Comparison
-ORB feature matching between consecutive patient photos (wounds, skin conditions). Produces overlay images with clinical summary.
+ORB feature matching between consecutive patient photos (wounds, skin conditions). Produces overlay images with clinical summary using BiomedCLIP for similarity search.
 
 ### Module 5 — Document Engine
-Intelligent document parsing pipeline with auto-routing: typed PDF → Docling, scanned PDF → Surya + Docling, handwritten Rx → GOT-OCR 2.0, photos → Surya + MedGemma.
+Intelligent document parsing pipeline with auto-routing: typed PDF → Docling, scanned PDF → Surya + Docling, handwritten Rx → Nanonets-OCR2, photos → Surya + MedGemma.
 
 ### Module 6 — Prescription Highlight Box
 AI-generated, JSON-validated prescription cards rendered in-app and as print-ready PDFs via Jinja2 + Playwright.

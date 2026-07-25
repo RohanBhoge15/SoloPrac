@@ -28,7 +28,7 @@ def evaluate_projector(
 
     Args:
         W: (1024, 512) trained weight matrix.
-        image_embeddings: (N, 512) NV-CLIP image embeddings.
+        image_embeddings: (N, 512) BiomedCLIP image embeddings.
         text_embeddings: (N, 1024) BGE-M3 text embeddings.
         k_values: K values for Recall@K.
 

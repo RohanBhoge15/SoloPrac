@@ -88,9 +88,9 @@ A single entry point that classifies user intent and dispatches to the right too
 intent_router (Llama-3.1-8B)
     ├── retrieve_patient_context     → Qdrant hybrid
     ├── synthesize_response          → Maverick (NIM)
-    ├── analyze_image                → 90B-V (Groq) or MedGemma local
+    ├── analyze_image                → MedGemma-4B local (primary) / Groq fallback
     ├── compare_images               → ORB feature matching subgraph
-    ├── parse_document               → Docling / Surya / GOT-OCR
+    ├── parse_document               → Docling / Surya / Nanonets-OCR2
     ├── generate_prescription_box    → Maverick + JSON schema
     ├── schedule_subgraph            → voice scheduling tools
     ├── generate_invoice             → Maverick + Jinja2 + Playwright
@@ -120,7 +120,7 @@ Patients with wounds, skin conditions, or visible symptoms get photographed at e
 
 **Pipeline**
 ```
-Visit 1: Photo taken → stored + versioned (image vector embedded via NV-CLIP)
+Visit 1: Photo taken → stored + versioned (image vector embedded via BiomedCLIP)
 Visit 2: New photo → ORB feature matching vs all prior photos of that patient
          ↓
 Matches scored → best match identified
@@ -156,7 +156,7 @@ Drop a file → automatically routed:
 |-------|---------|
 | Typed PDF | Docling |
 | Scanned PDF | Surya layout + Docling structure |
-| Handwritten Rx | GOT-OCR 2.0 → MedGemma fallback |
+| Handwritten Rx | Nanonets-OCR2 → MedGemma fallback |
 | Photo (jpg/png) | Surya + MedGemma re-check |
 
 After parsing, content is converted to a **versioned patient record draft** (or scratchpad) and shown for doctor approval.
@@ -376,8 +376,11 @@ CREATE TABLE patient_notifications (
 
 Same layered approach from the original spec. See `finalised_techstack.md` §13 for full detail. Key points:
 
-- **Dual auth:** Doctor login (Google OAuth + JWT) + Patient login (Google OAuth or email+OTP)
+- **Dual auth:** Doctor login (Google OAuth + **Email/Password bcrypt**) + Patient login (Google OAuth or **phone OTP with SHA256 lookup**)
+- **Doctor Verification:** Self-register → upload documents → admin approve/reject → verified badge
+- **Admin Endpoints:** `GET/POST /admin/verifications/*` — pending list, approve, reject with reason
 - **RLS on every patient-bearing table** with `doctor_id` isolation
+- **users table has NO RLS** — intentionally cross-tenant for multi-clinic identity
 - **Qdrant isolation:** every query has `must` filter on `doctor_id` at API layer
 - **Append-only audit log** — every read/write/AI-suggestion/export logged
 - **PII encryption:** pgcrypto for phone, email, address columns
@@ -417,7 +420,7 @@ with `temporal_decay(Δt) = exp(−Δt / τ)` (τ tuned per modality — vitals 
   "vectors": {
     "medical_text": "float[768]",   # MedCPT
     "hybrid":       "float[1024]",  # BGE-M3 dense
-    "image":        "float[512]"    # NV-CLIP
+    "image":        "float[512]"    # BiomedCLIP
   },
   "sparse": "bge_m3_sparse",
   "payload": {"patient_id", "doctor_id", "timestamp", "modality", "version_number",
@@ -480,7 +483,7 @@ def temporal_multimodal_retrieve(q, t_q, patient_id, doctor_id, k=8):
 
 ### Feature C — Cross-Modal Retrieval with Contrastive Alignment
 
-**Problem.** NV-CLIP image embeddings (512d) live in a different space from BGE-M3 text embeddings (1024d), so true cross-modal search ("find prior wound photos similar to this symptom description") is weak.
+**Problem.** BiomedCLIP image embeddings (512d) live in a different space from BGE-M3 text embeddings (1024d), so true cross-modal search ("find prior wound photos similar to this symptom description") is weak.
 
 **Approach.** Train a **linear projector** `W: ℝ^512 → ℝ^1024` on image–text pairs (CheXpert + curated wound photo dataset) with InfoNCE:
 
@@ -488,7 +491,7 @@ def temporal_multimodal_retrieve(q, t_q, patient_id, doctor_id, k=8):
 L = -log [ exp(sim(W·img, txt)/τ) / Σ_j exp(sim(W·img, txt_j)/τ) ]
 ```
 
-At query time, project NV-CLIP image embeddings into BGE-M3 space and search the `hybrid` vector — no second collection needed.
+At query time, project BiomedCLIP image embeddings into BGE-M3 space and search the `hybrid` vector — no second collection needed.
 
 **Connection to Module 4:** Wound photos from the image registration feature feed this training pipeline. Every comparison generates a paired (image, doctor's summary text) sample.
 
@@ -556,9 +559,20 @@ Versions below `0.3` are skipped in the weekly digest; above `0.75` get a colore
 ## 4. PostgreSQL Schema (canonical)
 
 ```sql
+-- Users (cross-tenant identity, no RLS)
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    phone TEXT NOT NULL,
+    phone_hash CHAR(64) NOT NULL UNIQUE,  -- sha256(phone) for O(1) lookup
+    name TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX ON users(phone_hash);
+
 -- Doctors (tenants)
 CREATE TABLE doctors (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT UNIQUE NOT NULL,
     name  TEXT NOT NULL,
     speciality TEXT DEFAULT 'General Practice',
@@ -567,20 +581,28 @@ CREATE TABLE doctors (
     clinic_address TEXT,
     phone TEXT,
     registration_number TEXT,
+    password_hash TEXT,                            -- bcrypt for email/password auth
+    verification_status TEXT NOT NULL DEFAULT 'unverified',
+    license_document_path TEXT,
+    rejection_reason TEXT,
+    verified_at TIMESTAMPTZ,
     settings JSONB NOT NULL DEFAULT '{}',         -- working_hours, buffers, notification_prefs, etc.
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Patients (head pointer only; state lives in versions)
 CREATE TABLE patients (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     doctor_id UUID NOT NULL REFERENCES doctors(id),
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- cross-clinic identity
     head_version_id UUID,                         -- current state pointer
     phone_enc BYTEA, email_enc BYTEA,             -- pgcrypto
     consent_for_share BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX ON patients(doctor_id);
+CREATE INDEX ON patients(user_id);
 
 -- Immutable version chain
 CREATE TABLE patient_versions (
@@ -697,8 +719,8 @@ CREATE TABLE patient_notifications (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Append-only audit log (medico-legal)
-CREATE TABLE audit_log (
+    -- Append-only audit log (medico-legal)
+    CREATE TABLE audit_log (
     id BIGSERIAL PRIMARY KEY,
     doctor_id UUID NOT NULL,
     patient_id UUID,
@@ -736,13 +758,13 @@ CREATE POLICY tenant_isolation ON patients
 | Week | Milestone | Owner |
 |:----:|-----------|:-----:|
 | 1 | Repo bootstrap, Docker Compose skeleton (FastAPI + Postgres + Qdrant + Redis + Langfuse + Caddy + Playwright) | **All** |
-| 2 | Auth (Google OAuth + JWT + fastapi-users), RLS policies, audit log scaffolding. Patient seed data. | **A** (backend) |
+| 2 | Auth (Google OAuth + Email/Password + JWT + OTP), RLS policies, audit log scaffolding. Patient seed data. | **A** (backend) |
 | 3 | Patient + versioning core (`patient_versions`, hash chain, head pointer, diff endpoint, revert) | **A** |
 | 4 | Frontend: patient list + timeline scrubber (read-only first) + inline-edit + Cmd+K shell | **C** (frontend) |
 | 5 | LangGraph main agent + Llama-3.1-8B router + Maverick synth (NIM wired). Streaming SSE. | **B** (AI/ML) |
-| 6 | Embeddings (MedCPT + BGE-M3 + NV-CLIP) + Qdrant named-vector ingest + hybrid search | **B** |
+| 6 | Embeddings (MedCPT + BGE-M3 + BiomedCLIP) + Qdrant named-vector ingest + hybrid search | **B** |
 | 7 | **Feature A** — Temporal Multimodal RAG (search, fusion, decay, evaluation harness) | **B** |
-| 8 | Document engine (Docling + Surya + GOT-OCR + MedGemma fallback) + Scratchpad chatbot | **D** (integrations) |
+| 8 | Document engine (Docling + Surya + Nanonets-OCR2 + MedGemma fallback) + Scratchpad chatbot | **D** (integrations) |
 | 9 | **Module 4** — Image registration (ORB feature matching, overlay UI, clinical summary). Connect to version chain. | **B + D** |
 | 10 | Prescription Highlight Box + Invoice/Billing + Medical Certificates (shared Jinja2 → Playwright pipeline) | **C + D** |
 | 11 | Calendar core (tools 1–4) + email queue + working-hours config + patient preference logging | **A + D** |
@@ -769,19 +791,19 @@ CREATE POLICY tenant_isolation ON patients
 | **Reverse proxy** | Caddy (auto-HTTPS) | ✅ | — |
 | **LLM (heavy)** | Llama-4-Maverick-17B-128E via NVIDIA NIM | ✅ | Free tier |
 | **LLM (router)** | Llama-3.1-8B via NIM | ✅ | — |
-| **VLM (general)** | Llama-3.2-90B-Vision via Groq | ✅ | Free tier, ~14,400 req/day |
+| **VLM (general)** | MedGemma-4B-IT local (primary) / Groq fallback | ✅ | Medical VLM; Rad/Derm routed local, general routed to Groq |
 | **VLM (medical)** | MedGemma-4B-IT local (RTX 3050) | ✅ | Research/academic free |
 | **ASR** | faster-whisper large-v3 + AI4Bharat IndicWhisper | ✅ | Apache 2.0 |
 | **TTS** | AI4Bharat Indic-Parler-TTS | ✅ | Apache 2.0 |
 | **Embeddings (medical)** | MedCPT (ncbi) | ✅ | 768d |
 | **Embeddings (hybrid)** | BGE-M3 (BAAI) | ✅ | 1024d dense + sparse |
-| **Embeddings (image)** | NV-CLIP via NIM | ✅ | 512d |
+| **Embeddings (image)** | BiomedCLIP (Microsoft) | ✅ | 512d; MIT license, SOTA medical retrieval |
 | **OCR (typed)** | Docling (IBM) | ✅ | Apache 2.0 |
 | **OCR (scanned)** | Surya | ✅ | — |
-| **OCR (handwritten)** | GOT-OCR 2.0 | ✅ | — |
+| **OCR (handwritten)** | Nanonets-OCR2-1.5B-exp | ✅ | Apache 2.0; free, better than GOT-OCR |
 | **PDF output** | Jinja2 + Tailwind (inlined) + ECharts SVG + Playwright | ✅ | — |
 | **Image registration** | ORB (OpenCV) + homography + overlay | ✅ | BSD license |
-| **Auth** | Google OAuth + JWT + fastapi-users | ✅ | — |
+| **Auth** | Google OAuth + JWT + Email/Password (bcrypt) + OTP | ✅ | Dual auth for doctors + patients |
 | **Deploy** | Docker Compose → Oracle Cloud Free Tier (4 ARM + 24GB) | ✅ | — |
 | **Research paper** | LaTeX IEEEtran | ✅ | — |
 
@@ -863,7 +885,7 @@ Beyond the Module 1 patient endpoints, the following are added:
 |-----------------|:--------:|---------------|
 | DICOM integration (pydicom + Orthanc) | **Deferred** | Solo GPs don't use DICOM. Refer to radiologist. |
 | OHIF Viewer | **Deferred** | Would add 50K+ lines of code for zero GP benefit. |
-| Trajectory clustering real-time WebSocket (Feature E) | **Paper-simulated** | Algorithm exists. UI is stubbed. Evaluation is offline. |
+| Trajectory clustering real-time WebSocket (Feature E) | **Implemented** | Algorithm + offline eval for the paper; live scan runs over real patients on an arq cron and pushes alerts to the doctor dashboard via WebSocket. |
 | Cross-modal projector full training pipeline (Feature C) | **Partial** | Linear projector trained + evaluated. Production integration deferred. |
 | SMS notifications | **Deferred** | Requires paid gateway. Email + in-app covers it. |
 | Payment processing integration | **Deferred** | In-app "mark as paid" suffices for demo. |

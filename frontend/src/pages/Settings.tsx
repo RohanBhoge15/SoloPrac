@@ -6,12 +6,10 @@ import { Label } from '@/components/ui/Label'
 import { Badge } from '@/components/ui/Badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { apiClient } from '@/services/api'
-import { User, Bell, Shield, Calendar, CreditCard, Loader2, CheckCircle } from 'lucide-react'
+import { User, Bell, Shield, Calendar, CreditCard, Loader2, CheckCircle, AlertCircle } from 'lucide-react'
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState('profile')
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -24,51 +22,7 @@ export function Settings() {
       </TabsList>
 
       <TabsContent value="profile" className="space-y-6 mt-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><User className="h-5 w-5" />Profile</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="name">Full Name</Label>
-                <Input id="name" defaultValue="Dr. Rohan Bhoge" />
-              </div>
-              <div>
-                <Label htmlFor="email">Email</Label>
-                <Input id="email" type="email" defaultValue="rohan.bhoge15@gmail.com" />
-              </div>
-              <div>
-                <Label htmlFor="speciality">Speciality</Label>
-                <Input id="speciality" defaultValue="General Practice" />
-              </div>
-              <div>
-                <Label htmlFor="registration">Registration Number</Label>
-                <Input id="registration" defaultValue="MH-12345" />
-              </div>
-              <div>
-                <Label htmlFor="clinic">Clinic Name</Label>
-                <Input id="clinic" defaultValue="Bhoge Clinic" />
-              </div>
-              <div>
-                <Label htmlFor="address">Clinic Address</Label>
-                <Input id="address" defaultValue="Aundh, Pune" />
-              </div>
-            </div>
-            <Button onClick={() => { setSaving(true); setTimeout(() => { setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 3000) }, 1000) }} disabled={saving}>
-              {saving ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving...
-                </>
-              ) : saved ? (
-                'Saved!'
-              ) : (
-                'Save Changes'
-              )}
-            </Button>
-          </CardContent>
-        </Card>
+        <ProfileTab />
       </TabsContent>
 
       <TabsContent value="notifications" className="space-y-6 mt-6">
@@ -100,7 +54,7 @@ export function Settings() {
                 </div>
               </div>
             ))}
-            <Button>Save Preferences</Button>
+            <p className="text-sm text-gray-500 italic">Notifications are delivered via in-app WebSocket (free) and email (PDF reports only). SMS is not used.</p>
           </CardContent>
         </Card>
       </TabsContent>
@@ -110,54 +64,150 @@ export function Settings() {
       </TabsContent>
 
       <TabsContent value="security" className="space-y-6 mt-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" />Security</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Button variant="outline" onClick={() => {}}>Change Password</Button>
-            <Button variant="outline" onClick={() => {}}>Enable Two-Factor Authentication</Button>
-            <Button variant="outline" onClick={() => {}}>View Active Sessions</Button>
-            <Button variant="outline" onClick={() => {}}>Export My Data</Button>
-            <Button variant="destructive" onClick={() => {}}>Delete Account</Button>
-          </CardContent>
-        </Card>
+        <SecurityTab />
       </TabsContent>
 
       <TabsContent value="billing" className="space-y-6 mt-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><CreditCard className="h-5 w-5" />Billing & Usage</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
-              <p className="font-medium text-green-900 dark:text-green-100">Free Tier Active</p>
-              <p className="text-sm text-green-700 dark:text-green-300">You're on the free tier. No charges will apply.</p>
-            </div>
-            <div className="grid grid-cols-3 gap-4 text-center">
-              <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                <p className="text-2xl font-bold text-primary-600">0</p>
-                <p className="text-sm text-gray-500">API Calls This Month</p>
-              </div>
-              <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                <p className="text-2xl font-bold text-primary-600">0</p>
-                <p className="text-sm text-gray-500">Patients</p>
-              </div>
-              <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                <p className="text-2xl font-bold text-primary-600">₹0</p>
-                <p className="text-sm text-gray-500">Total Billed</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <BillingTab />
       </TabsContent>
     </Tabs>
+  )
+}
+
+function ProfileTab() {
+  const [form, setForm] = useState({
+    name: '',
+    speciality: '',
+    clinic_name: '',
+    clinic_address: '',
+    phone: '',
+    registration_number: '',
+  })
+  const [original, setOriginal] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    apiClient.get('/auth/me')
+      .then(r => {
+        const d = r.data
+        const values = {
+          name: d.name || '',
+          speciality: d.speciality || '',
+          clinic_name: d.clinic_name || '',
+          clinic_address: d.clinic_address || '',
+          phone: d.phone || '',
+          registration_number: d.registration_number || '',
+        }
+        setForm(values)
+        setOriginal(values)
+      })
+      .catch(() => setError('Failed to load profile'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const handleChange = (field: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    setForm(prev => ({ ...prev, [field]: e.target.value }))
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      // Only send changed fields
+      const changes: Record<string, string> = {}
+      Object.entries(form).forEach(([key, value]) => {
+        if (value !== original[key]) {
+          changes[key] = value
+        }
+      })
+      if (Object.keys(changes).length === 0) {
+        setSaving(false)
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+        return
+      }
+      await apiClient.put('/auth/me', changes)
+      setOriginal({ ...form })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const hasChanges = Object.keys(form).some(k => (form as any)[k] !== (original as any)[k])
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-gray-400">
+          <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
+          Loading profile...
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><User className="h-5 w-5" />Profile</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error && (
+          <div className="p-3 rounded-lg bg-red-50 text-sm text-red-700 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" />{error}
+          </div>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="name">Full Name</Label>
+            <Input id="name" value={form.name} onChange={handleChange('name')} />
+          </div>
+          <div>
+            <Label htmlFor="speciality">Speciality</Label>
+            <Input id="speciality" value={form.speciality} onChange={handleChange('speciality')} />
+          </div>
+          <div>
+            <Label htmlFor="registration">Registration Number</Label>
+            <Input id="registration" value={form.registration_number} onChange={handleChange('registration_number')} />
+          </div>
+          <div>
+            <Label htmlFor="clinic">Clinic Name</Label>
+            <Input id="clinic" value={form.clinic_name} onChange={handleChange('clinic_name')} />
+          </div>
+          <div className="md:col-span-2">
+            <Label htmlFor="address">Clinic Address</Label>
+            <Input id="address" value={form.clinic_address} onChange={handleChange('clinic_address')} />
+          </div>
+          <div>
+            <Label htmlFor="phone">Phone</Label>
+            <Input id="phone" value={form.phone} onChange={handleChange('phone')} />
+          </div>
+        </div>
+        <Button onClick={handleSave} disabled={saving || !hasChanges}>
+          {saving ? (
+            <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</>
+          ) : saved ? (
+            <><CheckCircle className="mr-2 h-4 w-4 text-green-500" />Saved!</>
+          ) : (
+            'Save Changes'
+          )}
+        </Button>
+      </CardContent>
+    </Card>
   )
 }
 
 function ScheduleTab() {
   const [buffer, setBuffer] = useState(5)
   const [duration, setDuration] = useState(20)
+  const [maxPerWindow, setMaxPerWindow] = useState<number | null>(null)
   const [hours, setHours] = useState<Record<string, { start: string; end: string; enabled: boolean }>>({
     monday: { start: '09:00', end: '13:00', enabled: true },
     tuesday: { start: '09:00', end: '13:00', enabled: true },
@@ -174,10 +224,11 @@ function ScheduleTab() {
   const dayNames: Record<string, string> = { monday: 'Monday', tuesday: 'Tuesday', wednesday: 'Wednesday', thursday: 'Thursday', friday: 'Friday', saturday: 'Saturday', sunday: 'Sunday' }
 
   useEffect(() => {
-    apiClient.get('/api/v1/calendar/working-hours').then(r => {
+    apiClient.get('/calendar/working-hours').then(r => {
       const data = r.data
       setBuffer(data.buffer_minutes || 5)
       setDuration(data.default_duration || 20)
+      setMaxPerWindow(data.max_bookings_per_window ?? null)
       const wh = data.working_hours_json || {}
       if (Object.keys(wh).length > 0) {
         setHours(prev => {
@@ -190,7 +241,9 @@ function ScheduleTab() {
           return updated
         })
       }
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch((err) => {
+      console.warn('[Settings] Failed to load working hours:', err)
+    }).finally(() => setLoading(false))
   }, [])
 
   const handleSave = async () => {
@@ -200,10 +253,11 @@ function ScheduleTab() {
       Object.entries(hours).forEach(([day, h]) => {
         if (h.enabled && h.start && h.end) workingHoursJson[day] = [[h.start, h.end]]
       })
-      await apiClient.put('/api/v1/calendar/working-hours', {
+      await apiClient.put('/calendar/working-hours', {
         working_hours_json: workingHoursJson,
         buffer_minutes: buffer,
         default_duration: duration,
+        max_bookings_per_window: maxPerWindow,
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
@@ -230,15 +284,182 @@ function ScheduleTab() {
             </div>
           ))}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <Label htmlFor="buffer" className="text-sm">Buffer (min):</Label>
           <Input id="buffer" type="number" min={0} max={60} value={buffer} onChange={e => setBuffer(Number(e.target.value))} className="w-20" />
           <Label htmlFor="duration" className="text-sm ml-4">Duration (min):</Label>
           <Input id="duration" type="number" min={5} max={120} value={duration} onChange={e => setDuration(Number(e.target.value))} className="w-20" />
+          <Label htmlFor="maxPerWindow" className="text-sm ml-4">Max bookings/window (0 = unlimited):</Label>
+          <Input id="maxPerWindow" type="number" min={0} max={100} value={maxPerWindow ?? 0} onChange={e => setMaxPerWindow(Number(e.target.value) || null)} className="w-20" />
         </div>
         <Button onClick={handleSave} disabled={saving}>
           {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</> : saved ? <><CheckCircle className="h-4 w-4 mr-2 text-green-500" /> Saved!</> : 'Save Schedule'}
         </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function SecurityTab() {
+  const [loading, setLoading] = useState(false)
+  const [sessions, setSessions] = useState<any | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const handleViewSessions = async () => {
+    setLoading(true)
+    try {
+      const res = await apiClient.get('/auth/sessions')
+      setSessions(res.data)
+    } catch (err: any) {
+      setMessage('Failed to load sessions')
+      console.warn(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleExportData = async () => {
+    setExporting(true)
+    try {
+      const res = await apiClient.get('/auth/me/data')
+      // Download as JSON file
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `soloprac-export-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      setMessage('Data exported successfully')
+    } catch (err: any) {
+      setMessage('Failed to export data')
+      console.warn(err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleDeleteAccount = async () => {
+    if (!confirmDelete) {
+      setConfirmDelete(true)
+      return
+    }
+    setDeleting(true)
+    try {
+      await apiClient.delete('/auth/me')
+      localStorage.clear()
+      window.location.href = '/login'
+    } catch (err: any) {
+      setMessage('Failed to delete account')
+      console.warn(err)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><Shield className="h-5 w-5" />Security</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {message && (
+          <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-sm text-blue-700 dark:text-blue-300">
+            {message}
+          </div>
+        )}
+
+        {sessions && (
+          <div className="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 text-sm">
+            <p className="font-medium mb-1">Session Info</p>
+            <p className="text-gray-600 dark:text-gray-400">{sessions.note}</p>
+            <p className="text-gray-500 text-xs mt-1">
+              Access token: {sessions.access_token_expiry_minutes} min &bull;
+              Refresh token: {sessions.refresh_token_expiry_days} days
+            </p>
+          </div>
+        )}
+
+        <Button variant="outline" onClick={handleViewSessions} disabled={loading}>
+          {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Loading...</> : 'View Active Sessions'}
+        </Button>
+
+        <Button variant="outline" onClick={handleExportData} disabled={exporting}>
+          {exporting ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Exporting...</> : 'Export My Data'}
+        </Button>
+
+        {confirmDelete ? (
+          <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+            <p className="text-sm font-medium text-red-800 dark:text-red-200 mb-2">
+              Are you sure? This will permanently delete all data.
+            </p>
+            <div className="flex gap-2">
+              <Button variant="destructive" onClick={handleDeleteAccount} disabled={deleting}>
+                {deleting ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Deleting...</> : 'Yes, Delete Everything'}
+              </Button>
+              <Button variant="outline" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+            </div>
+          </div>
+        ) : (
+          <Button variant="destructive" onClick={handleDeleteAccount}>Delete Account</Button>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function BillingTab() {
+  const [billing, setBilling] = useState<any | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    apiClient.get('/auth/me/billing')
+      .then(r => setBilling(r.data))
+      .catch(err => console.warn('[Billing] Failed to load:', err))
+      .finally(() => setLoading(false))
+  }, [])
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-gray-400">
+          <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
+          Loading usage stats...
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><CreditCard className="h-5 w-5" />Billing & Usage</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+          <p className="font-medium text-green-900 dark:text-green-100">Free Tier Active</p>
+          <p className="text-sm text-green-700 dark:text-green-300">{billing?.message || "You're on the free tier. No charges apply."}</p>
+        </div>
+        <div className="grid grid-cols-3 gap-4 text-center">
+          <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+            <p className="text-2xl font-bold text-primary-600">{billing?.notification_count ?? 0}</p>
+            <p className="text-sm text-gray-500">Notifications</p>
+          </div>
+          <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+            <p className="text-2xl font-bold text-primary-600">{billing?.patient_count ?? 0}</p>
+            <p className="text-sm text-gray-500">Patients</p>
+          </div>
+          <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+            <p className="text-2xl font-bold text-primary-600">₹{billing?.total_billed ?? 0}</p>
+            <p className="text-sm text-gray-500">Total Billed</p>
+          </div>
+        </div>
+        <div className="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-600 dark:text-gray-400">
+          <span className="font-medium">Appointments: </span>{billing?.appointment_count ?? 0}
+        </div>
       </CardContent>
     </Card>
   )

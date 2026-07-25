@@ -15,6 +15,7 @@ interface AuthContextType {
   loading: boolean
   login: (accessToken: string, refreshToken: string) => void
   googleLogin: () => void
+  devLogin: () => Promise<void>
   logout: () => void
   initializeAuth: () => Promise<void>
 }
@@ -60,6 +61,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.href = '/api/v1/auth/login/google'
   }
 
+  const devLogin = async () => {
+    const res = await fetch('/api/v1/auth/dev-login', { method: 'POST' })
+    if (!res.ok) throw new Error('Dev login failed')
+    const data = await res.json()
+    login(data.access_token, data.refresh_token)
+  }
+
   const initializeAuth = async () => {
     if (localStorage.getItem('access_token')) {
       try {
@@ -72,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, googleLogin, logout, initializeAuth }}>
+    <AuthContext.Provider value={{ user, loading, login, googleLogin, devLogin, logout, initializeAuth }}>
       {children}
     </AuthContext.Provider>
   )

@@ -1,183 +1,268 @@
-"""GPU Optimization — model swapping strategy for RTX 3050 4GB VRAM.
+"""GPU Optimizer — Model swapping strategy for RTX 3050 (4-6 GB VRAM).
 
-Strategy:
-1. Keep NVIDIA NIM remote models always available (no VRAM cost)
-2. MedGemma-4B local: load on demand, unload after inference (fits in ~3GB)
-3. Faster-Whisper: keep loaded (uses ~1GB, stays under limit)
-4. Indic-Parler-TTS: load on demand (~500MB)
-5. Emergency OOM recovery: clear cache, retry on CPU
+Manages loading/unloading of local models to fit within VRAM constraints:
+- MedGemma-4B-IT (Q4): ~3 GB
+- faster-whisper large-v3: ~2 GB
+- Indic-Parler-TTS: ~2 GB
 
-Usage:
-    from app.services.gpu_optimizer import gpu_optimizer
-    async with gpu_optimizer.model_context("medgemma"):
-        result = await model.process(...)
+Strategy: Only ONE model on GPU at a time. Swap on demand.
 """
 
 from __future__ import annotations
 
-import gc
+import asyncio
 import logging
+import os
+import torch
+from typing import Optional, Dict, Any
+from enum import Enum
+from dataclasses import dataclass
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional, AsyncIterator
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# VRAM budget (RTX 3050 = ~4GB usable)
-VRAM_BUDGET = {
-    "medgemma": 3.0,        # ~3GB when loaded
-    "whisper": 1.0,         # ~1GB when loaded
-    "parler_tts": 0.5,      # ~500MB when loaded
-    "reserved": 0.5,        # 500MB headroom
-}
 
-TOTAL_VRAM = 4.0
+class ModelName(str, Enum):
+    MEDGEMMA = "medgemma"
+    WHISPER = "whisper"
+    INDIC_WHISPER = "indic_whisper"
+    PARLER_TTS = "parler_tts"
+
+
+@dataclass
+class ModelInfo:
+    name: ModelName
+    path: str
+    vram_gb: float
+    loaded: bool = False
+    model_obj: Any = None
+    processor: Any = None
+
+
+# VRAM budget per model (RTX 3050 4-6 GB)
+MODEL_CONFIGS: Dict[ModelName, ModelInfo] = {
+    ModelName.MEDGEMMA: ModelInfo(
+        name=ModelName.MEDGEMMA,
+        path=settings.MEDGEMMA_PATH or "/models/medgemma-4b-it",
+        vram_gb=3.0,
+    ),
+    ModelName.WHISPER: ModelInfo(
+        name=ModelName.WHISPER,
+        path=settings.WHISPER_PATH or "/models/faster-whisper-large-v3",
+        vram_gb=2.0,
+    ),
+    ModelName.INDIC_WHISPER: ModelInfo(
+        name=ModelName.INDIC_WHISPER,
+        path=settings.INDIC_WHISPER_PATH or "/models/indic-whisper",
+        vram_gb=2.0,
+    ),
+    ModelName.PARLER_TTS: ModelInfo(
+        name=ModelName.PARLER_TTS,
+        path=settings.PARLER_TTS_PATH or "/models/indic-parler-tts",
+        vram_gb=2.0,
+    ),
+}
 
 
 class GPUOptimizer:
-    """Manages GPU memory for local models on RTX 3050."""
+    """Manages GPU model loading with swap strategy for RTX 3050."""
 
     def __init__(self):
-        self._loaded_models: Dict[str, Any] = {}
-        self._vram_used: float = 0.0
-        self._total_available = TOTAL_VRAM
+        self._current_model: Optional[ModelName] = None
+        self._lock = asyncio.Lock()
+        self._models: Dict[ModelName, ModelInfo] = MODEL_CONFIGS.copy()
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._vram_total_gb = self._get_vram_total()
+
+    def _get_vram_total(self) -> float:
+        """Get total VRAM in GB."""
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        return 0.0
 
     @property
-    def vram_available(self) -> float:
-        """GB of VRAM currently free."""
-        return self._total_available - self._vram_used
+    def current_model(self) -> Optional[ModelName]:
+        return self._current_model
 
     @property
-    def is_medgemma_loaded(self) -> bool:
-        return "medgemma" in self._loaded_models
+    def vram_total_gb(self) -> float:
+        return self._vram_total_gb
 
-    def mark_loaded(self, name: str, vram_gb: float):
-        """Mark a model as loaded for tracking."""
-        if name not in self._loaded_models:
-            self._loaded_models[name] = True
-            self._vram_used += vram_gb
-            logger.info("Model '%s' loaded (VRAM: +%.1fGB, available: %.1fGB)",
-                        name, vram_gb, self.vram_available)
+    @property
+    def vram_available_gb(self) -> float:
+        if not torch.cuda.is_available():
+            return 0.0
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        return self._vram_total_gb - allocated
 
-    def mark_unloaded(self, name: str, vram_gb: float):
-        """Mark a model as unloaded."""
-        if name in self._loaded_models:
-            del self._loaded_models[name]
-            self._vram_used = max(0, self._vram_used - vram_gb)
-            logger.info("Model '%s' unloaded (VRAM: -%.1fGB, available: %.1fGB)",
-                        name, vram_gb, self.vram_available)
+    async def ensure_model_loaded(self, model_name: ModelName) -> ModelInfo:
+        """Ensure a model is loaded on GPU, swapping if necessary.
+
+        Args:
+            model_name: The model to load
+
+        Returns:
+            ModelInfo with loaded model object
+        """
+        async with self._lock:
+            model_info = self._models.get(model_name)
+            if not model_info:
+                raise ValueError(f"Unknown model: {model_name}")
+
+            if model_info.loaded and model_info.model_obj is not None:
+                logger.info(f"Model {model_name.value} already loaded")
+                return model_info
+
+            # Need to swap - unload current model first
+            if self._current_model and self._current_model != model_name:
+                await self._unload_model(self._current_model)
+
+            # Load the requested model
+            await self._load_model(model_name)
+            return model_info
+
+    async def _load_model(self, model_name: ModelName) -> None:
+        """Load a specific model onto GPU."""
+        model_info = self._models[model_name]
+
+        if not os.path.exists(model_info.path):
+            raise FileNotFoundError(f"Model not found at {model_info.path}")
+
+        logger.info(f"Loading {model_name.value} onto GPU (VRAM budget: {model_info.vram_gb} GB)...")
+
+        try:
+            if model_name == ModelName.MEDGEMMA:
+                await self._load_medgemma(model_info)
+            elif model_name == ModelName.WHISPER:
+                await self._load_whisper(model_info)
+            elif model_name == ModelName.INDIC_WHISPER:
+                await self._load_indic_whisper(model_info)
+            elif model_name == ModelName.PARLER_TTS:
+                await self._load_parler_tts(model_info)
+
+            model_info.loaded = True
+            self._current_model = model_name
+            logger.info(f"Successfully loaded {model_name.value} on GPU")
+
+        except Exception as e:
+            logger.error(f"Failed to load {model_name.value}: {e}")
+            model_info.loaded = False
+            model_info.model_obj = None
+            model_info.processor = None
+            raise
+
+    async def _load_medgemma(self, model_info: ModelInfo) -> None:
+        """Load MedGemma-4B-IT model."""
+        from transformers import AutoModelForCausalLM, AutoProcessor
+        import torch
+
+        model_info.model_obj = AutoModelForCausalLM.from_pretrained(
+            model_info.path,
+            torch_dtype=torch.float16,
+            device_map="cuda",
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
+        )
+        model_info.processor = AutoProcessor.from_pretrained(
+            model_info.path, trust_remote_code=True
+        )
+
+    async def _load_whisper(self, model_info: ModelInfo) -> None:
+        """Load faster-whisper large-v3 model."""
+        from faster_whisper import WhisperModel
+
+        # faster-whisper handles its own GPU memory management
+        model_info.model_obj = WhisperModel(
+            model_info.path,
+            device="cuda",
+            compute_type="float16",
+        )
+
+    async def _load_indic_whisper(self, model_info: ModelInfo) -> None:
+        """Load IndicWhisper model."""
+        from faster_whisper import WhisperModel
+
+        model_info.model_obj = WhisperModel(
+            model_info.path,
+            device="cuda",
+            compute_type="float16",
+        )
+
+    async def _load_parler_tts(self, model_info: ModelInfo) -> None:
+        """Load Indic-Parler-TTS model."""
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+
+        model_info.model_obj = AutoModelForCausalLM.from_pretrained(
+            model_info.path,
+            torch_dtype=torch.float16,
+            device_map="cuda",
+            trust_remote_code=True,
+        )
+        model_info.processor = AutoTokenizer.from_pretrained(model_info.path)
+
+    async def _unload_model(self, model_name: ModelName) -> None:
+        """Unload a model from GPU and free VRAM."""
+        model_info = self._models.get(model_name)
+        if not model_info or not model_info.loaded:
+            return
+
+        logger.info(f"Unloading {model_name.value} from GPU...")
+
+        # Delete model objects
+        model_info.model_obj = None
+        model_info.processor = None
+        model_info.loaded = False
+
+        # Force garbage collection and clear CUDA cache
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
+        self._current_model = None
+        logger.info(f"Unloaded {model_name.value}, VRAM freed")
+
+    async def unload_all(self) -> None:
+        """Unload all models from GPU."""
+        async with self._lock:
+            for model_name in list(self._models.keys()):
+                if self._models[model_name].loaded:
+                    await self._unload_model(model_name)
 
     @asynccontextmanager
-    async def model_context(self, name: str, vram_gb: float) -> AsyncIterator[None]:
-        """Context manager: load model, use it, unload after.
+    async def model_context(self, model_name: ModelName):
+        """Context manager for temporary model loading.
 
-        For models that should be loaded temporarily (MedGemma, Parler-TTS).
+        Usage:
+            async with gpu_optimizer.model_context(ModelName.MEDGEMMA) as model_info:
+                # model is loaded, use model_info.model_obj
+                result = model_info.model_obj.generate(...)
+            # model is unloaded on exit
         """
+        model_info = await self.ensure_model_loaded(model_name)
         try:
-            if self.vram_available < vram_gb:
-                # Force garbage collection and try again
-                gc.collect()
-                if self.vram_available < vram_gb:
-                    # Unload least recently used model
-                    self._unload_lru()
-                    gc.collect()
-
-            self.mark_loaded(name, vram_gb)
-            yield
+            yield model_info
         finally:
-            self.mark_unloaded(name, vram_gb)
-            gc.collect()
+            # Optionally unload after use - keep for now to avoid thrashing
+            # await self._unload_model(model_name)
+            pass
 
-    def _unload_lru(self):
-        """Unload least recently used model to free VRAM."""
-        # Simple strategy: unload Parler-TTS first (smallest), then MedGemma
-        for model_name in ["parler_tts", "medgemma"]:
-            if model_name in self._loaded_models:
-                vram = VRAM_BUDGET.get(model_name, 1.0)
-                self.mark_unloaded(model_name, vram)
-                logger.info("OOM recovery: unloaded '%s' (freed %.1fGB)", model_name, vram)
-                return
-
-    async def clear_all(self):
-        """Clear all loaded models and force GC."""
-        model_names = list(self._loaded_models.keys())
-        for name in model_names:
-            vram = VRAM_BUDGET.get(name, 1.0)
-            self.mark_unloaded(name, vram)
-        gc.collect()
-        logger.info("GPU cache cleared: all models unloaded")
-
-    def get_status(self) -> Dict[str, Any]:
-        """Get current GPU memory status."""
+    def get_status(self) -> dict:
+        """Get current GPU status."""
         return {
-            "vram_total_gb": self._total_available,
-            "vram_used_gb": round(self._vram_used, 2),
-            "vram_available_gb": round(self.vram_available, 2),
-            "models_loaded": list(self._loaded_models.keys()),
-            "strategy": "Keep NIM remote, load local on-demand, unload after inference",
-            "note": "NVIDIA NIM remote models cost no local VRAM",
+            "device": self._device,
+            "vram_total_gb": round(self._vram_total_gb, 2),
+            "vram_available_gb": round(self.vram_available_gb, 2),
+            "current_model": self._current_model.value if self._current_model else None,
+            "loaded_models": [
+                m.name.value for m in self._models.values() if m.loaded
+            ],
         }
 
 
+# Global instance
 gpu_optimizer = GPUOptimizer()
-
-
-# ─── Voice Pipeline Latency Optimization ───────────────────
-
-class VoiceLatencyOptimizer:
-    """Optimizations for voice pipeline latency."""
-
-    def __init__(self):
-        self._tts_cache: Dict[str, bytes] = {}  # text_hash -> audio bytes
-        self._max_cache_size = 50
-
-    @staticmethod
-    def text_hash(text: str, voice: str = "default") -> str:
-        """Simple hash for TTS cache key."""
-        import hashlib
-        return hashlib.md5(f"{text}:{voice}".encode()).hexdigest()
-
-    def get_cached_tts(self, text: str, voice: str = "default") -> Optional[bytes]:
-        """Get cached TTS output if available."""
-        key = self.text_hash(text, voice)
-        return self._tts_cache.get(key)
-
-    def cache_tts(self, text: str, audio: bytes, voice: str = "default"):
-        """Cache TTS output."""
-        key = self.text_hash(text, voice)
-        if len(self._tts_cache) >= self._max_cache_size:
-            # Remove oldest entry
-            oldest = next(iter(self._tts_cache))
-            del self._tts_cache[oldest]
-        self._tts_cache[key] = audio
-
-    def optimize_asr_prompt(self, text: str) -> str:
-        """Pre-process ASR input for faster inference.
-
-        Strips non-speech markers, normalizes whitespace.
-        """
-        import re
-        text = re.sub(r'\[.*?\]', '', text)  # Remove [laughter], [noise], etc.
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
-
-    def estimate_latency(self, audio_duration_sec: float, model: str = "whisper") -> Dict[str, float]:
-        """Estimate pipeline latency based on audio duration."""
-        # Rough latency estimates
-        asr_factor = {"whisper": 0.3, "indic_whisper": 0.4}  # real-time factor
-        intent_factor = 0.05  # ~50ms for intent classification
-        tts_factor = 0.2  # real-time factor for TTS
-
-        rtf = asr_factor.get(model, 0.3)
-        return {
-            "audio_duration_sec": round(audio_duration_sec, 1),
-            "estimated_asr_sec": round(audio_duration_sec * rtf, 2),
-            "estimated_intent_sec": intent_factor,
-            "estimated_tts_sec": round(audio_duration_sec * tts_factor, 2),
-            "total_estimated_sec": round(
-                audio_duration_sec * rtf + intent_factor + audio_duration_sec * tts_factor, 2
-            ),
-            "note": "Some models load on first use (cold start adds ~2s for MedGemma)",
-        }
-
-
-voice_latency_optimizer = VoiceLatencyOptimizer()

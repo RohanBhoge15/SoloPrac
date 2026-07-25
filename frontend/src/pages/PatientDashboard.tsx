@@ -18,12 +18,14 @@ export function PatientDashboard() {
   useEffect(() => {
     if (!patientId) { setLoading(false); return }
     Promise.all([
-      apiClient.get('/api/patient/me/appointments', { params: { patient_id: patientId } }),
-      apiClient.get('/api/patient/me/inbox', { params: { patient_id: patientId, limit: 5 } }),
+      apiClient.get('/patient/me/appointments'),
+      apiClient.get('/patient/me/inbox', { params: { limit: 5 } }),
     ]).then(([aptRes, notifRes]) => {
       setAppointments(aptRes.data || [])
       setNotifications(notifRes.data || [])
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch((err) => {
+      console.warn('[PatientDashboard] Failed to fetch data:', err)
+    }).finally(() => setLoading(false))
   }, [patientId])
 
   // Handle real-time notifications from WebSocket

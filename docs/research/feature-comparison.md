@@ -40,6 +40,12 @@ Systems were evaluated across 15 feature dimensions relevant to solo medical pra
 | Hindi Speech Recognition | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Hindi Text-to-Speech | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Voice-Only Scheduling Scope | **✅** | ❌ | ❌ | ❌ | ❌ |
+| **Identity & Trust (NEW)** | | | | | |
+| Cross-Clinic Patient Identity | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
+| Tiered Doctor Verification | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
+| Email/Password Registration | **✅** | ✅ | ✅ | ✅ | ✅ |
+| Doctor Public Profile + Trust Badge | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
+| Admin Verification Dashboard | **✅** | ❌ | ❌ | ❌ | ❌ |
 | **Technical** | | | | | |
 | Multi-Tenant RLS | **✅** | ⚠️ | ✅ | ✅ | ✅ |
 | Audit Log (Medico-Legal) | **✅** | ✅ | ✅ | ✅ | ✅ |
@@ -63,7 +69,7 @@ Systems were evaluated across 15 feature dimensions relevant to solo medical pra
 | 1 | **Versioned Records** | None | Git-like immutable chain for patient data |
 | 2 | **Temporal RAG** | No medical RAG considers time | Formal scoring with temporal decay per modality |
 | 3 | **Self-Planning Agent** | Fixed chains in all systems | Dynamic plan-execute-critic for clinical queries |
-| 4 | **Cross-Modal Retrieval** | None in medical domain | NV-CLIP → BGE-M3 projector with InfoNCE |
+| 4 | **Cross-Modal Retrieval** | None in medical domain | BiomedCLIP → BGE-M3 projector with InfoNCE |
 | 5 | **Schema Alignment** | Per-format parsers only | Zero-shot LLM mapping with structured output |
 | 6 | **Risk Trajectories** | Rule-based alerts only | HDBSCAN + Mahalanobis on clinical embeddings |
 

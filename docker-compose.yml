@@ -45,12 +45,13 @@ services:
   redis:
     image: redis:7-alpine
     container_name: soloprac-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-soloprac_redis_dev_password}
     volumes:
       - redis_data:/data
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-soloprac_redis_dev_password}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -79,7 +80,8 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/public/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
     networks:
       - soloprac-network
@@ -106,8 +108,12 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - NIM_API_KEY=${NIM_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
+      # Persist HuggingFace model downloads (MedCPT, BGE-M3, BiomedCLIP, etc.)
+      # so they are downloaded once and reused across rebuilds/restarts.
+      - HF_HOME=/hf_cache
     volumes:
       - ./backend:/app
+      - hf_cache:/hf_cache
     ports:
       - "8000:8000"
     depends_on:
@@ -152,6 +158,47 @@ services:
     networks:
       - soloprac-network
 
+  # Arq Background Worker
+  arq-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: soloprac-arq-worker
+    command: ["python", "worker.py"]
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-soloprac}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-soloprac_dev_password_change_me}
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-soloprac}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - LANGFUSE_HOST=http://langfuse:3000
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-changeme_generate_strong_secret}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - NIM_API_KEY=${NIM_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      # Share the same HuggingFace cache as the backend (see backend service).
+      - HF_HOME=/hf_cache
+    volumes:
+      - ./backend:/app
+      - hf_cache:/hf_cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      langfuse:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - soloprac-network
+
   # Caddy Reverse Proxy (Production)
   caddy:
     image: caddy:2.8-alpine
@@ -178,6 +225,7 @@ volumes:
   langfuse_data:
   caddy_data:
   caddy_config:
+  hf_cache:
 
 networks:
   soloprac-network:

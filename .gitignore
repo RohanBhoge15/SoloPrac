@@ -103,3 +103,9 @@ langfuse_data/
 ## Caddy
 caddy_data/
 caddy_config/
+
+## Codegraph
+.codegraph/
+
+## Claude
+.claude/

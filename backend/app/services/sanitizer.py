@@ -87,9 +87,10 @@ def sanitize_ocr_text(text: str, max_length: int = MAX_OCR_TEXT_LENGTH) -> str:
     lines = cleaned.split("\n")
     truncated_lines = []
     for line in lines:
+        original_len = len(line)
         if len(line) > MAX_SINGLE_LINE_LENGTH:
             line = line[:MAX_SINGLE_LINE_LENGTH] + " [TRUNCATED - line too long]"
-            logger.warning("Truncated OCR line from %d to %d chars", len(line), MAX_SINGLE_LINE_LENGTH)
+            logger.warning("Truncated OCR line from %d to %d chars", original_len, MAX_SINGLE_LINE_LENGTH)
         truncated_lines.append(line)
     cleaned = "\n".join(truncated_lines)
 

@@ -11,8 +11,20 @@ export function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const { login, googleLogin } = useAuth()
+  const { login, googleLogin, devLogin } = useAuth()
   const navigate = useNavigate()
+
+  const handleDevLogin = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      await devLogin()
+      navigate('/dashboard')
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Dev login failed')
+      setLoading(false)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -146,6 +158,17 @@ export function Login() {
             </svg>
             Continue with Google
           </Button>
+
+          {import.meta.env.DEV && (
+            <Button
+              variant="outline"
+              className="w-full mt-2 border-dashed border-amber-400 text-amber-700 dark:text-amber-400"
+              onClick={handleDevLogin}
+              disabled={loading}
+            >
+              Dev login (doctor)
+            </Button>
+          )}
         </Card>
 
         <p className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">

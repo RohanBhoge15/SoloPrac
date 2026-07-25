@@ -2,6 +2,7 @@
 title: SoloPrac AI Database Schema
 ---
 erDiagram
+    USERS ||--o{ PATIENTS : "visits as"
     DOCTORS ||--o{ PATIENTS : "treats"
     DOCTORS ||--o{ APPOINTMENTS : "hosts"
     DOCTORS ||--o{ AUDIT_LOG : "generates"
@@ -16,6 +17,15 @@ erDiagram
     PATIENTS ||--o{ PATIENT_NOTIFICATIONS : "receives"
     PATIENT_VERSIONS }|--|| PATIENT_VERSIONS : "parent"
 
+    USERS {
+        uuid id PK
+        varchar phone
+        varchar phone_hash UK
+        varchar name
+        timestamp created_at
+        timestamp updated_at
+    }
+
     DOCTORS {
         uuid id PK
         varchar email UK
@@ -26,6 +36,11 @@ erDiagram
         text clinic_address
         varchar phone
         varchar registration_number
+        varchar password_hash
+        varchar verification_status
+        varchar license_document_path
+        text rejection_reason
+        timestamp verified_at
         jsonb settings
         timestamp created_at
     }
@@ -33,6 +48,7 @@ erDiagram
     PATIENTS {
         uuid id PK
         uuid doctor_id FK
+        uuid user_id FK
         uuid head_version_id FK
         bytea phone_enc
         bytea email_enc
@@ -98,6 +114,16 @@ erDiagram
 
     APPOINTMENTS {
         uuid id PK
+        uuid doctor_id FK
+        uuid patient_id FK
+        timestamp start_at
+        timestamp end_at
+        text reason
+        varchar status
+        varchar source
+        boolean notified
+        timestamp created_at
+    }
         uuid doctor_id FK
         uuid patient_id FK
         timestamp start_at

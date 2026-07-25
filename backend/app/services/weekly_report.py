@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import logging
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
@@ -24,7 +25,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Patient, PatientVersion
+from app.models import Patient, PatientVersion, ImageComparison
 from app.agents.synthesizer import MaverickSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -329,6 +330,38 @@ class WeeklyReportService:
             "diagnoses": diagnoses[:3],
         }
 
+    async def _fetch_patient_images(self, db: AsyncSession, patient_id: UUID, days: int = 7) -> List[Dict[str, str]]:
+        """Fetch patient images from the last N days for inclusion in weekly report."""
+        from sqlalchemy import desc
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        result = await db.execute(
+            select(ImageComparison)
+            .join(PatientVersion, PatientVersion.id == ImageComparison.version_id)
+            .where(
+                PatientVersion.patient_id == patient_id,
+                ImageComparison.created_at >= cutoff,
+            )
+            .order_by(desc(ImageComparison.created_at))
+            .limit(6)
+        )
+        comparisons = result.scalars().all()
+
+        images = []
+        for c in comparisons:
+            if c.current_image_path:
+                images.append({
+                    "url": c.current_image_path,
+                    "caption": f"Clinical image ({c.created_at.strftime('%b %d') if c.created_at else ''})",
+                })
+            if c.matched_image_path and c.matched_image_path != c.current_image_path:
+                images.append({
+                    "url": c.matched_image_path,
+                    "caption": f"Prior comparison ({c.created_at.strftime('%b %d') if c.created_at else ''})",
+                })
+
+        return images[:6]
+
     def _to_plain_language(self, summary: str, tags: List[str]) -> str:
         """Convert clinical summary to patient-friendly language."""
         if not summary:
@@ -383,6 +416,8 @@ class WeeklyReportService:
 
         # Get patient name from head version or fallback
         patient_name = f"Patient {str(patient_id)[:8]}"
+        patient_age = None
+        patient_gender = None
         if patient.head_version_id:
             vr = await db.execute(
                 select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
@@ -390,8 +425,13 @@ class WeeklyReportService:
             head = vr.scalar_one_or_none()
             if head and head.state_jsonb:
                 demo = head.state_jsonb.get("demographics", {})
-                if isinstance(demo, dict) and demo.get("name"):
-                    patient_name = demo["name"]
+                if isinstance(demo, dict):
+                    if demo.get("name"):
+                        patient_name = demo["name"]
+                    if demo.get("age"):
+                        patient_age = demo["age"]
+                    if demo.get("gender"):
+                        patient_gender = demo["gender"]
 
         # Get and score recent versions
         versions = await self.get_recent_versions(db, patient_id, days)
@@ -399,6 +439,8 @@ class WeeklyReportService:
             return {
                 "layout": layout,
                 "patient_name": patient_name,
+                "patient_age": patient_age,
+                "patient_gender": patient_gender,
                 "title": f"Weekly Report — {patient_name}",
                 "description": "No clinical events this week",
                 "total_events": 0,
@@ -407,13 +449,26 @@ class WeeklyReportService:
 
         scored = self.score_versions(versions)
 
+        # Fetch patient images for the report period
+        images = await self._fetch_patient_images(db, patient_id, days)
+
         # Build requested layout
         if layout == "executive":
-            return self.build_executive_layout(patient_name, scored)
+            report = self.build_executive_layout(patient_name, scored)
         elif layout == "family_friendly":
-            return self.build_family_layout(patient_name, scored)
+            report = self.build_family_layout(patient_name, scored)
         else:
-            return self.build_clinical_layout(patient_name, scored)
+            report = self.build_clinical_layout(patient_name, scored)
+
+        # Add patient metadata and images to all layouts
+        report.update({
+            "patient_name": patient_name,
+            "patient_age": patient_age,
+            "patient_gender": patient_gender,
+            "images": images,
+        })
+
+        return report
 
     async def generate_ai_summary(
         self,
