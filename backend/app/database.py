@@ -78,25 +78,24 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         # Import models to register them
         from app import models  # noqa
-        # Create PostGIS and pgcrypto extensions
+        # Create extensions
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
 
         # Create all tables
         await conn.run_sync(Base.metadata.create_all)
 
-        # ── Lightweight idempotent migrations ──
-        # create_all won't add columns to pre-existing tables (e.g. when the
-        # table came from init-schema.sql), so add newer columns explicitly.
-        await conn.execute(text(
-            "ALTER TABLE patient_notifications ADD COLUMN IF NOT EXISTS meta JSONB"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE prescription_boxes ADD COLUMN IF NOT EXISTS patient_id UUID REFERENCES patients(id) ON DELETE CASCADE"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE report_verifications ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP WITH TIME ZONE"
-        ))
+        # Create pg_trgm index on patient version name for fast ILIKE search
+        await conn.execute(text("""
+            DO $$ BEGIN
+                CREATE INDEX IF NOT EXISTS ix_patient_versions_name_trgm
+                ON patient_versions
+                USING GIN (LOWER(state_jsonb->'demographics'->>'name') gin_trgm_ops);
+            EXCEPTION
+                WHEN duplicate_table THEN null;
+            END $$;
+        """))
 
         # ── Row-Level Security: Enforce doctor isolation ──
         # Every patient-bearing table has RLS enabled with the policy:

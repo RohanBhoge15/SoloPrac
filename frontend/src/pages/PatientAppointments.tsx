@@ -9,8 +9,21 @@ function cn(...classes: any[]) { return classes.filter(Boolean).join(' ') }
 export function PatientAppointments() {
   const [appointments, setAppointments] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const patientId = localStorage.getItem('patient_id') || ''
+  const [patientId, setPatientId] = useState<string>('')
 
+  // Fetch patient ID from profile endpoint
+  useEffect(() => {
+    apiClient.get('/patient/me/profile')
+      .then(res => {
+        if (res.data?.user_id) {
+          setPatientId(res.data.user_id)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  // Fetch appointments when patientId is available
   useEffect(() => {
     if (!patientId) { setLoading(false); return }
     apiClient.get('/patient/me/appointments')

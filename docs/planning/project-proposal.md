@@ -13,7 +13,7 @@ Solo medical practitioners (GPs, specialists, small clinics) in India face a fun
 - **Too expensive** (₹2,000-5,000/month per clinic for Practo, KareXpert, etc.)
 - **Too complex** (OpenEMR requires server administration, has dated UI)
 - **Too limited** (no AI, no voice, no versioning, no temporal awareness)
-- **Not localized** (no Hindi support, no Indian drug database, no Indian map integration)
+- **Not localized** (no Hindi support, no Indian map integration)
 
 As a result, **85% of solo GPs still use paper records or Excel**, leading to:
 - 12+ minutes of administrative overhead per patient
@@ -53,36 +53,50 @@ Build a **free-tier, AI-powered clinical operating system** for solo practitione
 ## 4. Scope
 
 ### In Scope
-| Module | Description |
-|--------|-------------|
-| Patient Versioning Core | Immutable chain, diff, revert, timeline |
-| LangGraph Agent | Router + 9 tools + voice subgraph |
-| Temporal Multimodal RAG | 3 vector types + temporal decay + evaluation |
-| Document Engine | 4 parsers + schema alignment |
-| Image Registration | ORB matching + overlay + clinical summary |
-| Calendar + Voice | 9 tools + ASR/TTS + 5 voice commands |
-| Patient Portal | Search, book, reports, notifications |
-| **User/Patient Separation** | Cross-clinic identity via `users` table + `patient.user_id` FK (NEW) |
-| **Doctor Verification** | Tiered trust: unverified → pending_verification → verified → rejected (NEW) |
-| **Email/Password Auth** | bcrypt registration + login alongside Google OAuth (NEW) |
-| **India DPDP Act** | Consent management, data erasure API, audit trail export (planned) |
-| Billing + Certificates | AI-generated PDFs via shared pipeline |
-| Security & Observability | RLS, audit, Langfuse, rate limiting |
+| Module | Description | Status |
+|--------|-------------|:------:|
+| Patient Versioning Core | Immutable chain, diff, revert, timeline | **Done** |
+| LangGraph Agent | Router + 9 tools + voice subgraph | **Done** |
+| Temporal Multimodal RAG | 3 vector types + temporal decay + evaluation | **Done** |
+| Document Engine | 4 parsers + quality alerts + schema alignment | **Done** |
+| Image Registration | ORB matching + overlay + clinical summary | **Done** |
+| Calendar + Voice | 9 tools + ASR/TTS + 5 voice commands + booking dialog | **Done** |
+| Patient Portal | Search, book, reports, notifications, consent, data erasure | **Done** |
+| Cross-Clinic Identity | User table + patient.user_id FK | **Done** |
+| Doctor Verification | Tiered trust + NMC verification | **Done** |
+| Email/Password Auth | bcrypt + HttpOnly cookies | **Done** |
+| DPDP Compliance | Consent records, data erasure, audit trail | **Done** |
+| State-Specific Prescriptions | 24 Indian states' regulatory text | **Done** |
+| Hindi UI | react-i18next + translation files | **Done** |
+| Profile Photos | Upload + oval crop + MinIO storage | **Done** |
+| Voice-to-Text | Mic buttons on PrescriptionBox + ChatUI | **Done** |
+| OCR Quality Alerts | Blur, contrast, brightness, resolution checks | **Done** |
+| Patient PDF Downloads | Prescriptions, invoices, certificates from portal | **Done** |
+| Document Timeline | Unified chronological view with version citations | **Done** |
+| Offline PWA | Service worker + Workbox caching | **Done** |
+| Sentry Error Tracking | Backend + frontend (opt-in) | **Done** |
+| Backup System | pg_dump to MinIO | **Done** |
+| Multi-Device Sessions | Track + revoke sessions | **Done** |
+| Billing + Certificates | AI-generated PDFs via shared pipeline | **Done** |
+| Security & Observability | RLS, audit, Langfuse, rate limiting | **Done** |
 
 ### Out of Scope
-- DICOM/OHIF viewer (radiologist domain, not solo GP)
-- Payment gateway integration (demo uses "Mark as Paid")
-- SMS notifications (requires paid gateway; email + in-app covered)
-- Real-time trajectory WebSocket (Feature E simulated for paper)
-- Multi-clinic enterprise features
-- NMC API direct integration (admin review used as fallback)
+| Feature | Decision | Justification |
+|---------|:--------:|---------------|
+| DICOM/OHIF viewer | Deferred | Solo GPs don't use DICOM |
+| Indian drug database | Skipped | LLM handles misspelled medicine names natively |
+| Research section in app | Skipped | Compared with RAG-Based CDSS; not needed for solo doctors |
+| Lab reference ranges | Removed | Hardcoded ranges are useless |
+| Payment gateway | Deferred | "Mark as paid" suffices for demo |
+| SMS notifications | Deferred | Email + in-app covers it |
+| Google OAuth | Removed | Email+password is simpler; no third-party dependency |
 
 ---
 
 ## 5. Deliverables
 
 ### Software Deliverables
-1. **Complete source code** (GitHub repo with per-week tags)
+1. **Complete source code** (GitHub repo)
 2. **Docker Compose deployment** (8 services, one-command startup)
 3. **Oracle Cloud deployment guide** (free tier)
 4. **Demo video** (5-minute walkthrough)
@@ -91,59 +105,28 @@ Build a **free-tier, AI-powered clinical operating system** for solo practitione
 ### Research Deliverables
 1. **IEEE paper** (5-6 pages, 2-column, IEEEtran format)
 2. **Evaluation metrics** (Recall@5, latency p95, future-leak rate, Likert ratings)
-3. **Reproducibility package** (synthetic MIMIC-IV dataset + evaluation scripts)
+3. **Reproducibility package** (synthetic dataset + evaluation scripts)
 
 ### Documentation Deliverables
 1. Architecture decision records
-3. Database schema with RLS policies
-4. API specification (OpenAPI)
-5. Security audit report
+2. Database schema with RLS policies
+3. API specification (OpenAPI)
+4. Security audit report
 
 ---
 
-## 6. Methodology
-
-### Development Approach
-- **15-week incremental delivery** — each week produces demonstrable feature set
-- **Research-first** — evaluation harness built before feature implementation
-- **Doctor-in-the-loop** — all AI mutations require approval; feedback from practicing GP at weeks 4, 8, 12
-- **Observability-driven** — Langfuse traces every LLM call and agent step
-
-### Evaluation Strategy
-| Feature | Primary Metric | Dataset |
-|---------|---------------|---------|
-| A — Temporal RAG | Recall@5 (time-correct) + future-leak rate | Synthetic MIMIC-IV longitudinal |
-| B — Self-Planning | Steps-to-resolution vs fixed pipeline | 100 clinical queries held-out |
-| C — Cross-Modal | Recall@k on CheXpert + wound pairs | CheXpert + curated wound dataset |
-| D — Schema Alignment | Field-level F1 (5 doc types × 50) | Real documents + clinician review |
-| E — Trajectory Clustering | Precision on injected deteriorations | Synthetic trajectories |
-| F — Weekly Reports | Doctor Likert (1-5) vs unfiltered baseline | 30-day simulated study |
-
----
-
-## 7. Team & Responsibilities
+## 6. Team & Responsibilities
 
 | Member | Role | Primary Focus |
 |--------|------|---------------|
-| Rohan Bhoge | Tech Lead, Backend | Versioning, RAG, LangGraph, Architecture |
-| Ranveer Singh Thakur | Frontend Lead | React UI, Timeline, Chat, Patient Portal |
-| Nihal Korgaonkar | AI/ML Engineer | Embeddings, Vision, Voice, Feature Evaluations |
-| Dev Patel | Security & DevOps | Auth, RLS, Audit, Deployment, Planning |
+| Rohan Bhoge | Tech Lead, Backend | Versioning, RAG, LangGraph, Architecture, Auth, Calendar, Patient Portal |
+| Ranveer Singh Thakur | Frontend Lead | React UI, Timeline, Chat, Patient Portal, Profile Photos, ImageCropModal |
+| Nihal Korgaonkar | AI/ML Engineer | Embeddings, Vision, Voice, Feature Evaluations, Langfuse |
+| Dev Patel | Security & DevOps | Auth, RLS, Audit, Deployment, Planning, Alembic, MinIO |
 
 ---
 
-## 8. Timeline Overview
-
-| Phase | Weeks | Focus |
-|-------|:-----:|-------|
-| **Phase 1: Foundation** | 1-4 | Architecture, Docker, Auth, Versioning, Timeline UI, Embeddings |
-| **Phase 2: Core AI** | 5-8 | Agent, Chat, RAG (Feature A), Documents, Image Registration |
-| **Phase 3: Features** | 9-12 | Prescriptions, Billing, Certificates, Calendar, Voice, Patient Portal |
-| **Phase 4: Research** | 13-15 | Feature Evaluations, Integration, Paper, Demo, Deploy |
-
----
-
-## 8. Expected Impact
+## 7. Expected Impact
 
 | Dimension | Target |
 |-----------|--------|
@@ -153,26 +136,3 @@ Build a **free-tier, AI-powered clinical operating system** for solo practitione
 | **Research contribution** | 6 novel features for IEEE publication |
 | **Deployment cost** | ₹0 / month (Oracle Cloud Free Tier) |
 | **Language support** | English + Hindi (voice + UI) |
-
----
-
-## 9. Risk Mitigation
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|:----------:|:------:|------------|
-| GPU memory (RTX 3050) | High | High | Model swapping orchestrator; CPU embeddings |
-| Free LLM rate limits | Medium | Medium | Caching; local fallback; graceful degradation |
-| Team bandwidth (4 students) | High | High | Clear task ownership; AI-assisted code gen; scope fixed |
-| Hindi clinical data scarcity | Medium | Medium | Synthetic generation from MIMIC-IV + translation |
-| Mentor scope changes | Low | High | Weekly tags allow rollback; fixed deliverables |
-
----
-
-## 10. Ethics & Compliance
-
-- **AI Disclaimer** on every generated surface: "AI Suggestion — Requires Doctor Validation"
-- **No autonomous outbound** messages without doctor approval
-- **Patient consent** required before external sharing
-- **Right to be forgotten** implemented as tombstone version
-- **HIPAA-pattern aware** (not certified — documented in Limitations)
-- **MedGemma license** — academic use only (free for thesis)

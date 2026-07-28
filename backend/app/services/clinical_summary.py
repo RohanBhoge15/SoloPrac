@@ -79,7 +79,7 @@ Guidelines:
 - Near-zero changes + moderate edge convergence → "stable"
 - Always use "wound area reduced by X%" format (not "decreased by -X%")
 - Be concise, clinical, and cautious — this is AI-assisted, doctor-validated
-- End summary with: "AI Suggestion — Requires Doctor Validation."
+- End summary with: "Verified by AI · Doctor review recommended."
 
 Output format: JSON only, no markdown, no extra text.
 """
@@ -194,7 +194,7 @@ Generate the clinical summary JSON as specified."""
             f"Wound comparison for {patient_name}: {area_change:.1f}% area change. "
             f"Edge convergence score {metrics.get('edge_convergence_score', 0):.2f}. "
             f"Assessment: {assessment}. "
-            "AI Suggestion — Requires Doctor Validation."
+            "Verified by AI · Doctor review recommended."
         )
 
         return {

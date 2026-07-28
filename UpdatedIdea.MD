@@ -1,8 +1,8 @@
-# SoloPrac AI v2 — Comprehensive Product + Research Specification
+# SoloPrac AI — Comprehensive Product + Research Specification
 
-> **Revision date:** 2026-07-18
-> **Revision notes:** Scoped for realistic build (team of 4 with AI-assisted code generation). Retains all 6 research features (A–F) for IEEE paper. Adds extras that matter to a real solo GP. DICOM/OHIF deferred to future work. Lightweight patient portal (same app, different login) with real-time notifications and free OpenStreetMap integration.
-> **Companion file:** `finalised_techstack.md` (stack reference unchanged — see §Stack for additions)
+> **Revision date:** 2026-07-28
+> **Revision notes:** All core features built and tested. Auth simplified to email+password (Google OAuth removed). Patient portal uses email+password (not OTP). Added: profile photos, voice-to-text, OCR quality alerts, document timeline, patient PDF downloads, state-specific prescriptions, PIN code search, telemedicine consent, DPDP consent management, NMC verification, Hindi UI, offline PWA, Sentry error tracking, backup system, multi-device sessions. Lab alerts removed (intentionally skipped — hardcoded reference ranges are useless for solo doctors). Research section intentionally skipped compared with RAG-Based CDSS project.
+> **Companion file:** `finalised_techstack.md` (stack reference unchanged)
 
 ---
 
@@ -22,9 +22,9 @@ The differentiating bet: *patient data is a versioned, immutable, time-travelabl
 
 ```
                     ┌────────────────────────────────────────────────────────────┐
-                    │  React 19 + Vite + shadcn/ui + Tailwind                    │
+                    │  React 19 + Vite + shadcn/ui + Tailwind + i18n + PWA      │
                     │  Doctor app (/dashboard/*) · Patient portal (/patient/*)   │
-                    │  Cmd+K · SSE streaming · Framer Motion                     │
+                    │  Cmd+K · SSE streaming · Framer Motion · Offline Support   │
                     └────────────────────┬───────────────────────────────────────┘
                                    │ HTTPS (Caddy)
                 ┌──────────────────▼───────────────────────────────────────────┐
@@ -36,19 +36,45 @@ The differentiating bet: *patient data is a versioned, immutable, time-travelabl
                 │  │   ├─ Vision (Llama-3.2-90B / Groq)                 │   │
                 │  │   ├─ Local VLM (MedGemma-4B / local)               │   │
                 │  │   ├─ Image Reg (ORB + overlay subgraph)             │   │
-                │  │   └─ Voice-Scheduling subgraph                      │   │
+                │  │   ├─ Voice-Scheduling subgraph                      │   │
+                │  │   └─ Voice-to-Text (faster-whisper + IndicWhisper)  │   │
                 │  └──────────────────────────────────────────────────────┘   │
                 └──┬─────────┬─────────┬─────────┬─────────┬─────────────────┘
                    │         │         │         │         │
               ┌────▼──┐ ┌───▼───┐ ┌───▼───┐ ┌──▼───────┐ ┌▼─────────┐
-              │Postgres│ │Qdrant │ │Redis │ │Langfuse  │ │Playwright│
-              │RLS+pgc│ │hybrid │ │arq   │ │self-host │ │PDF render│
+              │Postgres│ │Qdrant │ │Redis │ │MinIO S3  │ │Langfuse  │
+              │RLS+pgc│ │hybrid │ │arq   │ │Object    │ │+Sentry   │
               └───────┘ └───────┘ └──────┘ └──────────┘ └──────────┘
 ```
 
 ---
 
-## 2. Core Feature Modules
+## 2. Auth Model (Revised)
+
+**Google OAuth removed.** Auth is email+password only for both doctors and patients.
+
+### Doctor Auth
+- Email + password (bcrypt hashing)
+- HttpOnly cookies (`access_token`) — not accessible via JavaScript (XSS-safe)
+- JWT with short-lived access tokens + refresh token rotation
+- Middleware reads `Authorization` header first, falls back to `access_token` cookie
+- Registration at `/register` — requires name, email, phone, clinic_name, clinic_address, password
+
+### Patient Auth
+- Email + password (bcrypt hashing) — same as doctor auth
+- Separate `patient_token` cookie (isolated from doctor session)
+- `get_current_user` reads `patient_token` cookie as fallback
+- Walk-in patients (no account) can still be booked by doctor — `user_id=NULL`
+
+### Session Management
+- `DoctorSession` model tracks: device_info, ip_address, last_active_at
+- `GET /auth/me/sessions` — list active sessions
+- `DELETE /auth/me/sessions/{session_id}` — revoke specific session
+- Sessions revoked on logout
+
+---
+
+## 3. Core Feature Modules
 
 ### Module 1 — Version-Controlled Patient Records ⭐ *core uniqueness*
 
@@ -57,7 +83,7 @@ Every write to a patient record mints a **new immutable version** with a content
 **Mechanics**
 - Append-only `patient_versions` table.
 - Content-addressed: `version_hash = sha256(canonical_json(patient_state))`.
-- Every version stores `parent_version_id`, `author` (`doctor` | `agent:<name>`), `edit_type` (`manual` | `voice` | `ocr` | `ai_suggestion`), `summary`.
+- Every version stores `parent_version_id`, `author` (`doctor` | `agent:<name>`), `edit_type` (`manual` | `voice` | `ocr` | `ai_suggestion` | `revert`), `summary`.
 - Manual edits go through the same chain with `edit_type='manual'`.
 - AI-suggested edits land as a *proposed* version requiring doctor approval before becoming head.
 
@@ -70,6 +96,7 @@ Every write to a patient record mints a **new immutable version** with a content
 | `GET`  | `/patients/{id}/diff?v1=5&v2=7` | Field-level diff between two versions |
 | `POST` | `/patients/{id}/revert/{n}` | Mint new version with state of version `n` |
 | `PATCH`| `/patients/{id}/fields` | Field-level inline edit (optimistic locking on `updated_at`) |
+| `GET`  | `/patients/{id}/documents` | Unified document timeline (prescriptions, invoices, certificates, uploads) |
 
 **Frontend**
 - **Git-like timeline scrubber** at the top of the patient view (Framer Motion).
@@ -111,6 +138,7 @@ The doctor's primary chat surface. Backed by **Feature A** (Temporal Multimodal 
 - Streaming SSE response with inline citations to specific patient versions (`[v12 · 2026-03-14]`).
 - Citation click = scrubber jumps to that version.
 - Answers are *grounded* in retrieved versions + filtered to the active doctor's tenant.
+- **Voice-to-text mic button** — faster-whisper (English) + IndicWhisper (Hindi) for hands-free input.
 
 ---
 
@@ -135,17 +163,6 @@ Maverick generates clinical summary: "Wound area reduced 34% over 14 days.
 Summary saved as a versioned entry on the patient record
 ```
 
-**What it enables for the paper:**
-- Feature C (Cross-Modal Retrieval) — image embeddings from wound photos aligned to text descriptions.
-- A concrete clinical use case: wound healing trajectory.
-- Real image processing (ORB, homography, feature matching) — satisfies the image domain requirement.
-
-**UI:**
-- Compare view with 3 panels: Previous photo / Current photo / Overlay.
-- Slider control to adjust overlay opacity.
-- Automatically computed metrics: % area change, edge convergence score, color histogram shift.
-- Button: "Update patient record with comparison note."
-
 ---
 
 ### Module 5 — Document Engine
@@ -159,41 +176,32 @@ Drop a file → automatically routed:
 | Handwritten Rx | Nanonets-OCR2 → MedGemma fallback |
 | Photo (jpg/png) | Surya + MedGemma re-check |
 
+**OCR Quality Alerts** — Before processing, `_check_image_quality()` on `ParserRouter` detects:
+- **Blur** (Laplacian variance < 100 severe / < 300 moderate)
+- **Low contrast** (std dev < 20 severe / < 35 moderate)
+- **Brightness issues** (< 50 too dark / > 230 too bright)
+- **Low resolution** (< 500×500 px)
+
+Quality warnings shown as amber alerts in the Scratchpad file list and review dialog.
+
 After parsing, content is converted to a **versioned patient record draft** (or scratchpad) and shown for doctor approval.
 
 ---
 
 ### Module 6 — Prescription Highlight Box ⭐ *signature print-ready artifact*
 
-After consultation, Maverick generates a **structured Rx card** — print-ready, JSON-validated, rendered as a highlight box.
+After consultation, Maverick generates a **structured Rx card** — print-ready, JSON-validated, rendered as a highlight box. Doctor approves prescription to create new patient version.
 
-**JSON schema**
-
-```json
-{
-  "patient_id": "uuid",
-  "issued_at": "ISO-8601",
-  "doctor_id": "uuid",
-  "diagnosis_short": "string (≤120 chars)",
-  "medications": [
-    {
-      "drug": "Metformin", "strength": "500 mg", "dose": "1 tablet",
-      "frequency": "BD (twice daily)", "route": "PO",
-      "duration": "30 days", "instructions": "After meals",
-      "warnings": ["Avoid in renal impairment"]
-    }
-  ],
-  "investigations": ["HbA1c after 4 weeks"],
-  "lifestyle": ["Reduce refined carbs", "30 min brisk walk/day"],
-  "follow_up": {"in_days": 30, "mode": "in-person"},
-  "doctor_notes": "string",
-  "ai_disclaimer_acknowledged": true
-}
-```
+**Voice-to-Text Integration:**
+- Mic buttons on diagnosis and instructions fields in PrescriptionBox
+- Press mic → MediaRecorder records audio → sends to `POST /api/v1/voice/transcribe` → text fills field
+- Returns 503 with guidance if ASR model not installed
+- Supports Hindi (IndicWhisper) + English (faster-whisper)
 
 **Rendering**
 - In-app: colored highlight box (yellow border, white interior) with medications as a table, key warnings in red pill badges.
 - Print: Jinja2 → Playwright pipeline, A5 portrait, clinic letterhead, QR code → patient portal link.
+- **State-specific:** Doctor's `state` setting controls regulatory header/footer text (24 Indian states supported).
 - Always versioned + audit-logged.
 - Disclaimer footer: *"AI-assisted draft — validated by Dr. <name>. Not a substitute for clinical judgement."*
 
@@ -203,27 +211,6 @@ After consultation, Maverick generates a **structured Rx card** — print-ready,
 
 Tracks all patient billing within the system using the same PDF rendering pipeline as prescriptions.
 
-**Data model**
-```sql
-CREATE TABLE invoices (
-    id UUID PRIMARY KEY,
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    doctor_id UUID NOT NULL REFERENCES doctors(id),
-    appointment_id UUID REFERENCES appointments(id),
-    invoice_number TEXT NOT NULL UNIQUE,  -- auto-generated, e.g. INV-2026-0001
-    items JSONB NOT NULL,                 -- [{description, qty, rate, amount}]
-    subtotal DECIMAL(10,2) NOT NULL,
-    tax DECIMAL(10,2) DEFAULT 0,
-    total DECIMAL(10,2) NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | cancelled
-    payment_method TEXT,                     -- cash | upi | card | insurance
-    notes TEXT,
-    generated_at TIMESTAMPTZ DEFAULT NOW(),
-    paid_at TIMESTAMPTZ,
-    pdf_path TEXT                           -- cached render
-);
-```
-
 **UI**
 - **Invoice list** in the right rail / a dedicated tab per patient.
 - **Quick invoice:** doctor adds items (consultation fee, procedure, medicine), system auto-calculates totals.
@@ -231,9 +218,9 @@ CREATE TABLE invoices (
 - **Status badge:** green (paid), yellow (pending), gray (cancelled).
 - **Auto-generate from consultation:** after a consult, doctor can one-click generate an invoice.
 
-**Integration with patient portal:**
+**Patient Portal Integration:**
 - Patient logs in → sees their invoices.
-- Can download PDF.
+- Can download PDF via `GET /patient/me/invoices/{id}/pdf`.
 - Status shown: paid/pending.
 - (Actual payment processing is out of scope — demo shows "Mark as paid".)
 
@@ -249,25 +236,9 @@ Doctor provides a template category → model extracts structure → generates P
 - Medical certificate for school/college
 - Disability certificate support note
 
-**Pipeline**
-```
-Doctor picks certificate type (or types free-text)
-    ↓
-Maverick with structured output + JSON Schema
-    ↓
-Validates against Pydantic model for the certificate type
-    ↓
-Jinja2 template → Playwright PDF (same pipeline as prescriptions)
-    ↓
-Versioned + audit-logged
-    ↓
-Delivered to patient portal inbox + downloadable
-```
-
-**UI controls per doctor setting:**
-- Doctor can configure default templates (via `doctor_settings.certificate_templates`)
-- Default signature, clinic stamp, registration number auto-populated
-- QR code linking to verification URL on patient portal
+**Patient Portal Integration:**
+- Patient downloads certificates via `GET /patient/me/certificates/{id}/pdf`
+- Verification code for authenticity check
 
 ---
 
@@ -275,29 +246,26 @@ Delivered to patient portal inbox + downloadable
 
 Full LangGraph subgraph with 9 tools. Voice-driven and text-driven.
 
-**Tools**
-```python
-TOOLS = [
-    find_available_slots(date_range, duration, prefer_morning=False),
-    create_appointment(patient_id, slot, reason, send_notification=True),
-    reschedule_appointment(appointment_id, new_slot, reason),
-    cancel_appointment(appointment_id, reason, notify_patient=True),
-    query_calendar_nl(natural_language_filter),
-    bulk_reschedule(appointment_ids, new_window, notify_template),
-    block_doctor_time(date_range, reason),
-    smart_rearrange(date_range, optimization='minimize_patient_disruption'),
-    find_optimal_window(constraints),
-]
-```
+**Booking Dialog (Calendar.tsx):**
+- Click empty time slot → opens booking modal
+- Patient search (debounced `/patients/search`) with photo, name, age, gender, phone
+- Date/time pickers, duration selector, reason textarea
+- Empty cells are clickable to pre-fill time
+
+**Race Condition Protection:**
+- `SELECT FOR UPDATE` on doctor row before conflict check in `create_appointment()`
+- Prevents double-booking when two requests hit simultaneously
+
+**Booking Concurrency:**
+- `CREATE UNIQUE INDEX idx_unique_active_booking ON appointments (doctor_id, start_at) WHERE status = 'scheduled'`
 
 **Doctor config** (`doctor_settings` table):
-- `working_hours_json` — per-weekday windows (e.g., `{"mon": [["09:00","13:00"], ["16:00","20:00"]]}`).
+- `working_hours_json` — per-weekday windows.
 - `buffer_minutes_between_consults` (default 5).
 - `default_consult_duration` (default 20).
 - `auto_email_on_change` (bool).
 - `patient_preference_decay_days` (default 180).
-
-**Patient preference learning:** every confirmed appointment logs `(patient_id, weekday, hour_bucket)`. Histogram drives the `smart_rearrange` ranker.
+- `state` — controls state-specific prescription regulatory text.
 
 **Five locked voice commands:**
 1. *"Book Priya Sharma for Thursday 3 PM, fever follow-up."*
@@ -312,46 +280,33 @@ TOOLS = [
 
 ### Module 10 — Patient Web Portal ⭐ *lightweight, same app*
 
-Patients access via `/patient/*` routes in the same React app. Separate login flow (Google OAuth for patients too, or email+OTP).
+Patients access via `/patient/*` routes in the same React app. Email+password login.
 
 **Patient features:**
 
 | Feature | Details |
 |---------|---------|
 | **Dashboard** | Upcoming appointments, recent reports, unread notifications |
-| **Book appointment** | Search doctors by name/speciality, see available slots, book |
-| **Doctor search with map** | OpenStreetMap tiles (free, no API key). Lat/lng radius query. Doctor cards show name, speciality, address, timings, rating. |
+| **Book appointment** | Search doctors by name/speciality/PIN, see available slots, book with telemedicine consent |
+| **Doctor search with map** | OpenStreetMap tiles (free, no API key). PostGIS radius search. PIN code search. Doctor cards show photo, name, speciality, address, years of experience, distance. |
 | **Medical reports** | Download prescriptions, invoices, certificates as PDF |
+| **Document Timeline** | Unified chronological view with version citations, color-coded icons |
 | **Inbox** | Receive notifications, reports, invoices, booking confirmations |
 | **Notifications** | AI-generated messages (Maverick drafts content per event type). Real-time via WebSocket. |
+| **Consent Management** | DPDP-compliant: view consent, update preferences, request data erasure |
 
-**Notification system:**
-- **Events:** appointment reminder (configurable n-hours before), new report available, invoice generated, certificate issued, booking confirmed, reschedule notification.
-- **Content:** Maverick generates the natural-language message for each event. Nothing hardcoded.
-- **Delivery:** In-app (WebSocket) + email (arq queue) + SMS (if doctor has Twilio or free SMS gateway — optional).
-- **Doctor-controlled toggles:** Each notification type can be enabled/disabled per doctor via `doctor_settings.notification_preferences`.
+**Telemedicine Consent:**
+- Appointment booking includes telemedicine consent checkbox
+- `telemedicine_consent` + `telemedicine_consent_at` on Appointment model
+- Patient explicitly agrees before booking
 
-```sql
-CREATE TABLE patient_notifications (
-    id UUID PRIMARY KEY,
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    doctor_id UUID NOT NULL REFERENCES doctors(id),
-    kind TEXT NOT NULL,              -- appointment_reminder | report_available | invoice_generated | booking_confirmed | rescheduled | certificate_issued
-    subject TEXT NOT NULL,           -- AI-generated short subject line
-    body TEXT NOT NULL,              -- AI-generated message body
-    channel TEXT[] DEFAULT '{in_app}',  -- in_app | email | sms
-    read BOOLEAN DEFAULT FALSE,
-    delivered_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
-
-**Doctor search with OpenStreetMap:**
-- Uses **Leaflet.js** (free, MIT license) with OpenStreetMap tile layer.
-- No API key required. No cost.
-- Backend stores doctor clinic lat/lng in `doctors.location` (PostGIS or plain `POINT`).
-- Patient searches → backend queries nearby doctors within radius → results marked on map.
-- Doctor cards below the map with details, click to book.
+**Doctor search with PostGIS:**
+- Backend stores doctor clinic lat/lng in `doctors.location` (PostGIS GEOGRAPHY POINT)
+- `pincode` column on Doctor model (indexed) for PIN-based search
+- `ST_Distance` computes real geographic distance
+- `radius_km` parameter (default 10, min 1, max 100)
+- Results sorted by distance, showing `distance_km`
+- Frontend DoctorSearch shows photo, years experience, distance
 
 **Doctor settings for notification/booking toggles:**
 ```json
@@ -366,7 +321,8 @@ CREATE TABLE patient_notifications (
   },
   "patient_booking_enabled": true,
   "auto_confirm_booking": false,
-  "max_future_booking_days": 30
+  "max_future_booking_days": 30,
+  "state": "Maharashtra"
 }
 ```
 
@@ -374,31 +330,57 @@ CREATE TABLE patient_notifications (
 
 ### Module 11 — Auth + Multi-Tenancy + Security
 
-Same layered approach from the original spec. See `finalised_techstack.md` §13 for full detail. Key points:
+**Auth (Revised — no Google OAuth):**
+- Doctor: email + password (bcrypt) → HttpOnly cookie
+- Patient: email + password (bcrypt) → HttpOnly cookie
+- Separate cookies: `access_token` (doctor) vs `patient_token` (patient)
+- Middleware reads `Authorization` header first, falls back to cookies
 
-- **Dual auth:** Doctor login (Google OAuth + **Email/Password bcrypt**) + Patient login (Google OAuth or **phone OTP with SHA256 lookup**)
-- **Doctor Verification:** Self-register → upload documents → admin approve/reject → verified badge
-- **Admin Endpoints:** `GET/POST /admin/verifications/*` — pending list, approve, reject with reason
-- **RLS on every patient-bearing table** with `doctor_id` isolation
-- **users table has NO RLS** — intentionally cross-tenant for multi-clinic identity
-- **Qdrant isolation:** every query has `must` filter on `doctor_id` at API layer
-- **Append-only audit log** — every read/write/AI-suggestion/export logged
-- **PII encryption:** pgcrypto for phone, email, address columns
+**Doctor Verification:**
+- Self-register → upload documents → admin approve/reject → verified badge
+- NMC verification: `NMC_API_URL` + `NMC_API_KEY` env vars
+  - When set: verifies registration number against NMC API
+  - When empty (localhost): verifies directly, marks as `pending_verification`
+- `year_of_registration` → `years_experience` computed dynamically (current_year - year_of_registration)
+
+**Admin Endpoints:** `GET/POST /admin/verifications/*` — pending list, approve, reject with reason
+
+**RLS on every patient-bearing table** with `doctor_id` isolation
+
+**users table has NO RLS** — intentionally cross-tenant for multi-clinic identity
+
+**Qdrant isolation:** every query has `must` filter on `doctor_id` at API layer
+
+**PII De-identification (Defense-in-Depth):**
+- `strip_pii()` at indexer, tools, and synthesizer boundaries
+- `pseudonymize_id()` for LLM context (never send real names to LLM)
+
+**Append-only audit log** — every read/write/AI-suggestion/export logged
+
+**PII encryption:** pgcrypto for phone, email, address columns
+
+**DPDP Compliance:**
+- `ConsentRecord` model — tracks consent granted/revoked
+- `GET /patient/me/consent` — view current consent
+- `PUT /patient/me/consent` — update consent preferences
+- `DELETE /patient/me` — data erasure (anonymizes PII, preserves clinical records for medico-legal)
 
 ---
 
-## 3. Research Features (A–F) — Paper Contributions
+## 4. Research Features (A–F) — Paper Contributions
 
 Six features mapped to IEEE paper sections. Feature **A is primary**; B and C are co-equal; D, E, F are supporting.
+
+> **Note:** Features D and F in the evaluation endpoints return `{"status": "requires_manual_evaluation"}` — they require human evaluation (doctor feedback) and cannot be fully automated.
 
 ---
 
 ### Feature A — Temporal Multimodal RAG ⭐ *primary contribution*
 
-**Problem.** Standard medical RAG retrieves the most semantically similar chunks regardless of *when* the information was true. In a longitudinal record, this leaks future knowledge into past-state queries and underweights recent vitals.
+**Problem.** Standard medical RAG retrieves the most semantically similar chunks regardless of *when* the information was true.
 
 **Formal definition.**
-Given query `q` at time `t_q`, patient `p`, doctor `d`, retrieve top-`k` versions `V = {v_i}` from `patient_versions(p, d)` maximizing:
+Given query `q` at time `t_q`, patient `p`, doctor `d`, retrieve top-`k` versions maximizing:
 
 ```
 score(v_i, q, t_q) =
@@ -411,42 +393,6 @@ subject to:  v_i.timestamp ≤ t_q
              v_i.doctor_id == d
 ```
 
-with `temporal_decay(Δt) = exp(−Δt / τ)` (τ tuned per modality — vitals decay fast, family history slowly).
-
-**Qdrant point layout:**
-```json
-{
-  "id": "version_id",
-  "vectors": {
-    "medical_text": "float[768]",   # MedCPT
-    "hybrid":       "float[1024]",  # BGE-M3 dense
-    "image":        "float[512]"    # BiomedCLIP
-  },
-  "sparse": "bge_m3_sparse",
-  "payload": {"patient_id", "doctor_id", "timestamp", "modality", "version_number",
-              "clinical_significance", "version_hash"}
-}
-```
-
-**Retrieval algorithm:**
-```python
-def temporal_multimodal_retrieve(q, t_q, patient_id, doctor_id, k=8):
-    filt = Filter(must=[
-        FieldCondition(key="patient_id", match=patient_id),
-        FieldCondition(key="doctor_id", match=doctor_id),
-        FieldCondition(key="timestamp", range=Range(lte=t_q)),
-    ])
-    text_hits   = qdrant.query("medical_text", MedCPT(q),    filter=filt, limit=4*k)
-    hybrid_hits = qdrant.query("hybrid",       BGEM3(q),     filter=filt, limit=4*k)
-    sparse_hits = qdrant.query_sparse(BGEM3_sparse(q),       filter=filt, limit=4*k)
-    image_hits  = qdrant.query("image", NVCLIP(q_img),       filter=filt, limit=4*k) if q_img else []
-    fused = reciprocal_rank_fusion([text_hits, hybrid_hits, sparse_hits, image_hits])
-    for v in fused:
-        v.score += DELTA * exp(-(t_q - v.timestamp).days / TAU[v.modality])
-        v.score += EPS   * v.clinical_significance
-    return sorted(fused, key=lambda v: -v.score)[:k]
-```
-
 **Evaluation:**
 | Metric | Baseline | Target |
 |--------|----------|--------|
@@ -454,8 +400,6 @@ def temporal_multimodal_retrieve(q, t_q, patient_id, doctor_id, k=8):
 | Future-leak rate | vanilla dense RAG | < 1 % |
 | Latency p95 | — | < 600 ms |
 | Answer faithfulness (LLM-judge) | — | > 0.85 |
-
-**Datasets:** Synthetic longitudinal records generated from MIMIC-IV (de-identified) + curated multi-visit cases. Hindi cases via translation + clinician review.
 
 ---
 
@@ -465,440 +409,176 @@ def temporal_multimodal_retrieve(q, t_q, patient_id, doctor_id, k=8):
 
 **Approach.** LangGraph node `planner` (Maverick) emits a JSON plan; an `executor` runs steps; a `critic` decides re-plan or finish. Plans are logged to Langfuse for paper tables.
 
-```json
-{
-  "goal": "answer doctor's question about Mrs. Sharma's BP trend",
-  "steps": [
-    {"id": 1, "tool": "retrieve_patient_context", "args": {...}},
-    {"id": 2, "tool": "summarize_trend", "depends_on": [1]},
-    {"id": 3, "tool": "draft_response", "depends_on": [2]}
-  ],
-  "budget_tokens": 4000
-}
-```
-
 **Evaluation:** Steps-to-resolution vs. fixed pipeline; success rate on a held-out 100-query set.
 
 ---
 
 ### Feature C — Cross-Modal Retrieval with Contrastive Alignment
 
-**Problem.** BiomedCLIP image embeddings (512d) live in a different space from BGE-M3 text embeddings (1024d), so true cross-modal search ("find prior wound photos similar to this symptom description") is weak.
+**Problem.** BiomedCLIP image embeddings (512d) live in a different space from BGE-M3 text embeddings (1024d).
 
-**Approach.** Train a **linear projector** `W: ℝ^512 → ℝ^1024` on image–text pairs (CheXpert + curated wound photo dataset) with InfoNCE:
+**Approach.** Train a **linear projector** `W: R^512 → R^1024` on image–text pairs with InfoNCE loss.
 
-```
-L = -log [ exp(sim(W·img, txt)/τ) / Σ_j exp(sim(W·img, txt_j)/τ) ]
-```
-
-At query time, project BiomedCLIP image embeddings into BGE-M3 space and search the `hybrid` vector — no second collection needed.
-
-**Connection to Module 4:** Wound photos from the image registration feature feed this training pipeline. Every comparison generates a paired (image, doctor's summary text) sample.
-
-**Evaluation:** Recall@k on held-out CheXpert + wound photo pairs; qualitative panel of 20 clinical cases.
+**Evaluation:** Recall@k on held-out CheXpert + wound photo pairs.
 
 ---
 
 ### Feature D — Zero-Shot Schema Alignment
 
-**Problem.** Every uploaded document (prescription, lab report, discharge summary) has a different schema.
+**Problem.** Every uploaded document has a different schema.
 
-**Approach.** Maverick with **structured output (JSON Schema)** receives raw OCR text + the canonical schema + 3 few-shot examples; emits a mapping. Validation: Pydantic. On validation failure → critic re-prompt → escalate to MedGemma if image-bearing.
+**Approach.** Maverick with structured output + critic loop. Evaluation requires manual doctor review — endpoint returns `{"status": "requires_manual_evaluation"}`.
 
-**Evaluation:** Field-level F1 across 5 document types (Rx, lab, discharge, referral, imaging report), n ≥ 50 each.
+**Evaluation:** Field-level F1 across 5 document types (requires clinician labeling).
 
 ---
 
-### Feature E — Trajectory Clustering for Proactive Risk Alerts *(paper-simulated)*
+### Feature E — Trajectory Clustering for Proactive Risk Alerts
 
-**Problem.** Solo doctors miss slow deteriorations because they see patients episodically.
+**Problem.** Solo doctors miss slow deteriorations.
 
-**Approach:**
-1. **Trajectory embedding.** For each patient, compute a temporal embedding by mean-pooling `medical_text` vectors of the last `N` versions, concatenated with delta-vitals over a sliding window.
-2. **Clustering.** HDBSCAN over the doctor's patient population → cohort labels.
-3. **Anomaly detection.** When a patient's trajectory drifts > Mahalanobis distance `d_thresh` from their cluster centroid → alert.
+**Approach.** HDBSCAN clustering + Mahalanobis distance on clinical embeddings. Real-time scan runs over patients on arq cron, pushes alerts to doctor dashboard via WebSocket.
 
-**Implementation note:** Evaluated on synthetic data + simulation. Real-time alert WebSocket is stubbed for the paper — the algorithm is implemented and metrics are collected offline. UI shows a "Risk Alerts" panel but populated from simulated runs.
-
-**Evaluation:** Precision of alerts (doctor-rated relevance, blinded); targeted recall on injected synthetic deteriorations.
+**Evaluation:** Precision on injected synthetic deteriorations.
 
 ---
 
 ### Feature F — Significance-Aware Weekly Reports
 
-**Problem.** A weekly auto-summary email is useless if it lists every BP measurement. Doctors need a *clinically significant* digest.
+**Problem.** Weekly auto-summary is useless if it lists every measurement.
 
-**Significance scorer:**
-```python
-TIER_WEIGHTS = {
-    "new_diagnosis"      : 1.0,
-    "medication_change"  : 0.9,
-    "abnormal_lab"       : 0.8,
-    "ai_risk_alert"      : 0.75,
-    "missed_appointment" : 0.5,
-    "routine_visit"      : 0.2,
-    "vitals_in_range"    : 0.05,
-}
-def clinical_significance(version):
-    return max(TIER_WEIGHTS[tag] for tag in version.tags)
-```
-
-Versions below `0.3` are skipped in the weekly digest; above `0.75` get a colored callout.
-
-**Three PDF layouts** (doctor picks per patient in settings):
-1. **Executive** — 1 page, headline + top 3 changes + next-step suggestion.
-2. **Clinical** — 2 pages, trend charts (ECharts SVG) + medication table + risk alerts.
-3. **Family-friendly** — 1 page, plain-language summary + lifestyle tips + next appointment.
-
-**Opt-out intelligence.** Patients who replied "stop" → automatically muted; doctor sees the muted list in dashboard.
-
-**Evaluation:** Doctor rating of digest usefulness (Likert 1–5) vs. unfiltered baseline.
+**Approach.** Clinical significance tier scoring. Three PDF layouts (Executive, Clinical, Family-friendly). Evaluation requires doctor Likert ratings — endpoint returns `{"status": "requires_manual_evaluation"}`.
 
 ---
 
-## 4. PostgreSQL Schema (canonical)
+## 5. PostgreSQL Schema (canonical)
 
-```sql
--- Users (cross-tenant identity, no RLS)
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    phone TEXT NOT NULL,
-    phone_hash CHAR(64) NOT NULL UNIQUE,  -- sha256(phone) for O(1) lookup
-    name TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX ON users(phone_hash);
+See `init-schema.sql` and `alembic/versions/001_baseline.py` for the full schema.
 
--- Doctors (tenants)
-CREATE TABLE doctors (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email TEXT UNIQUE NOT NULL,
-    name  TEXT NOT NULL,
-    speciality TEXT DEFAULT 'General Practice',
-    location GEOGRAPHY(POINT),                    -- for patient search/map
-    clinic_name TEXT,
-    clinic_address TEXT,
-    phone TEXT,
-    registration_number TEXT,
-    password_hash TEXT,                            -- bcrypt for email/password auth
-    verification_status TEXT NOT NULL DEFAULT 'unverified',
-    license_document_path TEXT,
-    rejection_reason TEXT,
-    verified_at TIMESTAMPTZ,
-    settings JSONB NOT NULL DEFAULT '{}',         -- working_hours, buffers, notification_prefs, etc.
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+**Key tables:**
+- `users` — cross-tenant identity (email, password_hash, name, demographics)
+- `doctors` — tenants (email, password_hash, clinic info, pincode, location, photo_url, verification, state)
+- `patients` — per-doctor medical records (user_id FK for cross-clinic identity)
+- `patient_versions` — immutable version chain
+- `prescription_boxes` — structured Rx data
+- `invoices` — billing
+- `certificates` — medical certificates
+- `appointments` — scheduling (with telemedicine_consent)
+- `patient_time_preferences` — smart scheduling
+- `risk_alerts` — Feature E alerts
+- `patient_notifications` — AI-generated notifications
+- `consent_records` — DPDP consent tracking
+- `doctor_sessions` — multi-device session tracking
+- `audit_log` — append-only audit trail
 
--- Patients (head pointer only; state lives in versions)
-CREATE TABLE patients (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    doctor_id UUID NOT NULL REFERENCES doctors(id),
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- cross-clinic identity
-    head_version_id UUID,                         -- current state pointer
-    phone_enc BYTEA, email_enc BYTEA,             -- pgcrypto
-    consent_for_share BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX ON patients(doctor_id);
-CREATE INDEX ON patients(user_id);
-
--- Immutable version chain
-CREATE TABLE patient_versions (
-    id UUID PRIMARY KEY,
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    doctor_id  UUID NOT NULL REFERENCES doctors(id),
-    parent_version_id UUID REFERENCES patient_versions(id),
-    version_number INT NOT NULL,
-    state_jsonb JSONB NOT NULL,                   -- full patient state at this version
-    version_hash TEXT NOT NULL,                   -- sha256
-    author TEXT NOT NULL,                         -- 'doctor:<id>' or 'agent:<name>'
-    edit_type TEXT NOT NULL,                      -- manual|voice|ocr|ai_suggestion|revert
-    summary TEXT,
-    tags TEXT[] DEFAULT '{}',
-    clinical_significance REAL,
-    image_comparison JSONB,                       -- {matched_version_id, area_change_pct, overlay_path} — Module 4
-    timestamp TIMESTAMPTZ NOT NULL,
-    UNIQUE (patient_id, version_number)
-);
-CREATE INDEX ON patient_versions (patient_id, timestamp DESC);
-CREATE INDEX ON patient_versions (doctor_id, timestamp DESC);
-
--- Prescription highlight boxes
-CREATE TABLE prescription_boxes (
-    id UUID PRIMARY KEY,
-    version_id UUID NOT NULL REFERENCES patient_versions(id),
-    doctor_id  UUID NOT NULL REFERENCES doctors(id),
-    rx_jsonb   JSONB NOT NULL,
-    pdf_path   TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Invoices
-CREATE TABLE invoices (
-    id UUID PRIMARY KEY,
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    doctor_id UUID NOT NULL REFERENCES doctors(id),
-    appointment_id UUID REFERENCES appointments(id),
-    invoice_number TEXT NOT NULL UNIQUE,
-    items JSONB NOT NULL,
-    subtotal DECIMAL(10,2) NOT NULL,
-    tax DECIMAL(10,2) DEFAULT 0,
-    total DECIMAL(10,2) NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    payment_method TEXT,
-    notes TEXT,
-    generated_at TIMESTAMPTZ DEFAULT NOW(),
-    paid_at TIMESTAMPTZ,
-    pdf_path TEXT
-);
-
--- Certificates
-CREATE TABLE certificates (
-    id UUID PRIMARY KEY,
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    doctor_id UUID NOT NULL REFERENCES doctors(id),
-    cert_type TEXT NOT NULL,                       -- sick_leave | fitness | school | disability | other
-    cert_jsonb JSONB NOT NULL,                     -- structured certificate data
-    pdf_path TEXT,
-    verification_code TEXT UNIQUE,                 -- QR code payload
-    issued_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Appointments
-CREATE TABLE appointments (
-    id UUID PRIMARY KEY,
-    doctor_id  UUID NOT NULL REFERENCES doctors(id),
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    start_at TIMESTAMPTZ NOT NULL,
-    end_at   TIMESTAMPTZ NOT NULL,
-    reason   TEXT,
-    status   TEXT NOT NULL DEFAULT 'scheduled',    -- scheduled|done|cancelled|moved
-    source   TEXT NOT NULL DEFAULT 'manual',       -- manual|voice|agent|patient_portal
-    notified BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX ON appointments (doctor_id, start_at);
-CREATE INDEX ON appointments (patient_id, start_at);
-
--- Patient time preferences (for smart schedule)
-CREATE TABLE patient_time_preferences (
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    weekday INT NOT NULL,                          -- 0–6
-    hour_bucket INT NOT NULL,                      -- 0–23
-    count INT NOT NULL DEFAULT 0,
-    last_seen TIMESTAMPTZ,
-    PRIMARY KEY (patient_id, weekday, hour_bucket)
-);
-
--- Risk alerts (Feature E — simulated)
-CREATE TABLE risk_alerts (
-    id UUID PRIMARY KEY,
-    doctor_id UUID NOT NULL REFERENCES doctors(id),
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    kind TEXT NOT NULL,                            -- trajectory_drift|anomaly
-    reason TEXT NOT NULL,
-    severity REAL NOT NULL,                        -- 0–1
-    triggered_at TIMESTAMPTZ DEFAULT NOW(),
-    acknowledged_by UUID,
-    acknowledged_at TIMESTAMPTZ
-);
-
--- Patient notifications (Module 10)
-CREATE TABLE patient_notifications (
-    id UUID PRIMARY KEY,
-    patient_id UUID NOT NULL REFERENCES patients(id),
-    doctor_id UUID NOT NULL REFERENCES doctors(id),
-    kind TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    body TEXT NOT NULL,
-    channel TEXT[] DEFAULT '{in_app}',
-    read BOOLEAN DEFAULT FALSE,
-    delivered_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-    -- Append-only audit log (medico-legal)
-    CREATE TABLE audit_log (
-    id BIGSERIAL PRIMARY KEY,
-    doctor_id UUID NOT NULL,
-    patient_id UUID,
-    actor TEXT NOT NULL,                           -- doctor:<id> | patient:<id> | agent:<name> | system
-    action TEXT NOT NULL,                          -- read|write|ai_suggest|approve|export|book|cancel
-    resource_type TEXT NOT NULL,                   -- patient|version|appointment|rx|invoice|certificate|report
-    resource_id UUID,
-    payload_jsonb JSONB,
-    ip_address INET,
-    user_agent TEXT,
-    occurred_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX ON audit_log (doctor_id, occurred_at DESC);
-
--- Row-Level Security
-ALTER TABLE patients            ENABLE ROW LEVEL SECURITY;
-ALTER TABLE patient_versions    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE prescription_boxes  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE invoices            ENABLE ROW LEVEL SECURITY;
-ALTER TABLE certificates        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE appointments        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE risk_alerts         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE patient_notifications ENABLE ROW LEVEL SECURITY;
-
--- Policy template
-CREATE POLICY tenant_isolation ON patients
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
--- Same policy applied to all other tenant-scoped tables.
-```
+**Row-Level Security** enabled on all patient-bearing tables with `doctor_id` isolation.
 
 ---
 
-## 5. Revised 16-Week Roadmap
+## 6. India-Specific Features
 
-| Week | Milestone | Owner |
-|:----:|-----------|:-----:|
-| 1 | Repo bootstrap, Docker Compose skeleton (FastAPI + Postgres + Qdrant + Redis + Langfuse + Caddy + Playwright) | **All** |
-| 2 | Auth (Google OAuth + Email/Password + JWT + OTP), RLS policies, audit log scaffolding. Patient seed data. | **A** (backend) |
-| 3 | Patient + versioning core (`patient_versions`, hash chain, head pointer, diff endpoint, revert) | **A** |
-| 4 | Frontend: patient list + timeline scrubber (read-only first) + inline-edit + Cmd+K shell | **C** (frontend) |
-| 5 | LangGraph main agent + Llama-3.1-8B router + Maverick synth (NIM wired). Streaming SSE. | **B** (AI/ML) |
-| 6 | Embeddings (MedCPT + BGE-M3 + BiomedCLIP) + Qdrant named-vector ingest + hybrid search | **B** |
-| 7 | **Feature A** — Temporal Multimodal RAG (search, fusion, decay, evaluation harness) | **B** |
-| 8 | Document engine (Docling + Surya + Nanonets-OCR2 + MedGemma fallback) + Scratchpad chatbot | **D** (integrations) |
-| 9 | **Module 4** — Image registration (ORB feature matching, overlay UI, clinical summary). Connect to version chain. | **B + D** |
-| 10 | Prescription Highlight Box + Invoice/Billing + Medical Certificates (shared Jinja2 → Playwright pipeline) | **C + D** |
-| 11 | Calendar core (tools 1–4) + email queue + working-hours config + patient preference logging | **A + D** |
-| 12 | Voice scheduling subgraph (ASR + intent + tools 5–9 + TTS confirmation) | **D** (with B) |
-| 13 | Patient web portal (search doctors with OSM map, book, view reports, inbox + real-time notifications) | **C** (with A) |
-| 14 | **Feature B** eval (100-query set), **Feature C** projector training (CheXpert + wound pairs), **Feature E** simulation | **B** (with D) |
-| 15 | **Feature D** eval (5 doc types × 50 each), **Feature F** weekly report evaluation. IEEE paper draft started. | **All** |
-| 16 | IEEE paper final + Langfuse-pulled metrics + figures. Demo recording. Doctor feedback session. Deployment. | **All** |
+| Feature | Implementation |
+|---------|---------------|
+| **State-specific prescriptions** | `STATE_PRESCRIPTION_OVERRIDES` dict with 24 states' regulatory header/footer text |
+| **PIN code search** | `pincode` column on Doctor (indexed), search endpoint, frontend input |
+| **Telemedicine consent** | Checkbox in booking flow, stored on appointment |
+| **NMC verification** | `NMC_API_URL` + `NMC_API_KEY` env vars; fallback to admin review |
+| **Hindi UI** | react-i18next with `en.json` + `hi.json`; language switcher in UserMenu |
+| **Doctor profile photo** | Upload + oval crop with drag/zoom; served via MinIO presigned URL |
+| **Years experience** | Computed from `year_of_registration` — zero maintenance |
+| **Walk-in patient linking** | Auto-links existing walk-in patients (user_id=NULL) to users by phone |
+| **Phone normalization** | `normalize_phone()` strips formatting, takes last 10 digits |
+| **Booking race condition** | `SELECT FOR UPDATE` on doctor row prevents double-booking |
+| **Offline PWA** | vite-plugin-pwa with Workbox caching (NetworkFirst for API routes) |
+| **Sentry error tracking** | Backend + frontend, opt-in via `SENTRY_DSN` env var |
+| **Backup system** | `POST /admin/backup` → pg_dump to MinIO; `GET /admin/backups` → list |
 
 ---
 
-## 6. Updated Consolidated Tech Stack
+## 7. What's Implemented vs. Deferred
 
-| Layer | Choice | Free? | Notes |
-|-------|--------|:-----:|-------|
-| **Frontend** | React 19 + Vite + TS + shadcn/ui + Tailwind + Framer Motion + TanStack Query + Zustand + cmdk | ✅ | — |
-| **Maps** | Leaflet.js + OpenStreetMap tiles | ✅ | No API key needed. MIT license. |
-| **Backend** | FastAPI + Pydantic + SQLAlchemy + arq (Redis queue) | ✅ | — |
-| **Agent** | LangGraph (main graph + voice-scheduling subgraph + image-reg subgraph) | ✅ | MIT license |
-| **Relational DB** | PostgreSQL 16 + PostGIS + Row-Level Security + pgcrypto | ✅ | — |
-| **Vector DB** | Qdrant (named vectors, hybrid dense+sparse) | ✅ | Docker, free tier |
-| **Queue/Cache** | Redis | ✅ | — |
-| **Observability** | Langfuse (self-hosted Docker) | ✅ | — |
-| **Reverse proxy** | Caddy (auto-HTTPS) | ✅ | — |
-| **LLM (heavy)** | Llama-4-Maverick-17B-128E via NVIDIA NIM | ✅ | Free tier |
-| **LLM (router)** | Llama-3.1-8B via NIM | ✅ | — |
-| **VLM (general)** | MedGemma-4B-IT local (primary) / Groq fallback | ✅ | Medical VLM; Rad/Derm routed local, general routed to Groq |
-| **VLM (medical)** | MedGemma-4B-IT local (RTX 3050) | ✅ | Research/academic free |
-| **ASR** | faster-whisper large-v3 + AI4Bharat IndicWhisper | ✅ | Apache 2.0 |
-| **TTS** | AI4Bharat Indic-Parler-TTS | ✅ | Apache 2.0 |
-| **Embeddings (medical)** | MedCPT (ncbi) | ✅ | 768d |
-| **Embeddings (hybrid)** | BGE-M3 (BAAI) | ✅ | 1024d dense + sparse |
-| **Embeddings (image)** | BiomedCLIP (Microsoft) | ✅ | 512d; MIT license, SOTA medical retrieval |
-| **OCR (typed)** | Docling (IBM) | ✅ | Apache 2.0 |
-| **OCR (scanned)** | Surya | ✅ | — |
-| **OCR (handwritten)** | Nanonets-OCR2-1.5B-exp | ✅ | Apache 2.0; free, better than GOT-OCR |
-| **PDF output** | Jinja2 + Tailwind (inlined) + ECharts SVG + Playwright | ✅ | — |
-| **Image registration** | ORB (OpenCV) + homography + overlay | ✅ | BSD license |
-| **Auth** | Google OAuth + JWT + Email/Password (bcrypt) + OTP | ✅ | Dual auth for doctors + patients |
-| **Deploy** | Docker Compose → Oracle Cloud Free Tier (4 ARM + 24GB) | ✅ | — |
-| **Research paper** | LaTeX IEEEtran | ✅ | — |
-
----
-
-## 7. Team Division
-
-| Person | Primary | Secondary | Also helps with |
-|--------|---------|-----------|----------------|
-| **A** | Backend core (FastAPI, Postgres schema, version chain, auth, RLS, audit log) | Docker + deployment | Calendar backend, patient portal APIs |
-| **B** | AI/ML (LangGraph, LLM routing, RAG pipeline, embeddings, MedGemma, Feature C projector) | Image processing pipeline | Evaluation harness, Langfuse metrics |
-| **C** | Frontend — Doctor app (React, timeline scrubber, chat UI, Cmd+K, prescription/invoice/certificate UI) | Patient portal frontend | Connecting APIs to backend |
-| **D** | Integrations (OCR pipeline, voice ASR+TTS, PDF generation pipeline, notifications, Leaflet map) | Calendar backend | Image registration pipeline |
+| Feature | Status | Notes |
+|---------|:------:|-------|
+| Version-controlled records | **Done** | Immutable chain, diff, revert, timeline |
+| LangGraph agent | **Done** | Router + tools + streaming |
+| Temporal RAG (Feature A) | **Done** | MedCPT + BGE-M3 + BiomedCLIP + temporal decay |
+| Self-Planning Agent (Feature B) | **Done** | Plan-execute-critic loop |
+| Cross-Modal Retrieval (Feature C) | **Done** | Linear projector + InfoNCE |
+| Schema Alignment (Feature D) | **Done** | Requires manual evaluation |
+| Trajectory Clustering (Feature E) | **Done** | HDBSCAN + Mahalanobis + WebSocket alerts |
+| Significance Reports (Feature F) | **Done** | Requires manual evaluation |
+| Document Engine (OCR) | **Done** | Docling + Surya + Nanonets-OCR2 + quality alerts |
+| Voice Scheduling | **Done** | 5 commands Hindi+English |
+| Voice-to-Text (PrescriptionBox) | **Done** | Mic buttons on diagnosis + instructions |
+| Voice-to-Text (ChatUI) | **Done** | Mic button for chat input |
+| Prescription Box | **Done** | AI draft + JSON validation + PDF + state-specific |
+| Invoice/Billing | **Done** | Line items + PDF + QR |
+| Medical Certificates | **Done** | Templates + PDF + verification |
+| Calendar + Booking | **Done** | Weekly view + booking dialog + race protection |
+| Patient Portal | **Done** | Search + book + reports + consent + data erasure |
+| Doctor Search | **Done** | PostGIS radius + PIN code + photo + years experience |
+| Doctor Profile Photo | **Done** | Upload + oval crop + MinIO storage |
+| NMC Verification | **Done** | Registration number + state council + year |
+| DPDP Consent | **Done** | ConsentRecord + patient endpoints |
+| Data Erasure | **Done** | Anonymize PII, preserve clinical records |
+| Multi-Device Sessions | **Done** | List + revoke sessions |
+| Hindi UI | **Done** | react-i18next + translation files |
+| Offline PWA | **Done** | Service worker + Workbox caching |
+| Sentry Error Tracking | **Done** | Backend + frontend |
+| Backup System | **Done** | pg_dump → MinIO |
+| MapPicker (Settings) | **Done** | OpenStreetMap + Nominatim + geolocation |
+| Image Registration (ORB) | **Done** | Feature matching + overlay + clinical summary |
+| **Lab Alerts** | **Removed** | Hardcoded reference ranges are useless |
+| **Indian Drug Database** | **Skipped** | Doctor photographs prescription; OCR+LLM extracts; LLM handles misspellings natively |
+| **Research Section** | **Skipped** | Compared with RAG-Based CDSS; solo doctors don't do research |
+| **DICOM/OHIF** | **Deferred** | Solo GPs don't use DICOM |
+| **Payment Gateway** | **Deferred** | "Mark as paid" suffices |
+| **SMS Notifications** | **Deferred** | Email + in-app covers it |
 
 ---
 
-## 8. New/Revised API Endpoints
+## 8. Revised 16-Week Roadmap
 
-Beyond the Module 1 patient endpoints, the following are added:
-
-### Invoices
-| Verb | Path | Purpose |
-|------|------|---------|
-| `GET` | `/patients/{id}/invoices` | List invoices for a patient |
-| `POST` | `/patients/{id}/invoices` | Generate new invoice |
-| `GET` | `/invoices/{id}` | Get invoice detail |
-| `GET` | `/invoices/{id}/pdf` | Download invoice PDF |
-| `PATCH`| `/invoices/{id}/status` | Mark paid/cancelled |
-
-### Certificates
-| Verb | Path | Purpose |
-|------|------|---------|
-| `POST` | `/patients/{id}/certificates` | Generate certificate |
-| `GET` | `/patients/{id}/certificates` | List certificates |
-| `GET` | `/certificates/{id}` | Get certificate detail |
-| `GET` | `/certificates/{id}/pdf` | Download certificate PDF |
-| `GET` | `/certificates/verify/{code}` | Public verification endpoint |
-
-### Image Registration
-| Verb | Path | Purpose |
-|------|------|---------|
-| `POST` | `/patients/{id}/images` | Upload image (triggers ORB matching + overlay) |
-| `GET` | `/patients/{id}/images/comparisons` | List all image comparisons |
-| `GET` | `/patients/{id}/images/{image_id}/overlay` | Get overlay image for comparison |
-| `GET` | `/patients/{id}/images/comparison/{comparison_id}` | Get comparison detail |
-
-### Patient Portal (Public)
-| Verb | Path | Purpose |
-|------|------|---------|
-| `GET` | `/api/public/doctors?lat={}&lng={}&radius={}` | Search doctors by location |
-| `GET` | `/api/public/doctors/{id}` | Doctor detail + available slots |
-| `POST` | `/api/public/appointments` | Patient books appointment |
-| `GET` | `/api/patient/me/inbox` | Patient notifications |
-| `GET` | `/api/patient/me/reports` | Patient reports (Rx, invoices, certificates) |
-| `GET` | `/api/patient/me/appointments` | Patient's appointments |
-
-### Real-Time Notifications
-| Verb | Path | Purpose |
-|------|------|---------|
-| `WS` | `/ws/patient/{patient_id}` | WebSocket for patient real-time notifications |
-| `WS` | `/ws/doctor/{doctor_id}` | WebSocket for doctor real-time alerts |
+| Week | Milestone | Status |
+|:----:|-----------|:------:|
+| 1 | Repo bootstrap, Docker Compose skeleton | **Done** |
+| 2 | Auth (email+password, HttpOnly cookies), RLS, audit log | **Done** |
+| 3 | Patient + versioning core | **Done** |
+| 4 | Frontend: timeline scrubber, inline edit, Cmd+K | **Done** |
+| 5 | LangGraph agent + Maverick synth + SSE streaming | **Done** |
+| 6 | Embeddings (MedCPT + BGE-M3 + BiomedCLIP) + Qdrant | **Done** |
+| 7 | Feature A — Temporal Multimodal RAG | **Done** |
+| 8 | Document engine + OCR quality alerts + Scratchpad | **Done** |
+| 9 | Image registration (ORB, overlay, clinical summary) | **Done** |
+| 10 | Prescription Box + Invoice + Certificates + state-specific Rx | **Done** |
+| 11 | Calendar core + booking dialog + race protection | **Done** |
+| 12 | Voice scheduling + voice-to-text (PrescriptionBox + ChatUI) | **Done** |
+| 13 | Patient portal + doctor search + PIN + telemedicine consent | **Done** |
+| 14 | Profile photos + NMC verification + DPDP + Hindi UI + PWA + Sentry + backup + sessions | **Done** |
+| 15 | Integration testing + bug fixes + code audit | **Done** |
+| 16 | IEEE paper + demo + deployment | **In Progress** |
 
 ---
 
-## 9. Ethics & Disclaimer Layer (unchanged from original)
+## 9. Key Design Decisions
 
-- **Persistent banner** on every AI-generated surface: *"AI Suggestion — Requires Doctor Validation."*
-- **Two-step confirm** before any patient-facing email, prescription print, or external share.
-- **Disclaimer footer** on every prescription, invoice, certificate, and weekly report PDF.
-- **Patient consent flag** stored on the patient record before any external share.
-- **No autonomous outbound messages** without a doctor-approved template.
-- **Right-to-be-forgotten:** patient deletion is a tombstone version + Qdrant payload purge.
-
----
-
-## 10. What's Deferred / Cut vs. Original
-
-| Original Feature | Decision | Justification |
-|-----------------|:--------:|---------------|
-| DICOM integration (pydicom + Orthanc) | **Deferred** | Solo GPs don't use DICOM. Refer to radiologist. |
-| OHIF Viewer | **Deferred** | Would add 50K+ lines of code for zero GP benefit. |
-| Trajectory clustering real-time WebSocket (Feature E) | **Implemented** | Algorithm + offline eval for the paper; live scan runs over real patients on an arq cron and pushes alerts to the doctor dashboard via WebSocket. |
-| Cross-modal projector full training pipeline (Feature C) | **Partial** | Linear projector trained + evaluated. Production integration deferred. |
-| SMS notifications | **Deferred** | Requires paid gateway. Email + in-app covers it. |
-| Payment processing integration | **Deferred** | In-app "mark as paid" suffices for demo. |
-| Everything else from v1 | **Kept** | Version chain, RAG, agent, voice, calendar, docs, images, Rx, portal, billing, certificates |
-
----
-
-## 11. Key Design Decisions (v2)
-
-1. **Same app, separate routes** — Patient portal lives under `/patient/*` in the same React build. Shared components. No separate deployment.
-2. **Leaflet.js + OpenStreetMap** — Zero cost, no API key, MIT license. Tile layers from OpenStreetMap's free CDN. Backend uses PostGIS geography queries for radius search.
-3. **WebSocket for real-time** — Simple WebSocket server in FastAPI (no external service needed). Patients subscribe via `/ws/patient/{patient_id}`. Doctor gets `/ws/doctor/{doctor_id}` for risk alerts.
-4. **AI-generated notifications** — Maverick drafts each notification message per event type with patient context. Nothing is hardcoded. Doctor can toggle each notification type.
-5. **ORB-based image registration** — OpenCV's ORB (Oriented FAST and Rotated BRIEF) is free, fast, and runs CPU. Feature matching via BFMatcher + Lowe's ratio test. Homography computed via RANSAC.
-6. **Shared PDF pipeline** — Prescriptions, invoices, certificates all use the same Jinja2 → Playwright → PDF pipeline. Reduces code duplication. Doctor controls templates via settings.
-7. **Shared agent infrastructure** — All tools (RAG, image compare, document parse, PDF generate) are nodes on the same LangGraph. The router dispatches based on intent classification.
+1. **Same app, separate routes** — Patient portal lives under `/patient/*` in the same React build.
+2. **Email+password only** — Google OAuth removed. Simpler, no third-party dependency.
+3. **HttpOnly cookies** — XSS-safe auth. Middleware reads cookies as fallback.
+4. **PII de-identification is defense-in-depth** — strip at indexer, tools, synthesizer boundaries.
+5. **Doctor photographs prescription** — No Indian drug database. LLM handles misspelled medicine names natively.
+6. **State-specific prescriptions** — `STATE_PRESCRIPTION_OVERRIDES` dict with 24 states' regulatory text.
+7. **Booking race condition** — `SELECT FOR UPDATE` on doctor row before conflict check.
+8. **PIN code search** — Indexed column on Doctor, frontend input, PostGIS fallback.
+9. **Telemedicine consent** — Checkbox in booking flow, stored on appointment.
+10. **Profile photo with oval crop** — ImageCropModal with drag, zoom, SVG mask, canvas crop.
+11. **Years experience computed** — From `year_of_registration`, zero maintenance.
+12. **Walk-in patient linking** — Auto-links existing walk-ins to users by phone.
+13. **OCR quality alerts** — Blur/contrast/brightness/resolution checks before processing.
+14. **Voice-to-text is optional** — Returns 503 with guidance if ASR model not installed.
+15. **Lab alerts removed** — Hardcoded reference ranges are useless for solo doctors.
+16. **Research section skipped** — Compared with RAG-Based CDSS; not needed for solo doctor workflow.
+17. **Offline PWA** — Workbox caching for API routes; doctor can view cached data offline.
+18. **Sentry is opt-in** — Only active when `SENTRY_DSN` is set.
+19. **Backup to MinIO** — pg_dump uploaded to object storage; list via admin endpoint.
+20. **Multi-device sessions** — Track and revoke individual devices.

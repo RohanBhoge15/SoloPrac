@@ -37,7 +37,7 @@ export function PatientSearch({
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
-  const debounceRef = useRef<NodeJS.Timeout>()
+  const debounceRef = useRef<NodeJS.Timeout | null>(null)
 
   const fetchPatients = useCallback(async (searchQuery: string) => {
     if (!searchQuery.trim()) {

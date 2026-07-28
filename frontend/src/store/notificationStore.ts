@@ -35,7 +35,7 @@ interface NotificationStore {
   reports: { prescriptions: PrescriptionBox[]; invoices: Invoice[]; certificates: Certificate[] }
 
   fetchAppointments: (dateFrom?: string, dateTo?: string) => Promise<void>
-  fetchNotifications: (patientId: string) => Promise<void>
+  fetchNotifications: () => Promise<void>
   markNotificationRead: (notifId: string) => Promise<void>
   pushNotification: (n: NotificationItem) => void
 }
@@ -61,10 +61,10 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     }
   },
 
-  fetchNotifications: async (patientId) => {
+  fetchNotifications: async () => {
     set({ notifLoading: true })
     try {
-      const res = await apiClient.get(`/patient/me/inbox`, { params: { patient_id: patientId, limit: 50 } })
+      const res = await apiClient.get(`/patient/me/inbox`, { params: { limit: 50 } })
       const items: NotificationItem[] = res.data ?? []
       set({
         notifications: items,
@@ -79,7 +79,7 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   markNotificationRead: async (notifId) => {
     try {
       await apiClient.patch(`/patient/me/inbox/${notifId}/read`)
-      get().fetchNotifications(localStorage.getItem('patient_id') ?? '')
+      get().fetchNotifications()
     } catch (e) {
       console.error('markNotificationRead error:', e)
     }

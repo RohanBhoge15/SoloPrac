@@ -6,7 +6,9 @@ import { Label } from '@/components/ui/Label'
 import { Badge } from '@/components/ui/Badge'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { apiClient } from '@/services/api'
-import { User, Bell, Shield, Calendar, CreditCard, Loader2, CheckCircle, AlertCircle } from 'lucide-react'
+import { MapPicker } from '@/components/MapPicker'
+import { ImageCropModal } from '@/components/ImageCropModal'
+import { User, Bell, Shield, Calendar, CreditCard, MapPin, Camera, Loader2, CheckCircle, AlertCircle, Star } from 'lucide-react'
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState('profile')
@@ -82,12 +84,19 @@ function ProfileTab() {
     clinic_address: '',
     phone: '',
     registration_number: '',
+    latitude: null as number | null,
+    longitude: null as number | null,
   })
-  const [original, setOriginal] = useState<Record<string, string>>({})
+  const [original, setOriginal] = useState<Record<string, any>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null)
+  const [verificationStatus, setVerificationStatus] = useState('unverified')
+  const [showCropModal, setShowCropModal] = useState(false)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [yearsExperience, setYearsExperience] = useState<number | null>(null)
 
   useEffect(() => {
     apiClient.get('/auth/me')
@@ -100,9 +109,14 @@ function ProfileTab() {
           clinic_address: d.clinic_address || '',
           phone: d.phone || '',
           registration_number: d.registration_number || '',
+          latitude: d.latitude ?? null,
+          longitude: d.longitude ?? null,
         }
         setForm(values)
         setOriginal(values)
+        setPhotoUrl(d.photo_url || null)
+        setVerificationStatus(d.verification_status || 'unverified')
+        setYearsExperience(d.years_experience ?? null)
       })
       .catch(() => setError('Failed to load profile'))
       .finally(() => setLoading(false))
@@ -117,7 +131,7 @@ function ProfileTab() {
     setError(null)
     try {
       // Only send changed fields
-      const changes: Record<string, string> = {}
+      const changes: Record<string, any> = {}
       Object.entries(form).forEach(([key, value]) => {
         if (value !== original[key]) {
           changes[key] = value
@@ -142,6 +156,22 @@ function ProfileTab() {
 
   const hasChanges = Object.keys(form).some(k => (form as any)[k] !== (original as any)[k])
 
+  const handlePhotoCropped = async (blob: Blob) => {
+    setUploadingPhoto(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', blob, 'photo.jpg')
+      const res = await apiClient.post('/auth/me/photo', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setPhotoUrl(res.data.photo_url)
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to upload photo')
+    } finally {
+      setUploadingPhoto(false)
+    }
+  }
+
   if (loading) {
     return (
       <Card>
@@ -164,6 +194,71 @@ function ProfileTab() {
             <AlertCircle className="h-4 w-4" />{error}
           </div>
         )}
+
+        {/* Verification + Photo Banner */}
+        {verificationStatus !== 'verified' && (
+          <div className="p-4 rounded-xl bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 border border-amber-200 dark:border-amber-800">
+            <div className="flex items-start gap-3">
+              <Shield className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+              <div>
+                <p className="font-medium text-amber-800 dark:text-amber-200">
+                  Complete your profile to appear in patient search
+                </p>
+                <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
+                  Add your profile photo and submit your NMC verification to start receiving patient bookings.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Profile Photo */}
+        <div className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+          <div className="relative group">
+            {photoUrl ? (
+              <img
+                src={photoUrl}
+                alt="Profile"
+                className="h-20 w-20 rounded-full object-cover border-2 border-white dark:border-gray-700 shadow-sm"
+              />
+            ) : (
+              <div className="h-20 w-20 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-600">
+                <Camera className="h-6 w-6 text-gray-400" />
+              </div>
+            )}
+            <button
+              onClick={() => setShowCropModal(true)}
+              disabled={uploadingPhoto}
+              className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+            >
+              {uploadingPhoto ? (
+                <Loader2 className="h-5 w-5 text-white animate-spin" />
+              ) : (
+                <Camera className="h-5 w-5 text-white" />
+              )}
+            </button>
+          </div>
+          <div>
+            <p className="font-medium text-gray-900 dark:text-white">{form.name || 'Your Name'}</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">{form.speciality || 'Speciality'}</p>
+            {yearsExperience !== null && (
+              <div className="flex items-center gap-1 mt-1">
+                <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
+                <span className="text-xs text-gray-500">{yearsExperience} years experience</span>
+              </div>
+            )}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => setShowCropModal(true)}
+            disabled={uploadingPhoto}
+          >
+            {uploadingPhoto ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Camera className="h-4 w-4 mr-1" />}
+            {photoUrl ? 'Change Photo' : 'Add Photo'}
+          </Button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <Label htmlFor="name">Full Name</Label>
@@ -190,6 +285,25 @@ function ProfileTab() {
             <Input id="phone" value={form.phone} onChange={handleChange('phone')} />
           </div>
         </div>
+
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+          <Label className="flex items-center gap-2 mb-2">
+            <MapPin className="h-4 w-4 text-primary-500" />
+            Practice Location
+          </Label>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+            Pin your clinic location on the map so patients can find you.
+            Click the map or search an address to place the marker.
+          </p>
+          <MapPicker
+            latitude={form.latitude}
+            longitude={form.longitude}
+            onChange={(lat, lng) => {
+              setForm(prev => ({ ...prev, latitude: lat, longitude: lng }))
+            }}
+          />
+        </div>
+
         <Button onClick={handleSave} disabled={saving || !hasChanges}>
           {saving ? (
             <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</>
@@ -200,6 +314,12 @@ function ProfileTab() {
           )}
         </Button>
       </CardContent>
+
+      <ImageCropModal
+        open={showCropModal}
+        onClose={() => setShowCropModal(false)}
+        onCropped={handlePhotoCropped}
+      />
     </Card>
   )
 }
@@ -350,7 +470,8 @@ function SecurityTab() {
     setDeleting(true)
     try {
       await apiClient.delete('/auth/me')
-      localStorage.clear()
+      // Clear cookies via logout endpoint
+      await apiClient.post('/auth/logout')
       window.location.href = '/login'
     } catch (err: any) {
       setMessage('Failed to delete account')

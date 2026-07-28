@@ -1,43 +1,29 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
-import { Loader2, User, ArrowRight } from 'lucide-react'
+import { Loader2, User, Mail, Lock, ArrowRight } from 'lucide-react'
 import { apiClient } from '@/services/api'
 
 export function PatientLogin() {
-  const [mode, setMode] = useState<'login' | 'otp'>('login')
-  const [phone, setPhone] = useState('')
-  const [otp, setOtp] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const handleSendOTP = async () => {
-    if (!phone || phone.length < 10) return
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || !password) return
     setLoading(true)
     setError(null)
     try {
-      await apiClient.post('/public/auth/send-otp', { phone })
-      setMode('otp')
-    } catch {
-      setError('Failed to send OTP. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleVerifyOTP = async () => {
-    if (!otp || otp.length < 4) return
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await apiClient.post('/public/auth/verify-otp', { phone, otp })
-      localStorage.setItem('patient_token', res.data.token)
-      localStorage.setItem('patient_id', res.data.patient_id)
+      await apiClient.post('/public/auth/login', { email, password })
+      // No localStorage - HttpOnly cookies are set by backend
       window.location.href = '/patient/dashboard'
     } catch {
-      setError('Invalid or expired OTP')
+      setError('Invalid email or password')
     } finally {
       setLoading(false)
     }
@@ -47,9 +33,7 @@ export function PatientLogin() {
     setLoading(true)
     setError(null)
     try {
-      const res = await apiClient.post('/public/auth/dev-login')
-      localStorage.setItem('patient_token', res.data.token)
-      localStorage.setItem('patient_id', res.data.patient_id)
+      await apiClient.post('/public/auth/dev-login')
       window.location.href = '/patient/dashboard'
     } catch {
       setError('Dev login failed')
@@ -70,27 +54,34 @@ export function PatientLogin() {
           <CardTitle className="text-lg">Patient Login</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div>
-            <Label htmlFor="phone">Phone Number</Label>
-            <Input id="phone" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+91-9876543210" type="tel" disabled={mode === 'otp'} />
-          </div>
-          {mode === 'otp' && (
+          <form onSubmit={handleLogin} className="space-y-3">
             <div>
-              <Label htmlFor="otp">OTP</Label>
-              <Input id="otp" value={otp} onChange={e => setOtp(e.target.value)} placeholder="Enter OTP" type="text" maxLength={6} />
+              <Label htmlFor="email">Email</Label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <Input id="email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com" className="pl-9" required disabled={loading} />
+              </div>
             </div>
-          )}
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          <Button
-            className="w-full"
-            onClick={mode === 'login' ? handleSendOTP : handleVerifyOTP}
-            disabled={loading || (mode === 'login' ? phone.length < 10 : otp.length < 4)}
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-            {mode === 'login' ? 'Send OTP' : 'Login'}
-            <ArrowRight className="h-4 w-4 ml-2" />
-          </Button>
-          <p className="text-xs text-center text-gray-400">Use any 6-digit OTP for demo. Patient data is for demo purposes.</p>
+            <div>
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <Input id="password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" className="pl-9" required disabled={loading} />
+              </div>
+            </div>
+            {error && <p className="text-sm text-red-600">{error}</p>}
+            <Button type="submit" className="w-full" disabled={loading || !email || !password}>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Sign In
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Button>
+          </form>
+
+          <p className="text-center text-sm text-gray-500">
+            Don't have an account?{' '}
+            <Link to="/patient/register" className="text-primary-600 hover:underline">Register</Link>
+          </p>
+
           {import.meta.env.DEV && (
             <Button
               variant="outline"

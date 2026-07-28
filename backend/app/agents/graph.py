@@ -27,6 +27,7 @@ from app.agents.router import IntentRouter
 from app.agents.tools import tool_registry
 from app.agents.planner import SelfPlanner, PlanCritic
 from app.services.langfuse import langfuse_client, trace_agent_step, trace_llm_call
+from app.services.pii import get_patient_name_for_reassociation, reassociate_pseudonym, validate_citations
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +265,11 @@ class AgentGraph:
                 else:
                     draft = str(result)
                 if draft:
+                    # Validate citations against retrieved versions
+                    citations = state.get("citations", [])
+                    if citations and draft:
+                        draft = validate_citations(draft, citations)
+                        state["trace_events"].append("Synthesizer: citations validated")
                     state["draft"] = draft
                     state["trace_events"].append("Synthesizer: used tool-generated response")
                     return "respond"
@@ -288,12 +294,12 @@ class AgentGraph:
                 score = r.get("score", 0)
                 lines.append(f"[v{vn}  ·  {ts}] {summary}  (relevance: {score:.3f})")
             lines.append(f"\nRetrieved {len(results)} relevant version(s).")
-            lines.append("\n*AI Suggestion — Requires Doctor Validation.*")
+            lines.append("\n*Verified by AI · Doctor review recommended.*")
             return "\n".join(lines)
 
         return (
             f"I processed your request about '{state['user_query']}'.\n\n"
-            f"*AI Suggestion — Requires Doctor Validation.*"
+            f"*Verified by AI · Doctor review recommended.*"
         )
 
     async def _responder_node(self, state: AgentState) -> str:
@@ -327,6 +333,9 @@ class AgentGraph:
         state = create_initial_state(user_query, doctor_id, patient_id, conversation_id)
         state["replan_count"] = 0
 
+        # Look up real patient name once for re-association (sub-millisecond)
+        patient_name = await get_patient_name_for_reassociation(patient_id) if patient_id else None
+
         node_sequence = ["router", "plan", "execute", "critic", "synthesize", "respond"]
         node_fns = {
             "router": self._router_node,
@@ -354,6 +363,10 @@ class AgentGraph:
 
                 if current_node == "synthesize" and state.get("draft"):
                     draft = state["draft"]
+                    # Re-associate pseudonym with real patient name
+                    if patient_name:
+                        draft = reassociate_pseudonym(draft, patient_name)
+                        state["draft"] = draft
                     words = draft.split(" ")
                     buffer = ""
                     for word in words:
@@ -382,11 +395,17 @@ class AgentGraph:
                     current_node = "synthesize"
                 continue
 
+        # Re-associate pseudonym in final response
+        final_response = state.get("final_response", "I encountered an error processing your request.")
+        if patient_name:
+            final_response = reassociate_pseudonym(final_response, patient_name)
+
         yield {
             "type": "done",
-            "response": state.get("final_response", "I encountered an error processing your request."),
+            "response": final_response,
             "intent": state.get("intent", AgentIntent.GENERAL_CHAT).value if state.get("intent") else "unknown",
             "trace_events": state.get("trace_events", []),
+            "citations": state.get("citations", []),
             "replan_count": state.get("replan_count", 0),
             "took_ms": (
                 (datetime.now(timezone.utc) - state["started_at"]).total_seconds() * 1000

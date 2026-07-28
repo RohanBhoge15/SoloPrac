@@ -51,10 +51,14 @@ class Settings(BaseSettings):
     JWT_EXPIRATION_MINUTES: int = 30
     JWT_REFRESH_EXPIRATION_DAYS: int = 7
 
-    # Google OAuth
-    GOOGLE_CLIENT_ID: str = ""
-    GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/callback/google"
+    # ABDM Sandbox (Doctor Verification)
+    ABDM_CLIENT_ID: str = ""
+    ABDM_CLIENT_SECRET: str = ""
+    ABDM_BASE_URL: str = "https://abdm.gov.in"
+
+    # NMC / State Medical Council Verification
+    NMC_API_URL: str = ""  # Indian Medical Register API endpoint (leave empty to skip)
+    NMC_API_KEY: str = ""  # API key for NMC verification
 
     # NVIDIA NIM
     NIM_API_KEY: str = ""
@@ -62,6 +66,7 @@ class Settings(BaseSettings):
     MAVERICK_MODEL: str = "nvidia/llama-4-maverick-17b-128e-instruct"
     LLAMA_8B_MODEL: str = "nvidia/llama-3.1-8b-instruct"
     BIOMEDCLIP_MODEL: str = "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    NVCLIP_MODEL: str = ""  # Deprecated — use NANONETS_OCR_MODEL instead
 
     # Groq
     GROQ_API_KEY: str = ""
@@ -96,6 +101,16 @@ class Settings(BaseSettings):
     # Rate limiting
     RATE_LIMIT_DEFAULT: str = "100/minute"
 
+    # Retrieval
+    RETRIEVAL_TOP_K: int = 8  # Number of versions retrieved per query (configurable from backend)
+
+    # MinIO / S3 Storage
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET: str = "soloprac"
+    MINIO_USE_HTTPS: bool = False
+
     # Langfuse
     LANGFUSE_HOST: str = "http://localhost:3000"
     LANGFUSE_PUBLIC_KEY: str = ""
@@ -103,6 +118,9 @@ class Settings(BaseSettings):
 
     # Frontend URL (for CORS)
     FRONTEND_URL: str = "http://localhost:5173"
+
+    # Sentry Error Tracking (free tier: 5k errors/month)
+    SENTRY_DSN: str = ""
 
     class Config:
         env_file = ".env"

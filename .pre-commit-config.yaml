@@ -73,5 +73,16 @@ repos:
         args: [--no-git]
         exclude: ^(.env\.example|backend/pyproject\.toml|docs/)$
 
+  # ─── PII Privacy Guard ───
+  # Fails loud if strip_pii wiring is broken and patient data reaches the LLM.
+  - repo: local
+    hooks:
+      - id: pii-privacy-guard
+        name: PII Privacy Guard (tests strip_pii wiring)
+        entry: python -m pytest backend/tests/test_pii_not_sent_to_llm.py -v --tb=short
+        language: system
+        pass_filenames: false
+        files: ^backend/(app/services/pii\.py|app/agents/(synthesizer\.py|tools\.py|graph\.py)|tests/test_pii_not_sent_to_llm\.py)$
+
   # ─── Backend Import Sort (isort-like via ruff already handles this) ───
   # Ruff's isort rules are configured in pyproject.toml

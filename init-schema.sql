@@ -12,13 +12,28 @@ SET timezone = 'Asia/Kolkata';
 -- Users table (cross-tenant app users — no RLS, no doctor scope)
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
     phone TEXT NOT NULL,
     phone_hash TEXT UNIQUE NOT NULL,  -- SHA256 for fast lookup
-    name TEXT,
+    dob TIMESTAMPTZ,
+    gender TEXT,
+    address TEXT,
+    -- Medical profile (filled at first login)
+    blood_group TEXT,
+    allergies TEXT,
+    known_conditions TEXT,
+    height_cm DOUBLE PRECISION,
+    weight_kg DOUBLE PRECISION,
+    emergency_contact_name TEXT,
+    emergency_contact_phone TEXT,
+    insurance_info TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX ON users (phone_hash);
+CREATE INDEX ON users (email);
 
 -- Doctors table (tenants)
 CREATE TABLE doctors (
@@ -27,9 +42,10 @@ CREATE TABLE doctors (
     name TEXT NOT NULL,
     speciality TEXT DEFAULT 'General Practice',
     location GEOGRAPHY(POINT, 4326),  -- PostGIS for patient map search (lat,lng)
-    clinic_name TEXT,
-    clinic_address TEXT,
-    phone TEXT,
+    clinic_name TEXT NOT NULL DEFAULT '',
+    clinic_address TEXT NOT NULL DEFAULT '',
+    pincode VARCHAR(6),  -- Indian 6-digit PIN code for area-based search
+    phone TEXT NOT NULL DEFAULT '',
     registration_number TEXT,
     password_hash TEXT,  -- bcrypt hash for email/password login
     verification_status TEXT NOT NULL DEFAULT 'unverified',
@@ -37,6 +53,11 @@ CREATE TABLE doctors (
     license_document_path TEXT,  -- uploaded medical council cert / license photo
     rejection_reason TEXT,       -- populated when verification_status = 'rejected'
     verified_at TIMESTAMPTZ,     -- when admin approved
+    -- ABDM verification fields
+    state_medical_council TEXT,
+    year_of_registration INTEGER,
+    qualification TEXT,          -- populated from ABDM response
+    abdm_verified_at TIMESTAMPTZ,
     settings JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -269,6 +290,7 @@ CREATE POLICY tenant_isolation ON patient_time_preferences
 -- Performance Indexes
 -- Spatial index for doctor location queries
 CREATE INDEX IF NOT EXISTS idx_doctors_location ON doctors USING GIST (location);
+CREATE INDEX IF NOT EXISTS idx_doctors_pincode ON doctors (pincode) WHERE pincode IS NOT NULL;
 
 -- FK indexes for common join patterns
 CREATE INDEX IF NOT EXISTS idx_patients_doctor_id ON patients (doctor_id);

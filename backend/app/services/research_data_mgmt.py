@@ -89,8 +89,11 @@ async def export_langfuse_metrics(
 
     # ── Feature D: Schema Alignment ──
     async def _feature_d():
-        msg = "No automated evaluator implemented for Feature D"
-        raise NotImplementedError(msg)
+        # Schema alignment is evaluated manually via comparison with ground truth
+        return {
+            "status": "requires_manual_evaluation",
+            "note": "Schema alignment is evaluated by comparing LLM output against ground truth mappings. Run /evaluation/research-data to export samples for manual review.",
+        }
 
     # ── Feature E: Trajectory Clustering ──
     async def _feature_e():
@@ -99,8 +102,11 @@ async def export_langfuse_metrics(
 
     # ── Feature F: Weekly Reports (Likert) ──
     async def _feature_f():
-        msg = "Likert evaluation requires human doctors (not automatable)"
-        raise NotImplementedError(msg)
+        # Likert evaluation requires human doctors — return structured prompt for manual eval
+        return {
+            "status": "requires_manual_evaluation",
+            "note": "Likert evaluation requires human doctors. Export reports via /weekly-report/likert-study for clinician review.",
+        }
 
     features = {
         "A": ("Temporal Multimodal RAG", _feature_a()),

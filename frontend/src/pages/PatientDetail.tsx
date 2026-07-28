@@ -12,7 +12,8 @@ import { TimelineScrubber } from '@/components/TimelineScrubber'
 import { ContextPanel } from '@/components/ContextPanel'
 import { ChatUI } from '@/components/ChatUI'
 import { ImageComparison } from '@/components/ImageComparison'
-import { Edit, Plus, Clock, FileText, ArrowUpDown, Search, Save, X, Check, Loader2, AlertCircle, RefreshCw, Download } from 'lucide-react'
+import { ImageGallery } from '@/components/ImageGallery'
+import { Edit, Plus, Clock, FileText, ArrowUpDown, Search, Save, X, Check, Loader2, AlertCircle, RefreshCw, Download, Upload, Pill, Receipt, FileBadge, Eye } from 'lucide-react'
 import { usePatientStore } from '@/store'
 import { useNotificationStore } from '@/store'
 import apiClient from '@/services/api'
@@ -33,6 +34,10 @@ interface DocumentItem {
   date: string
   size: string
   id: string
+  has_pdf?: boolean
+  pdf_url?: string
+  version_number?: number
+  metadata?: Record<string, any>
 }
 
 export function PatientDetail() {
@@ -53,9 +58,43 @@ export function PatientDetail() {
   const [editedFields, setEditedFields] = useState<Partial<Demographics>>({})
   const [documents, setDocuments] = useState<DocumentItem[]>([])
   const [documentsLoading, setDocumentsLoading] = useState(true)
+  const [viewingDocument, setViewingDocument] = useState<DocumentItem | null>(null)
   const [reportLayout, setReportLayout] = useState<'clinical' | 'executive' | 'family_friendly'>('clinical')
   const [reportDownloading, setReportDownloading] = useState(false)
   const [patientError, setPatientError] = useState<string | null>(null)
+
+  // ── Batch Import state ──
+  const [batchImporting, setBatchImporting] = useState(false)
+  const [batchImportResult, setBatchImportResult] = useState<{
+    status: string
+    total_pages: number
+    pages_processed: number
+    versions: any[]
+    errors: string[]
+    took_ms: number
+  } | null>(null)
+
+  const handleBatchImport = async (file: File) => {
+    if (!id) return
+    setBatchImporting(true)
+    setBatchImportResult(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('patient_id', id)
+      const res = await apiClient.post('/documents/batch-import', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setBatchImportResult(res.data)
+      // Refresh timeline so new versions appear
+      fetchTimeline(id)
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || err?.message || 'Import failed'
+      setBatchImportResult({ status: 'error', total_pages: 0, pages_processed: 0, versions: [], errors: [msg], took_ms: 0 })
+    } finally {
+      setBatchImporting(false)
+    }
+  }
 
   // Get the notification store for email/websocket notifications
   const pushNotification = useNotificationStore(state => state.pushNotification)
@@ -134,23 +173,27 @@ export function PatientDetail() {
     return () => { cancelled = true }
   }, [id, fetchTimeline, setActivePatient])
 
-  // Load patient documents (invoices)
+  // Load patient documents (unified timeline)
   useEffect(() => {
     if (!id) return
     setDocumentsLoading(true)
-    apiClient.get(`/patients/${id}/invoices`)
+    apiClient.get(`/patients/${id}/documents`)
       .then(res => {
-        const invDocs: DocumentItem[] = (res.data ?? []).map((i: any) => ({
-          name: `Invoice ${i.invoice_number}.pdf`,
-          type: 'invoice',
-          date: i.generated_at?.slice(0, 10) ?? '',
-          size: 'PDF',
-          id: i.id,
+        const allDocs: DocumentItem[] = (res.data?.documents ?? []).map((d: any) => ({
+          name: d.title,
+          type: d.type,
+          date: d.date?.slice(0, 10) ?? '',
+          size: d.has_pdf ? 'PDF' : '',
+          id: d.id,
+          has_pdf: d.has_pdf,
+          pdf_url: d.pdf_url,
+          version_number: d.version_number,
+          metadata: d.metadata,
         }))
-        setDocuments(invDocs)
+        setDocuments(allDocs)
       })
       .catch((err) => {
-        console.warn('[PatientDetail] Failed to load invoices:', err)
+        console.warn('[PatientDetail] Failed to load documents:', err)
       })
       .finally(() => setDocumentsLoading(false))
   }, [id])
@@ -411,11 +454,11 @@ export function PatientDetail() {
                         ) : (
                           <span className="text-sm text-gray-500 dark:text-gray-400">No medications recorded</span>
                         )}
-                      </div>
+                       </div>
                     </div>
-                  </CardContent>
-                </Card>
-              </div>
+                    </CardContent>
+                  </Card>
+                  </div>
             </TabsContent>
 
             {/* Timeline Tab */}
@@ -472,15 +515,20 @@ export function PatientDetail() {
 
             {/* Images Tab */}
             <TabsContent value="images" className="mt-4">
-              <ImageComparison patientId={id || ''} />
+              <ImageGallery patientId={id || ''} />
+              <div className="mt-6">
+                <ImageComparison patientId={id || ''} />
+              </div>
             </TabsContent>
 
             {/* Documents Tab */}
             <TabsContent value="documents" className="mt-4">
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between">
-                  <CardTitle>Documents</CardTitle>
-                  <Button>Upload</Button>
+                  <CardTitle className="flex items-center gap-2">
+                    <FileText className="h-5 w-5" />
+                    All Documents
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
                   {documentsLoading ? (
@@ -488,23 +536,169 @@ export function PatientDetail() {
                       <Loader2 className="h-6 w-6 animate-spin mx-auto" />
                     </div>
                   ) : documents.length === 0 ? (
-                    <p className="text-center text-gray-500 py-8">No documents uploaded yet</p>
+                    <p className="text-center text-gray-500 py-8">No documents yet</p>
                   ) : (
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       {documents.map((doc, i) => (
-                        <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-                          <div className="flex items-center gap-3">
-                            <FileText className="h-8 w-8 text-primary-600" />
-                            <div>
-                              <p className="font-medium text-gray-900 dark:text-white">{doc.name}</p>
-                              <p className="text-sm text-gray-500 dark:text-gray-400">{doc.type} &bull; {doc.date} &bull; {doc.size}</p>
+                        <div
+                          key={`${doc.type}-${doc.id}-${i}`}
+                          className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer"
+                          onClick={() => doc.has_pdf && doc.pdf_url ? setViewingDocument(doc) : undefined}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className={cn(
+                              'flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center',
+                              doc.type === 'prescription' && 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300',
+                              doc.type === 'invoice' && 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+                              doc.type === 'certificate' && 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+                              doc.type === 'uploaded_document' && 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300',
+                            )}>
+                              {doc.type === 'prescription' && <Pill className="h-4 w-4" />}
+                              {doc.type === 'invoice' && <Receipt className="h-4 w-4" />}
+                              {doc.type === 'certificate' && <FileBadge className="h-4 w-4" />}
+                              {doc.type === 'uploaded_document' && <FileText className="h-4 w-4" />}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium text-gray-900 dark:text-white text-sm truncate">{doc.name}</p>
+                                {doc.version_number && (
+                                  <Badge variant="outline" className="text-[10px] flex-shrink-0">v{doc.version_number}</Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
+                                {doc.date}
+                                {doc.metadata?.diagnosis && ` — ${doc.metadata.diagnosis}`}
+                                {doc.metadata?.total != null && ` — ₹${doc.metadata.total}`}
+                                {doc.metadata?.status && ` (${doc.metadata.status})`}
+                                {doc.metadata?.edit_type && ` — ${doc.metadata.edit_type}`}
+                                {doc.metadata?.doc_type && ` — ${doc.metadata.doc_type}`}
+                              </p>
                             </div>
                           </div>
-                          <Button variant="ghost" size="icon">View</Button>
+                          {doc.has_pdf && (
+                            <Eye className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                          )}
                         </div>
                       ))}
                     </div>
                   )}
+                </CardContent>
+              </Card>
+
+              {/* Document Viewer Modal */}
+              {viewingDocument && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setViewingDocument(null)}>
+                  <div className="relative bg-white dark:bg-gray-900 rounded-xl shadow-2xl max-w-4xl w-full mx-4 max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Badge variant="outline" className="text-xs">{viewingDocument.type}</Badge>
+                        {viewingDocument.version_number && <Badge variant="secondary" className="text-xs">v{viewingDocument.version_number}</Badge>}
+                        <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{viewingDocument.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {viewingDocument.pdf_url && (
+                          <Button variant="ghost" size="sm" onClick={() => window.open(viewingDocument.pdf_url, '_blank')}>
+                            <Download className="h-3.5 w-3.5 mr-1" /> Download
+                          </Button>
+                        )}
+                        <button onClick={() => setViewingDocument(null)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-auto p-4">
+                      {viewingDocument.pdf_url ? (
+                        <iframe src={viewingDocument.pdf_url} className="w-full h-[70vh] border-0 rounded" title={viewingDocument.name} />
+                      ) : (
+                        <p className="text-center text-gray-500 py-8">Preview not available</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+                  {/* ── Batch Import: multi-page prescription PDF → version chain ── */}
+                  <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-white">Import Past Prescriptions</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          Upload a PDF with multiple prescription pages (oldest → newest). Each page becomes a version.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Hidden file input */}
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      className="hidden"
+                      id="batch-import-input"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) handleBatchImport(file)
+                        e.target.value = ''
+                      }}
+                    />
+
+                    <div className="flex items-center gap-3">
+                      <Button
+                        variant="default"
+                        onClick={() => document.getElementById('batch-import-input')?.click()}
+                        disabled={batchImporting}
+                      >
+                        {batchImporting ? (
+                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Importing...</>
+                        ) : (
+                          <><Upload className="h-4 w-4 mr-2" />Upload Prescription PDF</>
+                        )}
+                      </Button>
+                      <span className="text-xs text-gray-400">Max 50 pages · PDF only</span>
+                    </div>
+
+                    {/* Batch import result */}
+                    {batchImportResult && (
+                      <div className="mt-3 p-3 rounded-lg border text-sm space-y-1" style={{
+                        borderColor: batchImportResult.status === 'error' ? '#fecaca' : batchImportResult.errors?.length ? '#fed7aa' : '#bbf7d0',
+                        backgroundColor: batchImportResult.status === 'error' ? '#fef2f2' : batchImportResult.errors?.length ? '#fff7ed' : '#f0fdf4',
+                      }}>
+                        {batchImportResult.status === 'error' ? (
+                          <p className="text-red-700 flex items-center gap-1">
+                            <AlertCircle className="h-4 w-4" /> {batchImportResult.errors?.[0] || 'Import failed'}
+                          </p>
+                        ) : (
+                          <>
+                            <p className={batchImportResult.errors?.length ? 'text-amber-700' : 'text-green-700'}>
+                              <Check className="h-4 w-4 inline mr-1" />
+                              Processed {batchImportResult.pages_processed}/{batchImportResult.total_pages} pages
+                              {batchImportResult.took_ms > 0 && ` in ${(batchImportResult.took_ms / 1000).toFixed(1)}s`}
+                            </p>
+                            {batchImportResult.versions?.length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                {batchImportResult.versions.map((v: any) => (
+                                  <div key={v.id} className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                                    <span className="inline-block w-2 h-2 rounded-full bg-primary-500" />
+                                    <span>v{v.version_number} &mdash; Page {v.page_number}</span>
+                                    <span className="text-xs text-gray-400">({v.doc_type}, conf={v.confidence.toFixed(2)})</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {batchImportResult.errors?.length > 0 && (
+                              <div className="mt-2 text-xs text-amber-600">
+                                {batchImportResult.errors.slice(0, 5).map((e: string, i: number) => (
+                                  <p key={i}>⚠ {e}</p>
+                                ))}
+                                {batchImportResult.errors.length > 5 && (
+                                  <p>...and {batchImportResult.errors.length - 5} more</p>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   {/* Weekly Report section */}
                   <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -538,8 +732,6 @@ export function PatientDetail() {
                       </div>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
             </TabsContent>
 
             {/* Chat / AI Assistant integrated tab */}

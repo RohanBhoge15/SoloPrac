@@ -10,8 +10,21 @@ export function PatientReports() {
   const [loading, setLoading] = useState(true)
   const [reportLayout, setReportLayout] = useState<'clinical' | 'executive' | 'family_friendly'>('clinical')
   const [reportDownloading, setReportDownloading] = useState(false)
-  const patientId = localStorage.getItem('patient_id') || ''
+  const [patientId, setPatientId] = useState<string>('')
 
+  // Fetch patient ID from profile
+  useEffect(() => {
+    apiClient.get('/patient/me/profile')
+      .then(res => {
+        if (res.data?.user_id) {
+          setPatientId(res.data.user_id)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  // Fetch reports when patientId is available
   useEffect(() => {
     if (!patientId) { setLoading(false); return }
     apiClient.get('/patient/me/reports')
@@ -103,7 +116,14 @@ export function PatientReports() {
               {reports.prescriptions.map((r: any) => (
                 <div key={r.id} className="flex items-center justify-between p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50">
                   <span className="text-sm">{new Date(r.created_at).toLocaleDateString()}</span>
-                  <Badge variant={r.has_pdf ? 'default' : 'secondary'} className="text-xs">{r.has_pdf ? 'PDF Available' : 'No PDF'}</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={r.has_pdf ? 'default' : 'secondary'} className="text-xs">{r.has_pdf ? 'PDF' : 'No PDF'}</Badge>
+                    {r.has_pdf && (
+                      <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/patient/me/prescriptions/${r.id}/pdf`, '_blank')}>
+                        <Download className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -122,7 +142,14 @@ export function PatientReports() {
                     <span className="text-sm font-medium">{i.invoice_number}</span>
                     <span className="text-sm ml-3">₹{i.total}</span>
                   </div>
-                  <Badge variant={i.status === 'paid' ? 'default' : 'secondary'} className="text-xs">{i.status}</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={i.status === 'paid' ? 'default' : 'secondary'} className="text-xs">{i.status}</Badge>
+                    {i.has_pdf && (
+                      <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/patient/me/invoices/${i.id}/pdf`, '_blank')}>
+                        <Download className="h-3 w-3" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -140,7 +167,11 @@ export function PatientReports() {
                   <span className="text-sm">{c.cert_type.replace('_', ' ')}</span>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-400">{c.verification_code}</span>
-                    <Badge variant={c.has_pdf ? 'default' : 'secondary'} className="text-xs">{c.has_pdf ? 'PDF' : 'N/A'}</Badge>
+                    {c.has_pdf && (
+                      <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/patient/me/certificates/${c.id}/pdf`, '_blank')}>
+                        <Download className="h-3 w-3" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}

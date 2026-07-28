@@ -11,9 +11,22 @@ export function PatientInbox() {
   const [notifications, setNotifications] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [unreadCount, setUnreadCount] = useState(0)
-  const patientId = localStorage.getItem('patient_id') || ''
+  const [patientId, setPatientId] = useState<string>('')
   const { isConnected: wsConnected, lastEvent } = usePatientWebSocket(patientId)
 
+  // Fetch patient ID from profile endpoint
+  useEffect(() => {
+    apiClient.get('/patient/me/profile')
+      .then(res => {
+        if (res.data?.user_id) {
+          setPatientId(res.data.user_id)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  // Fetch notifications when patientId is available
   useEffect(() => {
     if (!patientId) { setLoading(false); return }
     apiClient.get('/patient/me/inbox', { params: { limit: 20 } })

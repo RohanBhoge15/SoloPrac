@@ -42,10 +42,20 @@ class ASRService:
             try:
                 from faster_whisper import WhisperModel
                 model_path = settings.WHISPER_PATH or "large-v3"
+                # Check if custom path exists on disk
+                import os
+                if os.path.isabs(model_path) and not os.path.exists(model_path):
+                    raise FileNotFoundError(
+                        f"Whisper model not found at {model_path}. "
+                        "Set WHISPER_PATH in .env or install the model."
+                    )
                 self._whisper_model = WhisperModel(model_path, device="cpu", compute_type="int8")
                 logger.info("Loaded faster-whisper model: %s", model_path)
             except ImportError:
-                logger.warning("faster-whisper not installed. Using stub ASR.")
+                logger.warning("faster-whisper not installed. Voice transcription unavailable.")
+                self._whisper_model = "stub"
+            except FileNotFoundError as exc:
+                logger.warning("Whisper model not found: %s", exc)
                 self._whisper_model = "stub"
 
     async def _load_indic_whisper(self):
@@ -54,10 +64,19 @@ class ASRService:
             try:
                 from faster_whisper import WhisperModel
                 model_path = settings.INDIC_WHISPER_PATH or "ai4bharat/indic-whisper-medium"
+                import os
+                if os.path.isabs(model_path) and not os.path.exists(model_path):
+                    raise FileNotFoundError(
+                        f"IndicWhisper model not found at {model_path}. "
+                        "Set INDIC_WHISPER_PATH in .env or install the model."
+                    )
                 self._indic_model = WhisperModel(model_path, device="cpu", compute_type="int8")
                 logger.info("Loaded IndicWhisper model: %s", model_path)
             except ImportError:
-                logger.warning("IndicWhisper not installed. Using English-only ASR.")
+                logger.warning("faster-whisper not installed. IndicWhisper unavailable.")
+                self._indic_model = "stub"
+            except FileNotFoundError as exc:
+                logger.warning("IndicWhisper model not found: %s", exc)
                 self._indic_model = "stub"
 
     async def transcribe(self, audio_bytes: bytes, language: Optional[str] = None) -> Dict[str, Any]:
@@ -124,17 +143,16 @@ class ASRService:
 
         except Exception as exc:
             logger.error("ASR transcription failed: %s", exc)
-            return self._stub_transcribe()
+            raise RuntimeError(
+                f"ASR model not available: {exc}. "
+                "Install faster-whisper (pip install faster-whisper) or configure WHISPER_PATH."
+            ) from exc
 
     def _stub_transcribe(self) -> Dict[str, Any]:
         """Return stub result when no ASR model is available."""
-        return {
-            "text": "",
-            "language": "en",
-            "confidence": 0.0,
-            "segments": [],
-            "note": "ASR model not loaded. Configure WHISPER_PATH or install faster-whisper.",
-        }
+        raise RuntimeError(
+            "ASR model not loaded. Install faster-whisper or configure WHISPER_PATH/INDIC_WHISPER_PATH."
+        )
 
     async def detect_language(self, audio_bytes: bytes) -> str:
         """Detect language from audio."""

@@ -23,8 +23,11 @@ Every technology choice was evaluated against:
 | **Animation** | Framer Motion | 11 | MIT | Production-grade animations for timeline scrubber |
 | **Command Palette** | cmdk | Latest | MIT | Accessible command menu for power users |
 | **Icons** | Lucide React | Latest | ISC | Clean, consistent icon set |
+| **i18n** | react-i18next | Latest | MIT | Hindi + English UI translation with language switcher |
+| **PWA** | vite-plugin-pwa | Latest | MIT | Offline support via Workbox service worker |
 | **Backend Framework** | FastAPI | 0.115+ | MIT | Async-native; auto OpenAPI docs; Pydantic validation |
 | **ORM** | SQLAlchemy | 2.0+ | MIT | Most mature Python ORM; async support |
+| **Migrations** | Alembic | Latest | MIT | Database schema versioning with baseline migration |
 | **Data Validation** | Pydantic | 2+ | MIT | Type-safe; JSON Schema generation; FastAPI integration |
 | **Task Queue** | arq | Latest | MIT | Redis-based; async-native; lightweight |
 | **Agent Framework** | LangGraph | Latest | MIT | Graph-based agent orchestration; built-in streaming |
@@ -41,7 +44,9 @@ Every technology choice was evaluated against:
 | **Vector Database** | Qdrant | 1.12+ | Apache 2.0 | Named vectors; hybrid dense+sparse; payload filtering |
 | **Relational Database** | PostgreSQL | 16 | PostgreSQL | RLS, pgcrypto, PostGIS; mature and reliable |
 | **Cache/Queue** | Redis | 7+ | BSD | arq queue + caching + rate limiting tracking |
+| **Object Storage** | MinIO | Latest | AGPL | S3-compatible; stores avatars, PDFs, documents |
 | **Observability** | Langfuse | Self-hosted | MIT | LLM tracing + evaluation dashboards; free self-hosted |
+| **Error Tracking** | Sentry | Latest | BSL | Opt-in via DSN; backend + frontend |
 | **Reverse Proxy** | Caddy | 2+ | Apache 2.0 | Auto HTTPS; simple config; Let's Encrypt integration |
 | **OCR (Typed)** | Docling (IBM) | Latest | Apache 2.0 | Table preservation; reading order; Hindi support |
 | **OCR (Scanned)** | Surya | Latest | MIT | Multilingual; layout-aware |
@@ -49,8 +54,7 @@ Every technology choice was evaluated against:
 | **PDF Generation** | Jinja2 + Playwright | Latest | MIT | HTML→PDF with full CSS support; ECharts SVGs |
 | **Image Processing** | OpenCV (ORB) | 4.9+ | Apache 2.0 | Feature matching; homography; free |
 | **Free Maps** | Leaflet.js + OpenStreetMap | Latest | BSD | No API key required; free tile layer |
-| **Authentication (Doctor)** | Google OAuth + JWT + Email/Password (bcrypt) | — | — | Dual auth; no SMS costs; self-registration |
-| **Authentication (Patient)** | OTP via SHA256 phone_hash | — | — | Cross-tenant identity; no password to remember |
+| **Authentication** | Email/Password (bcrypt) + JWT + HttpOnly Cookies | — | — | XSS-safe; no third-party dependency |
 | **Deployment** | Docker Compose | Latest | Apache 2.0 | Reproducible; Oracle Cloud Free Tier compatible |
 
 ---
@@ -84,4 +88,8 @@ Every technology choice was evaluated against:
 | traditional RAG | Temporal RAG | No temporal awareness; future data leaks |
 | Google Maps API | OpenStreetMap + Leaflet.js | Google Maps costs $200+/month; OSM is free |
 | Practo (paid) | SoloPrac (free) | Practo charges ₹2000-5000/month; SoloPrac is free + open source |
-| Single-tenant Patient | Cross-Clinic User Model | Others bind patient to one doctor; OTP flow creates shareable identity |
+| Google OAuth | Email/Password | Removed to simplify auth; no third-party dependency |
+| OTP (patient auth) | Email/Password | Email+password is simpler; no SMS gateway needed |
+| Hardcoded drug DB | LLM extraction | Doctor photographs prescription; LLM handles misspellings natively |
+| Local file storage | MinIO S3 | S3-compatible; scalable; avatars served via presigned URLs |
+| Lab reference ranges | Removed | Hardcoded ranges are useless for solo doctors |

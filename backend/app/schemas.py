@@ -7,11 +7,58 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 # ─── User ──────────────────────────────────────
+class UserRegister(BaseModel):
+    """Patient registration — all compulsory fields."""
+    email: str = Field(..., max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+    name: str = Field(..., max_length=255)
+    phone: str = Field(..., max_length=20)
+    dob: str = Field(..., description="Date of birth YYYY-MM-DD")
+    gender: str = Field(..., pattern=r"^(male|female|other)$")
+    address: str = Field(..., min_length=1)
+
+
+class UserLogin(BaseModel):
+    """Patient login with email and password."""
+    email: str
+    password: str
+
+
+class UserUpdate(BaseModel):
+    """Update user profile fields."""
+    name: Optional[str] = Field(None, max_length=255)
+    phone: Optional[str] = Field(None, max_length=20)
+    dob: Optional[str] = None
+    gender: Optional[str] = Field(None, pattern=r"^(male|female|other)$")
+    address: Optional[str] = None
+    blood_group: Optional[str] = Field(None, pattern=r"^(A\+|A-|B\+|B-|AB\+|AB-|O\+|O-)$")
+    allergies: Optional[str] = None
+    known_conditions: Optional[str] = None
+    height_cm: Optional[float] = Field(None, ge=0, le=300)
+    weight_kg: Optional[float] = Field(None, ge=0, le=500)
+    emergency_contact_name: Optional[str] = Field(None, max_length=255)
+    emergency_contact_phone: Optional[str] = Field(None, max_length=20)
+    insurance_info: Optional[str] = None
+
+
 class UserRead(BaseModel):
     id: UUID
+    email: str
+    name: str
     phone: str
-    name: Optional[str] = None
+    dob: Optional[datetime] = None
+    gender: Optional[str] = None
+    address: Optional[str] = None
+    blood_group: Optional[str] = None
+    allergies: Optional[str] = None
+    known_conditions: Optional[str] = None
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+    insurance_info: Optional[str] = None
     created_at: datetime
+    profile_complete: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -235,17 +282,51 @@ class DoctorSettingsUpdate(BaseModel):
     default_duration: Optional[int] = Field(None, ge=5, le=120)
     auto_email: Optional[bool] = None
     notification_preferences: Optional[Dict[str, Dict[str, Any]]] = None
+    min_consultation_fee: Optional[int] = Field(None, ge=0)
+    clinic_phone: Optional[str] = Field(None, max_length=50)
+    clinic_email: Optional[str] = Field(None, max_length=255)
+    upi_id: Optional[str] = Field(None, max_length=100)
 
 
 class DoctorProfileUpdate(BaseModel):
-    """Update doctor's profile fields — name, clinic, contact, etc."""
+    """Update doctor's profile fields — name, clinic, contact, location, etc."""
     name: Optional[str] = Field(None, max_length=255)
     speciality: Optional[str] = Field(None, max_length=100)
     clinic_name: Optional[str] = Field(None, max_length=255)
     clinic_address: Optional[str] = None
     phone: Optional[str] = Field(None, max_length=50)
     registration_number: Optional[str] = Field(None, max_length=100)
-    clinic_logo_path: Optional[str] = None
+    photo_url: Optional[str] = None
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    pincode: Optional[str] = Field(None, min_length=6, max_length=6)
+
+
+# ─── Patient Field Update ─────────────────────────
+class DemographicsPatch(BaseModel):
+    """Allowed demographics fields for inline edit."""
+    name: Optional[str] = Field(None, max_length=255)
+    phone: Optional[str] = Field(None, max_length=20)
+    email: Optional[str] = Field(None, max_length=255)
+    dob: Optional[str] = None  # YYYY-MM-DD
+    gender: Optional[str] = Field(None, pattern=r"^(male|female|other)$")
+    address: Optional[str] = None
+    blood_group: Optional[str] = Field(None, pattern=r"^(A\+|A-|B\+|B-|AB\+|AB-|O\+|O-)$")
+    allergies: Optional[str] = None
+    known_conditions: Optional[str] = None
+    height_cm: Optional[float] = Field(None, ge=0, le=300)
+    weight_kg: Optional[float] = Field(None, ge=0, le=500)
+    emergency_contact_name: Optional[str] = Field(None, max_length=255)
+    emergency_contact_phone: Optional[str] = Field(None, max_length=20)
+    insurance_info: Optional[str] = None
+
+
+class PatientFieldUpdate(BaseModel):
+    """Validated patch for patient fields — only allows known top-level sections."""
+    demographics: Optional[DemographicsPatch] = None
+    # Add other sections as needed:
+    # vitals: Optional[Dict] = None
+    # medications: Optional[List] = None
 
     class Config:
         from_attributes = True
@@ -257,7 +338,10 @@ class DoctorRegister(BaseModel):
     email: str = Field(..., max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
     name: str = Field(..., max_length=255)
-    phone: Optional[str] = Field(None, max_length=50)
+    phone: str = Field(..., max_length=50)
+    clinic_name: str = Field(..., min_length=1, max_length=255)
+    clinic_address: str = Field(..., min_length=1)
+    speciality: Optional[str] = Field(None, max_length=100)
 
 
 class DoctorLogin(BaseModel):
@@ -267,9 +351,10 @@ class DoctorLogin(BaseModel):
 
 
 class DoctorVerificationSubmit(BaseModel):
-    """Submit documents for verification."""
+    """Submit ABDM details for verification."""
     registration_number: str = Field(..., max_length=100)
-    # license_document is handled as a file upload separately
+    state_medical_council: str = Field(..., max_length=255)
+    year_of_registration: int = Field(..., ge=1900, le=2030)
 
 
 class DoctorProfileRead(BaseModel):
@@ -282,15 +367,29 @@ class DoctorProfileRead(BaseModel):
     clinic_address: Optional[str] = None
     phone: Optional[str] = None
     registration_number: Optional[str] = None
+    state_medical_council: Optional[str] = None
+    year_of_registration: Optional[int] = None
+    years_experience: Optional[int] = None  # computed from year_of_registration
+    qualification: Optional[str] = None
     verification_status: str = "unverified"
+    photo_url: Optional[str] = None
     license_document_path: Optional[str] = None
     rejection_reason: Optional[str] = None
     verified_at: Optional[datetime] = None
+    abdm_verified_at: Optional[datetime] = None
     location: Optional[str] = None
     settings: dict = {}
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_orm(cls, obj):
+        data = super().from_orm(obj)
+        if obj.year_of_registration:
+            from datetime import date
+            data.years_experience = date.today().year - obj.year_of_registration
+        return data
 
 
 class VerificationPending(BaseModel):

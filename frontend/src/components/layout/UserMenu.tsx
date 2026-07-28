@@ -1,8 +1,9 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/Button'
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/Avatar'
 import { getInitials } from '@/utils/helpers'
-import { LogOut } from 'lucide-react'
+import { LogOut, Globe } from 'lucide-react'
 
 interface UserMenuProps {
   user: {
@@ -15,6 +16,13 @@ interface UserMenuProps {
 
 export function UserMenu({ user, onLogout }: UserMenuProps) {
   const [open, setOpen] = useState(false)
+  const { i18n } = useTranslation()
+
+  const toggleLanguage = () => {
+    const newLang = i18n.language === 'en' ? 'hi' : 'en'
+    i18n.changeLanguage(newLang)
+    localStorage.setItem('soloprac_lang', newLang)
+  }
 
   return (
     <div className="relative">
@@ -50,6 +58,14 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
                 <p className="text-sm font-medium text-gray-900 dark:text-white">{user.name}</p>
                 <p className="text-xs text-gray-500 truncate">{user.email}</p>
               </div>
+              <Button
+                variant="ghost"
+                className="w-full justify-start gap-2 mt-1"
+                onClick={toggleLanguage}
+              >
+                <Globe className="h-4 w-4" />
+                {i18n.language === 'en' ? 'हिंदी' : 'English'}
+              </Button>
               <Button
                 variant="ghost"
                 className="w-full justify-start gap-2 mt-1"

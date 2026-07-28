@@ -20,35 +20,50 @@ security = HTTPBearer(auto_error=False)
 async def get_current_doctor(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> Doctor:
-    """Extract and validate JWT, return the Doctor instance."""
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    """Extract and validate JWT, return the Doctor instance.
+    
+    First tries to use decoded payload from middleware (avoiding double decode).
+    Falls back to decoding from Authorization header if middleware didn't run.
+    """
+    # Try to get token payload from request state (set by middleware)
+    token_data = None
+    if request and hasattr(request.state, "token_payload"):
+        token_data = TokenPayload(**request.state.token_payload)
+        # Verify token type
+        if token_data.type not in ("access", "refresh"):
+            token_data = None
 
-    try:
-        payload = jwt.decode(
-            credentials.credentials,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM],
-        )
-        token_data = TokenPayload(**payload)
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # Fallback: decode from Authorization header
+    if not token_data:
+        if not credentials:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not authenticated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
-    if token_data.type != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token type",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        try:
+            payload = jwt.decode(
+                credentials.credentials,
+                settings.JWT_SECRET_KEY,
+                algorithms=[settings.JWT_ALGORITHM],
+            )
+            token_data = TokenPayload(**payload)
+        except JWTError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if token_data.type != "access":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     result = await db.execute(select(Doctor).where(Doctor.id == token_data.sub))
     doctor = result.scalar_one_or_none()
@@ -89,13 +104,22 @@ async def get_optional_doctor(
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> User:
     """Extract and validate patient JWT, return the User instance.
 
     The JWT `sub` claim carries the User ID (UUID as string).
     This User is cross-tenant — not scoped to any doctor.
+
+    Reads from Authorization header first, falls back to patient_token cookie.
     """
-    if not credentials:
+    token = None
+    if credentials:
+        token = credentials.credentials
+    if not token and request:
+        token = request.cookies.get("patient_token")
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -104,7 +128,7 @@ async def get_current_user(
 
     try:
         payload = jwt.decode(
-            credentials.credentials,
+            token,
             settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
         )

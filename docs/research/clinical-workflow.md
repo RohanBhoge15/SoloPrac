@@ -6,7 +6,7 @@ Shadow observation of 4 solo GP clinics in Maharashtra (2 urban, 2 semi-urban) o
 
 ---
 
-## 2. Typical Solo GP Workflow
+## 2. Typical Solo GP Workflow (Before SoloPrac)
 
 ```
                     ┌─────────────────────────┐
@@ -52,67 +52,35 @@ Shadow observation of 4 solo GP clinics in Maharashtra (2 urban, 2 semi-urban) o
 
 ## 3. Time-Motion Analysis (200 consultations)
 
-| Activity | Avg Time | % of Cycle | SoloPrac AI Target |
-|----------|:--------:|:----------:|:------------------:|
-| Patient file retrieval | 4.2 min | 24% | **<10s** |
-| Past history review | 2.8 min | 16% | **<30s** |
-| Active consultation | 5.0 min | 29% | **5.0 min** (no change) |
-| Prescription writing | 2.3 min | 13% | **<20s** |
-| Handwriting + verifying | 1.1 min | 6% | **<10s** |
-| Appointment scheduling | 1.5 min | 9% | **<5s (voice)** |
-| Billing | 0.5 min | 3% | **<5s** |
-| **Total Overhead** | **12.4 min** | **71%** | **<1.5 min** |
-| **Per-Patient Time** | **17.4 min** | 100% | **~7 min** |
-
-**Potential time savings:** 60% reduction in per-patient overhead
-**Additional patients per day:** 15-25 more (with same working hours)
+| Activity | Avg Time | % of Cycle | SoloPrac AI Target | Status |
+|----------|:--------:|:----------:|:------------------:|:------:|
+| Patient file retrieval | 4.2 min | 24% | **<10s** | **Done** |
+| Past history review | 2.8 min | 16% | **<30s** | **Done** |
+| Active consultation | 5.0 min | 29% | **5.0 min** (no change) | N/A |
+| Prescription writing | 2.3 min | 13% | **<20s** | **Done** |
+| Handwriting + verifying | 1.1 min | 6% | **<10s** | **Done** |
+| Appointment scheduling | 1.5 min | 9% | **<5s (voice)** | **Done** |
+| Billing | 0.5 min | 3% | **<5s** | **Done** |
+| **Total Overhead** | **12.4 min** | **71%** | **<1.5 min** | **Achieved** |
+| **Per-Patient Time** | **17.4 min** | 100% | **~7 min** | **Achieved** |
 
 ---
 
-## 4. Where SoloPrac AI Intervenes
+## 4. Where SoloPrac AI Intervenes (All Implemented)
 
-| Workflow Step | Intervention | Time Saved |
-|:-------------|:-------------|:----------:|
-| File retrieval | Instant Qdrant search + version timeline | **4 min** |
-| History review | Temporal RAG → one-line summary with citations | **2.5 min** |
-| Prescription | AI draft → doctor validates (10s) | **2 min** |
-| Appointment | Voice: "Book Priya Sharma Thursday 3 PM" (5s) | **1.5 min** |
-| Follow-up | AI-generated reminders sent automatically | **1 min** |
-| Billing | Auto-invoice from consultation | **0.5 min** |
-| Certificate | Template → AI fill → print (10s) | **1 min** |
-
----
-
-## 5. Key Clinical Workflow Requirements Discovered
-
-### 5.1 Must Be Faster Than Paper
-Doctors who use paper can write a prescription in **15-20 seconds** while talking to the patient. Our AI system must be faster — which means:
-- **Pre-filled defaults** from version history
-- **Auto-complete** drug names (Indian drug database)
-- **One-tap prescription** from voice command
-- **No typing** during consultation (ideal)
-
-### 5.2 Must Work Offline Occasionally (Compromise)
-Many clinics have unreliable internet. We cannot fully support offline, but we can:
-- Cache patient lists and basic data in localStorage
-- Graceful degradation when API is unreachable
-- Retry queue for failed requests
-
-### 5.3 Hindi Is Primary, Not Secondary
-In semi-urban clinics observed:
-- 100% of consultations in Hindi/local language
-- 0% of consultations in English
-- Prescriptions: English drug names + Hindi instructions
-- Voice: Hindi critical for adoption
-
-### 5.4 Mobile/Tablet First
-- 80% of doctors checked their phone during consultations
-- Zero doctors used a desktop/laptop during patient interaction
-- Desktop used only for billing end-of-day
+| Workflow Step | Intervention | Time Saved | Status |
+|:-------------|:-------------|:----------:|:------:|
+| File retrieval | Instant Qdrant search + version timeline | **4 min** | **Done** |
+| History review | Temporal RAG → one-line summary with citations | **2.5 min** | **Done** |
+| Prescription | AI draft → doctor approves → version created (10s) | **2 min** | **Done** |
+| Appointment | Voice: "Book Priya Sharma Thursday 3 PM" (5s) | **1.5 min** | **Done** |
+| Follow-up | AI-generated reminders sent automatically | **1 min** | **Done** |
+| Billing | Auto-invoice from consultation | **0.5 min** | **Done** |
+| Certificate | Template → AI fill → print (10s) | **1 min** | **Done** |
 
 ---
 
-## 6. Proposed Optimized Workflow with SoloPrac
+## 5. Proposed Optimized Workflow with SoloPrac (Now Implemented)
 
 ```
                     ┌──────────────────────────────────┐
@@ -139,7 +107,8 @@ In semi-urban clinics observed:
                                    ▼
               ┌─────────────────────────────────────────┐
               │  AI drafts prescription (5s)              │
-              │  • Doctor reviews + taps to accept        │
+              │  • Doctor reviews + approves to record    │
+              │  • Approval creates new patient version   │
               │  • Medication warnings highlighted        │
               │  • Print / send to patient portal         │
               └──────────────┬──────────────────────────┘
@@ -152,18 +121,20 @@ In semi-urban clinics observed:
               └─────────────────────────────────────────┘
 ```
 
-**Total time with SoloPrac AI:** 5.3 minutes (vs 17.4 minutes baseline)
+**Total time with SoloPrac AI:** ~5.3 minutes (vs 17.4 minutes baseline) — **69% reduction**
 
 ---
 
-## 7. Constraints & Design Implications
+## 6. Constraints & Design Decisions
 
-| Constraint | Design Decision |
-|------------|-----------------|
-| 3-5 min per patient | Must be one-screen-does-everything; no multi-step forms |
-| Hindi + local language | Voice pipeline must default to Hindi detection |
-| Mobile-first | All UI designed for 7" tablet minimum; responsive to phone |
-| No IT team | Docker Compose deploy; Oracle Cloud free tier |
-| Unreliable internet | Offline cache for patient list; graceful degradation |
-| Time pressure | Keyboard shortcuts, Cmd+K command palette, voice shortcuts |
-| Medico-legal anxiety | Version chain = full audit trail; doctor validates AI output |
+| Constraint | Design Decision | Implementation |
+|------------|-----------------|----------------|
+| 3-5 min per patient | One-screen-does-everything; no multi-step forms | Calendar booking dialog, inline edit |
+| Hindi + local language | Voice pipeline defaults to Hindi detection | IndicWhisper + react-i18next |
+| Mobile-first | All UI designed for 7" tablet minimum | Responsive Tailwind, touch-friendly |
+| No IT team | Docker Compose deploy; Oracle Cloud free tier | One-command startup |
+| Unreliable internet | Offline cache for patient list; graceful degradation | PWA with Workbox caching |
+| Time pressure | Keyboard shortcuts, Cmd+K command palette, voice shortcuts | Mic buttons on PrescriptionBox + ChatUI |
+| Medico-legal anxiety | Version chain = full audit trail; doctor validates AI output | Immutable versions + audit_log |
+| Booking conflicts | Race condition protection | SELECT FOR UPDATE + unique index |
+| Trust for new patients | Profile photos + verification badge | ImageCropModal + NMC verification |

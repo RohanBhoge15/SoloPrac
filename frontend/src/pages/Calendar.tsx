@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { cn } from '@/utils/helpers'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { AppointmentDetail } from '@/components/AppointmentDetail'
 import { apiClient } from '@/services/api'
-import { Plus, ChevronLeft, ChevronRight, Loader2, AlertCircle, X } from 'lucide-react'
+import { Plus, ChevronLeft, ChevronRight, Loader2, AlertCircle, X, Search, User, Calendar as CalendarIcon, Clock } from 'lucide-react'
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, addWeeks, subWeeks, isToday } from 'date-fns'
 import { ConfirmationDialog } from '@/components/ui/ConfirmationDialog'
 import { toast } from '@/components/ui/Toast'
@@ -13,6 +13,15 @@ const TIME_SLOTS = Array.from({ length: 16 }, (_, i) => {
   const h = 8 + i
   return { label: h > 12 ? `${h - 12}:00 PM` : `${h}:00 AM`, value: h * 60 }
 })
+
+interface PatientResult {
+  id: string
+  name: string
+  initials: string
+  age?: number
+  gender?: string
+  phone?: string
+}
 
 export function Calendar() {
   const [currentWeek, setCurrentWeek] = useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }))
@@ -24,6 +33,22 @@ export function Calendar() {
   const [showSlotPicker, setShowSlotPicker] = useState(false)
   const [availableSlots, setAvailableSlots] = useState<any[]>([])
   const [loadingSlots, setLoadingSlots] = useState(false)
+
+  // ── Booking dialog state ──
+  const [showBooking, setShowBooking] = useState(false)
+  const [bookingPatient, setBookingPatient] = useState<PatientResult | null>(null)
+  const [bookingDate, setBookingDate] = useState('')
+  const [bookingTime, setBookingTime] = useState('09:00')
+  const [bookingDuration, setBookingDuration] = useState(20)
+  const [bookingReason, setBookingReason] = useState('')
+  const [bookingLoading, setBookingLoading] = useState(false)
+  const [bookingError, setBookingError] = useState<string | null>(null)
+  // Patient search
+  const [patientQuery, setPatientQuery] = useState('')
+  const [patientResults, setPatientResults] = useState<PatientResult[]>([])
+  const [patientSearching, setPatientSearching] = useState(false)
+  const [showPatientDropdown, setShowPatientDropdown] = useState(false)
+  const patientSearchRef = useRef<HTMLDivElement>(null)
 
   const weekStart = startOfWeek(currentWeek, { weekStartsOn: 1 })
   const weekEnd = endOfWeek(currentWeek, { weekStartsOn: 1 })
@@ -68,6 +93,38 @@ export function Calendar() {
 
   useEffect(() => { fetchAppointments() }, [fetchAppointments])
 
+  // ── Patient search with debounce ──
+  useEffect(() => {
+    if (patientQuery.length < 2) {
+      setPatientResults([])
+      return
+    }
+    const timer = setTimeout(async () => {
+      setPatientSearching(true)
+      try {
+        const res = await apiClient.get('/patients/search', { params: { q: patientQuery, limit: 10 } })
+        setPatientResults(res.data?.patients || res.data || [])
+        setShowPatientDropdown(true)
+      } catch {
+        setPatientResults([])
+      } finally {
+        setPatientSearching(false)
+      }
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [patientQuery])
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (patientSearchRef.current && !patientSearchRef.current.contains(e.target as Node)) {
+        setShowPatientDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
   const getAppointmentForSlot = (day: string, slotMinutes: number) => {
     const slotTime = day + 'T' + `${String(Math.floor(slotMinutes / 60)).padStart(2, '0')}:${String(slotMinutes % 60).padStart(2, '0')}:00`
     return appointments.find((a: any) => {
@@ -94,6 +151,52 @@ export function Calendar() {
     }
   }
 
+  // ── Click empty calendar cell to pre-fill booking time ──
+  const handleEmptyCellClick = (day: Date, slotMinutes: number) => {
+    const hh = String(Math.floor(slotMinutes / 60)).padStart(2, '0')
+    const mm = String(slotMinutes % 60).padStart(2, '0')
+    setBookingDate(format(day, 'yyyy-MM-dd'))
+    setBookingTime(`${hh}:${mm}`)
+    setShowBooking(true)
+  }
+
+  // ── Submit booking ──
+  const handleBook = async () => {
+    if (!bookingPatient || !bookingDate || !bookingTime) return
+    setBookingLoading(true)
+    setBookingError(null)
+    try {
+      const startISO = `${bookingDate}T${bookingTime}:00`
+      const startDate = new Date(startISO)
+      const endDate = new Date(startDate.getTime() + bookingDuration * 60000)
+      await apiClient.post('/calendar/appointments', {
+        patient_id: bookingPatient.id,
+        start_at: startDate.toISOString(),
+        end_at: endDate.toISOString(),
+        reason: bookingReason || 'Consultation',
+      })
+      toast.success('Appointment booked')
+      resetBooking()
+      fetchAppointments()
+    } catch (err: any) {
+      setBookingError(err?.response?.data?.detail || 'Failed to book appointment')
+    } finally {
+      setBookingLoading(false)
+    }
+  }
+
+  const resetBooking = () => {
+    setShowBooking(false)
+    setBookingPatient(null)
+    setPatientQuery('')
+    setPatientResults([])
+    setBookingDate('')
+    setBookingTime('09:00')
+    setBookingDuration(20)
+    setBookingReason('')
+    setBookingError(null)
+  }
+
   const navTo = (direction: 'prev' | 'next' | 'today') => {
     if (direction === 'prev') setCurrentWeek(subWeeks(currentWeek, 1))
     else if (direction === 'next') setCurrentWeek(addWeeks(currentWeek, 1))
@@ -116,7 +219,9 @@ export function Calendar() {
           <Button variant="outline" onClick={() => { fetchSlots(); setShowSlotPicker(!showSlotPicker) }} className={cn(showSlotPicker && 'bg-primary-50 text-primary-700')}>
             <Plus className="h-4 w-4 mr-1" /> Slots
           </Button>
-          <Button><Plus className="h-4 w-4 mr-2" /> Book</Button>
+          <Button onClick={() => { setBookingDate(format(new Date(), 'yyyy-MM-dd')); setShowBooking(true) }}>
+            <Plus className="h-4 w-4 mr-2" /> Book
+          </Button>
         </div>
       </div>
 
@@ -170,10 +275,17 @@ export function Calendar() {
                     {weekDays.map((day) => {
                       const appt = getAppointmentForSlot(format(day, 'yyyy-MM-dd'), slot.value)
                       return (
-                        <td key={day.toISOString()} className="relative h-24 p-1 border-r border-gray-100 dark:border-gray-700">
+                        <td
+                          key={day.toISOString()}
+                          className={cn(
+                            "relative h-24 p-1 border-r border-gray-100 dark:border-gray-700",
+                            !appt && "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                          )}
+                          onClick={() => !appt && handleEmptyCellClick(day, slot.value)}
+                        >
                           {appt && (
                             <div
-                              onClick={() => handleAppointmentClick(appt)}
+                              onClick={(e) => { e.stopPropagation(); handleAppointmentClick(appt) }}
                               className="absolute inset-0 m-1 rounded bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 p-1.5 text-xs hover:bg-primary-200 dark:hover:bg-primary-900/50 cursor-pointer flex flex-col justify-between"
                             >
                               <span className="truncate font-medium">{appt.patient_name || `Patient ${appt.patient_id?.slice(0, 6)}`}</span>
@@ -209,6 +321,159 @@ export function Calendar() {
           confirmLabel="Cancel Appointment"
           onConfirm={confirmCancelAppointment}
         />
+      )}
+
+      {/* ── Booking Dialog ── */}
+      {showBooking && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={resetBooking}>
+          <div
+            className="bg-white dark:bg-gray-900 rounded-xl p-6 max-w-lg w-full mx-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Book Appointment</h2>
+              <button onClick={resetBooking} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Step 1: Patient */}
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  <User className="inline h-3.5 w-3.5 mr-1" />
+                  Patient
+                </label>
+                <div ref={patientSearchRef} className="relative">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <input
+                      type="text"
+                      value={bookingPatient ? bookingPatient.name : patientQuery}
+                      onChange={(e) => {
+                        if (bookingPatient) setBookingPatient(null)
+                        setPatientQuery(e.target.value)
+                      }}
+                      onFocus={() => patientResults.length > 0 && setShowPatientDropdown(true)}
+                      placeholder="Search patient by name or phone..."
+                      className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      disabled={!!bookingPatient}
+                    />
+                    {bookingPatient && (
+                      <button
+                        onClick={() => { setBookingPatient(null); setPatientQuery('') }}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {showPatientDropdown && !bookingPatient && (
+                    <div className="absolute z-10 mt-1 w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {patientSearching ? (
+                        <div className="p-3 text-sm text-gray-500 flex items-center gap-2">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Searching...
+                        </div>
+                      ) : patientResults.length === 0 ? (
+                        <div className="p-3 text-sm text-gray-400">No patients found</div>
+                      ) : (
+                        patientResults.map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => { setBookingPatient(p); setShowPatientDropdown(false); setPatientQuery('') }}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-3"
+                          >
+                            <div className="h-8 w-8 rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 flex items-center justify-center text-xs font-bold">
+                              {p.initials}
+                            </div>
+                            <div>
+                              <div className="font-medium text-gray-900 dark:text-white">{p.name}</div>
+                              <div className="text-xs text-gray-500">
+                                {[p.age && `${p.age}y`, p.gender, p.phone].filter(Boolean).join(' · ')}
+                              </div>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Step 2: Date & Time */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <CalendarIcon className="inline h-3.5 w-3.5 mr-1" />
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={bookingDate}
+                    onChange={(e) => setBookingDate(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    <Clock className="inline h-3.5 w-3.5 mr-1" />
+                    Time
+                  </label>
+                  <input
+                    type="time"
+                    value={bookingTime}
+                    onChange={(e) => setBookingTime(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+
+              {/* Duration */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Duration (minutes)</label>
+                <select
+                  value={bookingDuration}
+                  onChange={(e) => setBookingDuration(Number(e.target.value))}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                >
+                  <option value={10}>10 min</option>
+                  <option value={15}>15 min</option>
+                  <option value={20}>20 min</option>
+                  <option value={30}>30 min</option>
+                  <option value={45}>45 min</option>
+                  <option value={60}>60 min</option>
+                </select>
+              </div>
+
+              {/* Reason */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Reason</label>
+                <input
+                  type="text"
+                  value={bookingReason}
+                  onChange={(e) => setBookingReason(e.target.value)}
+                  placeholder="Consultation"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            {bookingError && (
+              <div className="mt-3 p-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300">{bookingError}</div>
+            )}
+
+            <div className="flex justify-end gap-2 mt-5">
+              <Button variant="outline" onClick={resetBooking} disabled={bookingLoading}>Cancel</Button>
+              <Button
+                onClick={handleBook}
+                disabled={bookingLoading || !bookingPatient || !bookingDate || !bookingTime}
+              >
+                {bookingLoading ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
+                Book Appointment
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {error && (

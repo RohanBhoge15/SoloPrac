@@ -24,6 +24,7 @@ from app.dependencies import get_current_doctor
 from app.models import Doctor, Patient, Certificate, AuditLog
 from app.services.pdf_generator import pdf_generator
 from app.services.notification_generator import generate_and_dispatch
+from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,14 @@ async def download_certificate_pdf(
     cert = result.scalar_one_or_none()
     if not cert or not cert.pdf_path:
         raise HTTPException(status_code=404, detail="PDF not found")
-    return FileResponse(cert.pdf_path, media_type="application/pdf", filename=f"certificate_{cert.cert_type}.pdf")
+    
+    # Generate presigned URL for S3 access
+    presigned_url = await storage_service.get_presigned_url("pdfs", cert.pdf_path)
+    if not presigned_url:
+        raise HTTPException(status_code=500, detail="Failed to generate PDF URL")
+    
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=presigned_url)
 
 
 # ─── Public Verification (no auth required) ───

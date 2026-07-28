@@ -12,9 +12,22 @@ export function PatientDashboard() {
   const [appointments, setAppointments] = useState<any[]>([])
   const [notifications, setNotifications] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [patientId] = useState(() => localStorage.getItem('patient_id') || '')
+  const [patientId, setPatientId] = useState<string>('')
   const { isConnected: wsConnected, lastEvent } = usePatientWebSocket(patientId)
 
+  // Fetch patient ID from profile endpoint (uses HttpOnly cookie)
+  useEffect(() => {
+    apiClient.get('/patient/me/profile')
+      .then(res => {
+        if (res.data?.user_id) {
+          setPatientId(res.data.user_id)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  // Fetch data when patientId is available
   useEffect(() => {
     if (!patientId) { setLoading(false); return }
     Promise.all([

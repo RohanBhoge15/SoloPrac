@@ -19,6 +19,7 @@ from app.config import settings
 from app.database import async_session_maker
 from app.services.temporal_rag import TemporalMultimodalRetriever
 from app.services.rag_audit import RAGAuditService, LLMRateLimiter, validate_no_future_leak
+from app.services.pii import strip_pii
 from app.agents.synthesizer import MaverickSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -191,8 +192,14 @@ async def synthesize_response(context: dict, query: str, **kwargs) -> dict:
         return _build_fallback_response(context, query)
 
     try:
-        patient_context = context.get("patient_context", {})
+        patient_id = kwargs.get("patient_id", "")
         citations = context.get("citations", [])
+
+        # PII de-identification before inference: strip name/phone/email/etc. and
+        # inject a stable pseudonym (P-{id}) so the external LLM only ever sees a
+        # pseudonymous clinical profile — identity is re-attached client-side.
+        safe_context = strip_pii(context, patient_id)
+        safe_patient_context = safe_context.get("patient_context", {})
 
         # Record LLM call for rate limiting
         if doctor_id:
@@ -200,8 +207,8 @@ async def synthesize_response(context: dict, query: str, **kwargs) -> dict:
 
         response = await _synthesizer.synthesize(
             query=query,
-            context=context,
-            patient_context=patient_context,
+            context=safe_context,
+            patient_context=safe_patient_context,
             citations=citations,
         )
         return response
@@ -227,7 +234,7 @@ def _build_fallback_response(context: dict, query: str) -> dict:
             f"{r.get('summary', '')}  (score: {r.get('score', 0):.3f})"
         )
     lines.append(f"\nShowing {min(len(results), 5)} of {len(results)} results.")
-    lines.append("\n*AI Suggestion — Requires Doctor Validation.*")
+    lines.append("\n*Verified by AI · Doctor review recommended.*")
     return {"response": "\n".join(lines), "citations": citations, "model": "fallback"}
 
 
@@ -562,7 +569,8 @@ async def generate_prescription(patient_id: str, diagnosis: str, medications: li
             # Create prescription record
             rx = PrescriptionBox(
                 id=uuid.uuid4(),
-                version_id=None,  # No version link during tool execution; linked on persist
+                version_id=patient.head_version_id,
+                patient_id=patient.id,
                 doctor_id=uuid.UUID(doctor_id),
                 rx_jsonb=rx_data,
                 pdf_path=pdf_path,

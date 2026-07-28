@@ -6,24 +6,18 @@ The agent system is built on **LangGraph** — a graph-based framework for orche
 
 ---
 
-## 2. Agent Architecture Diagram
+## 2. Agent Components
 
-![Agent Architecture](../images/agent-architecture.png)
-
----
-
-## 3. Agent Components
-
-### 3.1 Intent Router (Llama-3.1-8B via NIM)
+### 2.1 Intent Router (Llama-3.1-8B via NIM)
 The entry point for all user queries. A lightweight LLM that classifies intent and routes to the appropriate tool.
 
 **Classification Categories:**
 ```
 patient_qa       → RAG retrieval + synthesis
 image_analysis   → Vision model (Groq 90B-V or MedGemma-4B)
-document_parse   → OCR pipeline (Docling/Surya/Nanonets-OCR2)
+document_parse   → OCR pipeline (Docling/Surya/Nanonets-OCR2) + quality alerts
 scheduling       → Calendar subgraph (9 tools)
-prescription     → JSON Schema + PDF generation
+prescription     → JSON Schema + PDF generation (state-specific)
 invoice          → Billing → PDF
 certificate      → Certificate template → PDF
 image_compare    → ORB matching + overlay
@@ -31,72 +25,25 @@ weekly_report    → Significance scorer + PDF
 general_chat     → Direct Maverick response
 ```
 
-**Router Prompt Structure:**
-```
-User query: {query}
-Patient context: {patient_id, doctor_id, timestamp}
-Available tools: {tool_descriptions}
-Past conversation: {conversation_history}
+### 2.2 RAG Retrieval Node (Feature A)
+Executes temporal-aware multimodal retrieval from Qdrant. Implements the formal scoring function with temporal decay and clinical significance weighting.
 
-Classify the intent from the list above. Return JSON:
-{"intent": "patient_qa", "confidence": 0.95}
-```
+### 2.3 Response Synthesizer (Llama-4 Maverick via NIM)
+Generates the final response grounded in retrieved context. Uses structured output and post-processing citation validation.
 
-### 3.2 RAG Retrieval Node (Feature A)
-Executes temporal-aware multimodal retrieval from Qdrant. Implements the formal scoring function:
-
-```python
-score(v, q, t_q) = alpha * cos(MedCPT(q), v.medical_text)
-                  + beta  * hybrid_bm25_dense(BGE-M3(q), v.hybrid, v.sparse)
-                  + gamma * cos(BiomedCLIP(q_img), v.image)  # if query has image
-                  + delta * temporal_decay(t_q - v.timestamp)
-                  + epsilon * clinical_significance(v)
-```
-
-### 3.3 Response Synthesizer (Llama-4 Maverick via NIM)
-Generates the final response grounded in retrieved context. Uses structured output to ensure citations are valid version references.
-
-**Output Schema:**
-```json
-{
-  "response": "Mrs. Sharma's HbA1c has been trending...",
-  "citations": [{"version_id": "uuid", "version_number": 12, "summary": "HbA1c: 7.2%"}],
-  "follow_up": {"suggested": true, "type": "lab_test", "name": "HbA1c after 4 weeks"}
-}
-```
-
-### 3.4 Vision Analysis Node
+### 2.4 Vision Analysis Node
 Routes to MedGemma-4B-IT (local) for radiology/dermatology or Groq fallback for general medical images.
 
-### 3.5 Document Processor Node
-Multi-stage pipeline: file type detection → parser selection (Docling/Surya/Nanonets-OCR2) → text extraction → schema alignment (Feature D) → structured patient data.
+### 2.5 Document Processor Node
+Multi-stage pipeline: file type detection → quality check (blur, contrast, brightness, resolution) → parser selection (Docling/Surya/Nanonets-OCR2) → text extraction → schema alignment (Feature D) → structured patient data.
 
-### 3.6 Image Registration Node
-OpenCV ORB feature matching pipeline:
-1. Detect ORB keypoints on new image
-2. Search patient's prior images by BiomedCLIP similarity
-3. Match features via BFMatcher + Lowe's ratio test
-4. Compute homography via RANSAC
-5. Generate overlay image
-6. Maverick generates clinical summary
+### 2.6 Image Registration Node
+OpenCV ORB feature matching pipeline for wound/skin comparison.
 
-### 3.7 Calendar Subgraph (9 Tools)
-Specialized subgraph with locked tool set:
-```python
-TOOLS = [
-    find_available_slots(),           # Tool 1
-    create_appointment(),             # Tool 2
-    reschedule_appointment(),         # Tool 3
-    cancel_appointment(),             # Tool 4
-    query_calendar_nl(),              # Tool 5
-    bulk_reschedule(),                # Tool 6
-    block_doctor_time(),              # Tool 7
-    smart_rearrange(),                # Tool 8
-    find_optimal_window(),            # Tool 9
-]
-```
+### 2.7 Calendar Subgraph (9 Tools)
+Specialized subgraph with locked tool set for booking, rescheduling, cancellation, and smart rearrangement.
 
-### 3.8 Voice Scheduling Flow (Hindi + English)
+### 2.8 Voice Scheduling Flow (Hindi + English)
 ```
 [Mic] → faster-whisper/IndicWhisper → [Transcript]
   → Maverick intent: scheduling only (5 locked commands)
@@ -105,65 +52,26 @@ TOOLS = [
   → Confirm → arq emails → audit log → Indic-Parler-TTS confirmation
 ```
 
-**Five Locked Voice Commands:**
-1. *"Book Priya Sharma for Thursday 3 PM, fever follow-up."*
-2. *"I'm off Friday and Saturday — handle it."* → blocks calendar, smart-rearranges, drafts emails
-3. *"When am I free 30 minutes next week before lunch?"* → top-3 ranked slots
-4. *"Move all diabetic follow-ups due this month to morning slots."* → NL filter → bulk reschedule
-5. *"Cancel Mrs. Patel's Wednesday appointment, she just called."*
-
-**Scope is voice-only-for-scheduling.** All other voice queries politely redirected.
-
-### 3.9 India-Specific Voice Stack
-| Component | Model | Language |
-|-----------|-------|----------|
-| ASR (English) | faster-whisper large-v3 (CTranslate2) | English |
-| ASR (Hindi) | AI4Bharat IndicWhisper | Hindi |
-| TTS (Hindi+English) | Indic-Parler-TTS | Hindi + English |
-
----
-
-## 4. State Machine Design
-
-```python
-class AgentState(TypedDict):
-    messages: list              # conversation history
-    patient_id: UUID | None
-    doctor_id: UUID
-    current_version: int
-    retrieved_versions: list
-    tool_results: dict
-    pending_proposals: list     # AI suggestions awaiting approval
-    error_count: int
-    trace_events: list          # streaming status updates
-    # India-specific
-    voice_language: Literal["en", "hi"] = "en"
-    scheduling_intent: dict | None  # parsed voice intent
+### 2.9 Voice-to-Text (PrescriptionBox + ChatUI)
 ```
+[Mic button] → MediaRecorder (browser) → audio blob
+  → POST /api/v1/voice/transcribe
+  → faster-whisper/IndicWhisper → text
+  → Fill text field (diagnosis, instructions, or chat input)
+```
+Returns 503 with guidance if ASR model not installed.
 
 ---
 
-## 5. Streaming Architecture
+## 3. Streaming Architecture
 
 Agent-trace events stream to UI via SSE:
 ```
 event: trace
 data: {"node": "router", "status": "completed", "output": {"intent": "patient_qa"}}
 
-event: trace
-data: {"node": "retrieve_patient_context", "status": "running"}
-
-event: trace
-data: {"node": "retrieve_patient_context", "status": "completed", "output": {"versions_found": 5}}
-
 event: token
 data: {"token": "Mrs.", "citation": null}
-
-event: token
-data: {"token": "Sharma", "citation": null}
-
-event: token
-data: {"token": "'s", "citation": {"version": 12, "summary": "HbA1c: 7.2%"}}
 
 event: done
 data: {"response_id": "uuid"}
@@ -171,7 +79,7 @@ data: {"response_id": "uuid"}
 
 ---
 
-## 6. Error Handling Strategy
+## 4. Error Handling Strategy
 
 | Failure Mode | Handling | Fallback |
 |-------------|----------|----------|
@@ -181,10 +89,12 @@ data: {"response_id": "uuid"}
 | MedGemma OOM | Unload, restart, retry | Use Groq 90B-V as fallback |
 | OCR failure (all engines) | Return error with suggestion | "Please upload a clearer image" |
 | Voice ASR low confidence | Request rephrasing | "Could you please repeat that?" |
+| ASR model not installed | Return 503 with guidance | "Install faster-whisper for voice input" |
+| OCR quality poor | Show amber warnings | Doctor decides whether to proceed |
 
 ---
 
-## 7. Langfuse Observability
+## 5. Langfuse Observability
 
 Every agent step is traced:
 - **Root span:** Full user request
@@ -194,13 +104,13 @@ Every agent step is traced:
 
 ---
 
-## 8. Paper Contributions Mapped to Agent
+## 6. Paper Contributions Mapped to Agent
 
 | Feature | Agent Component | Evaluation |
 |---------|----------------|------------|
 | **A** — Temporal RAG | Retrieval node with temporal scoring | Recall@5, future-leak rate, latency |
 | **B** — Self-Planning | Planner-Executor-Critic loop | Steps-to-resolution vs fixed pipeline |
 | **C** — Cross-Modal | Image retrieval via projected embeddings | Recall@k on CheXpert pairs |
-| **D** — Schema Alignment | Document processor node | Field-level F1 across 5 doc types |
+| **D** — Schema Alignment | Document processor node | Field-level F1 across 5 doc types (manual eval) |
 | **E** — Clustering | Offline trajectory analysis | Precision on injected deteriorations |
-| **F** — Reports | Significance scorer + PDF pipeline | Likert rating vs unfiltered baseline |
+| **F** — Reports | Significance scorer + PDF pipeline | Likert rating vs unfiltered baseline (manual eval) |

@@ -17,6 +17,34 @@ from app.models import AuditLog
 
 logger = logging.getLogger(__name__)
 
+# Map URL prefixes to resource types (more robust than path splitting)
+RESOURCE_TYPE_MAP = {
+    "/api/v1/patients": "patient",
+    "/api/v1/auth": "auth",
+    "/api/v1/agent": "agent",
+    "/api/v1/images": "image",
+    "/api/v1/evaluation": "evaluation",
+    "/api/v1/documents": "document",
+    "/api/v1/security": "security",
+    "/api/v1/prescriptions": "prescription",
+    "/api/v1/certificates": "certificate",
+    "/api/v1/invoices": "invoice",
+    "/api/v1/calendar": "calendar",
+    "/api/v1/portal": "portal",
+    "/api/v1/weekly_report": "weekly_report",
+    "/api/v1/risk-alerts": "risk_alert",
+    "/api/v1/admin": "admin",
+    "/api/v1/health": "health",
+}
+
+
+def _get_resource_type(path: str) -> str:
+    """Determine resource type from URL prefix (robust against path changes)."""
+    for prefix, resource in RESOURCE_TYPE_MAP.items():
+        if path.startswith(prefix):
+            return resource
+    return "unknown"
+
 
 def _get_client_ip(request: Request) -> str | None:
     """Extract real client IP from X-Forwarded-For header (behind proxy)."""
@@ -61,8 +89,8 @@ async def audit_log_middleware(request: Request, call_next: Callable[[Request], 
     }
     action = action_map.get(request.method, "read")
 
-    # Determine resource type from path
-    resource_type = path.split("/")[3] if len(path.split("/")) > 3 else "unknown"
+    # Determine resource type from URL prefix (robust)
+    resource_type = _get_resource_type(path)
 
     # Fire-and-forget audit log (don't block the response)
     if doctor_id and action in ("write", "read"):
@@ -101,7 +129,7 @@ async def audit_log_middleware(request: Request, call_next: Callable[[Request], 
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=(self)"
     response.headers["X-Request-ID"] = request_id
 
     return response
@@ -129,8 +157,26 @@ async def doctor_identity_middleware(request: Request, call_next):
                 doctor_id = payload.get("sub")
                 if doctor_id:
                     request.state.doctor_id = UUID(doctor_id)
+                    # Store decoded payload to avoid double-decode in get_current_doctor
+                    request.state.token_payload = payload
         except JWTError:
             pass
+
+    # Fallback: try to extract doctor from HttpOnly cookie
+    if not doctor_id:
+        token = request.cookies.get("access_token")
+        if token:
+            try:
+                from jose import jwt, JWTError
+                payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+                token_type = payload.get("type", "access")
+                if token_type in ("access", "refresh"):
+                    doctor_id = payload.get("sub")
+                    if doctor_id:
+                        request.state.doctor_id = UUID(doctor_id)
+                        request.state.token_payload = payload
+            except JWTError:
+                pass
 
     # Store doctor_id in context var so get_db() can set it on the actual session
     token = _current_doctor_id.set(doctor_id)

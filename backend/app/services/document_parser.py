@@ -146,6 +146,13 @@ class ParserRouter:
         doc_format, format_confidence = await self.detect_format(file_path, mime_type)
         logger.info("Detected format: %s (confidence=%.2f)", doc_format, format_confidence)
 
+        # Step 1b: Image quality checks (blur, contrast, brightness)
+        quality_warnings: list[str] = []
+        if mime_type.startswith("image/"):
+            quality_warnings = await self._check_image_quality(file_path)
+            if quality_warnings:
+                logger.info("Image quality warnings: %s", quality_warnings)
+
         # Step 2: Extract text via correct pipeline
         raw_text = ""
         extraction_confidence = 0.0
@@ -171,6 +178,7 @@ class ParserRouter:
                 "raw_text": "",
                 "structured": {},
                 "confidence": 0.0,
+                "quality_warnings": quality_warnings,
             }
 
         # Step 3: Classify document type from content
@@ -194,6 +202,7 @@ class ParserRouter:
             "structured": structured,
             "confidence": round(extraction_confidence, 3),
             "took_ms": round(elapsed, 1),
+            "quality_warnings": quality_warnings,
         }
 
     # ─── Format Detection Helpers ───
@@ -230,6 +239,55 @@ class ParserRouter:
             if indicator in basename:
                 return True
         return False
+
+    async def _check_image_quality(self, file_path: str) -> list[str]:
+        """Analyze image quality and return warning messages.
+
+        Checks: blur (Laplacian variance), low contrast, dark/underexposed.
+        Returns a list of human-readable warning strings (empty = all good).
+        """
+        try:
+            from PIL import Image
+            import numpy as np
+        except ImportError:
+            return []
+
+        try:
+            img = Image.open(file_path)
+        except Exception:
+            return []
+
+        warnings = []
+        img_array = np.array(img.convert("L"))  # grayscale
+
+        # ── Blur check (Laplacian variance) ──
+        # Low variance = blurry image
+        laplacian_var = float(np.var(np.diff(img_array.astype(np.float64), axis=0)))
+        if laplacian_var < 100:
+            warnings.append("Image appears blurry — retake for better accuracy")
+        elif laplacian_var < 300:
+            warnings.append("Image may be slightly blurry — verify extracted text")
+
+        # ── Contrast check (std deviation of pixel intensities) ──
+        contrast = float(np.std(img_array))
+        if contrast < 20:
+            warnings.append("Low contrast — text may be hard to read")
+        elif contrast < 35:
+            warnings.append("Low contrast detected — some text may be missed")
+
+        # ── Brightness check (mean pixel intensity) ──
+        mean_brightness = float(np.mean(img_array))
+        if mean_brightness < 50:
+            warnings.append("Image appears dark/underexposed")
+        elif mean_brightness > 230:
+            warnings.append("Image appears overexposed / washed out")
+
+        # ── Resolution check ──
+        width, height = img.size
+        if width < 500 or height < 500:
+            warnings.append(f"Low resolution ({width}x{height}) — larger images improve OCR")
+
+        return warnings
 
     # ─── OCR Pipeline Methods ───
 

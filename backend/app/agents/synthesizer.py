@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.services.pii import strip_pii
 
 logger = logging.getLogger(__name__)
 
@@ -28,19 +29,26 @@ logger = logging.getLogger(__name__)
 
 CLINICAL_ASSISTANT_SYSTEM = """You are SoloPrac AI, a clinical assistant for a solo practitioner's clinic OS.
 
+CRITICAL SAFETY RULES — you must follow these without exception:
+1. ONLY answer from the provided patient context. If the answer is not in the retrieved context, say "I don't have enough information from the patient record to answer that." Do NOT generate medical information from your general knowledge.
+2. NEVER fabricate lab results, diagnoses, medications, or vital signs. If a value is not in the context, do not invent one.
+3. NEVER recommend medication changes, dosage adjustments, or treatment modifications. Only summarize what is recorded.
+4. If you are uncertain or the context is ambiguous, say so explicitly.
+
 Your responsibilities:
-1. Answer questions about patient records using the retrieved context provided.
+1. Answer questions about patient records using ONLY the retrieved context provided.
 2. Explain medical information clearly but cautiously — you are an AI assistant, not a doctor.
-3. Always cite the version source when referencing patient data.
-4. If you don't know something, say so — never fabricate lab results or diagnoses.
-5. Keep responses concise and clinically relevant.
+3. Always cite the version source when referencing patient data using the format: [v{version_number} · {date}]
+4. When versions contain conflicting information, present the progression over time with timestamps — show what changed, when, and why if documented. For example: "Patient was diagnosed with Diabetes on Jan 5 [v1 · 2026-01-05]. On Feb 15, HbA1c returned to normal and the condition was marked as resolved [v3 · 2026-02-15]."
+5. If you can't find the answer in the patient record, say "I don't have enough information from the patient record to answer that."
+6. Keep responses concise and clinically relevant.
 
 Format:
 - Use plain text with markdown for structure (headings, lists, bold for emphasis).
 - When referencing patient versions, use the format: [v{version_number} · {date}]
 - End with a clear next-step suggestion when appropriate.
 
-Remember: "AI Suggestion — Requires Doctor Validation."
+Remember: "Verified by AI · Doctor review recommended."
 """
 
 
@@ -110,6 +118,12 @@ class MaverickSynthesizer:
         if self._client is None:
             logger.warning("NIM client not configured — using fallback response")
             return self._fallback(query, context, patient_context, intent)
+
+        # PII de-identification guard at the LLM boundary. Strips name/phone/email/
+        # etc. from anything sent to the external LLM, so no caller can leak identity
+        # regardless of what it passes. Idempotent — safe if already stripped upstream.
+        context = strip_pii(context)
+        patient_context = strip_pii(patient_context)
 
         # Build messages
         messages = [{"role": "system", "content": CLINICAL_ASSISTANT_SYSTEM}]
@@ -197,6 +211,10 @@ class MaverickSynthesizer:
             fallback = self._fallback(query, context, None, None)
             yield fallback["response"]
             return
+
+        # PII de-identification guard at the LLM boundary (see synthesize()).
+        context = strip_pii(context)
+        patient_context = strip_pii(patient_context)
 
         messages = [{"role": "system", "content": CLINICAL_ASSISTANT_SYSTEM}]
 

@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AppLayout } from '@/layouts/AppLayout'
 import { Login } from '@/pages/Login'
+import { Register } from '@/pages/Register'
 import { Dashboard } from '@/pages/Dashboard'
 import { Calendar } from '@/pages/Calendar'
 import { Scratchpad } from '@/pages/Scratchpad'
@@ -9,15 +10,19 @@ import { PatientDetail } from '@/pages/PatientDetail'
 import { Chat } from '@/pages/Chat'
 import { PatientLayout } from '@/layouts/PatientLayout'
 import { PatientLogin } from '@/pages/PatientLogin'
+import { PatientRegistration } from '@/pages/PatientRegistration'
 import { PatientDashboard } from '@/pages/PatientDashboard'
 import { DoctorSearch } from '@/pages/DoctorSearch'
 import { PatientAppointments } from '@/pages/PatientAppointments'
 import { PatientInbox } from '@/pages/PatientInbox'
 import { PatientReports } from '@/pages/PatientReports'
 import { WeeklyReport } from '@/pages/WeeklyReport'
+import { PatientProfile } from '@/pages/PatientProfile'
+import { Landing } from '@/pages/Landing'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { ToastProvider } from '@/components/ui/Toast'
+import { apiClient } from '@/services/api'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -38,10 +43,25 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function PatientProtectedRoute({ children }: { children: React.ReactNode }) {
-  const patientToken = localStorage.getItem('patient_token')
-  const patientId = localStorage.getItem('patient_id')
+  const [checking, setChecking] = useState(true)
+  const [valid, setValid] = useState(false)
 
-  if (!patientToken || !patientId) {
+  useEffect(() => {
+    apiClient.get('/patient/me/profile')
+      .then(() => setValid(true))
+      .catch(() => setValid(false))
+      .finally(() => setChecking(false))
+  }, [])
+
+  if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-600 border-t-transparent" />
+      </div>
+    )
+  }
+
+  if (!valid) {
     return <Navigate to="/patient/login" replace />
   }
 
@@ -66,7 +86,11 @@ function AppRoutes() {
   return (
     <Routes>
       {/* ── Patient portal (/patient/*) ── */}
-      <Route path="/patient/login" element={<PatientLogin />} />
+      <Route path="/patient/login" element={
+        user ? <Navigate to="/dashboard" replace /> :
+        <PatientLogin />
+      } />
+      <Route path="/patient/register" element={<PatientRegistration />} />
       <Route element={<PatientLayout />}>
         <Route
           path="/patient/dashboard"
@@ -116,11 +140,26 @@ function AppRoutes() {
             </PatientProtectedRoute>
           }
         />
+        <Route
+          path="/patient/profile"
+          element={
+            <PatientProtectedRoute>
+              <PatientProfile />
+            </PatientProtectedRoute>
+          }
+        />
       </Route>
       <Route path="/patient/*" element={<Navigate to="/patient/login" replace />} />
 
       {/* ── Doctor app ── */}
-      <Route path="/login" element={!user ? <Login /> : <Navigate to="/dashboard" replace />} />
+      <Route path="/login" element={
+        user ? <Navigate to="/dashboard" replace /> :
+        <Login />
+      } />
+      <Route path="/register" element={
+        user ? <Navigate to="/dashboard" replace /> :
+        <Register />
+      } />
       <Route
         element={
           <ProtectedRoute>
@@ -136,10 +175,30 @@ function AppRoutes() {
         <Route path="/weekly-report" element={<WeeklyReport />} />
         <Route path="/patients/:id" element={<PatientDetail />} />
       </Route>
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/" element={<RootRedirect />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
+}
+
+function RootRedirect() {
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-600 border-t-transparent" />
+      </div>
+    )
+  }
+
+  // Doctor logged in → doctor dashboard
+  if (user) {
+    return <Navigate to="/dashboard" replace />
+  }
+
+  // Not logged in → landing page
+  return <Landing />
 }
 
 export default function App() {

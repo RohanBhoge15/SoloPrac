@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { apiClient } from '@/services/api'
 
 interface User {
   id: string
@@ -13,10 +14,9 @@ interface User {
 interface AuthContextType {
   user: User | null
   loading: boolean
-  login: (accessToken: string, refreshToken: string) => void
-  googleLogin: () => void
+  login: (email: string, password: string) => Promise<void>
   devLogin: () => Promise<void>
-  logout: () => void
+  logout: () => Promise<void>
   initializeAuth: () => Promise<void>
 }
 
@@ -29,11 +29,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const { data: userData, refetch } = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: async () => {
-      const res = await fetch('/api/v1/auth/me')
-      if (!res.ok) throw new Error('Not authenticated')
-      return res.json()
+      const res = await apiClient.get('/auth/me')
+      return res.data
     },
-    enabled: !!localStorage.getItem('access_token'),
+    // enabled when we have cookies (no localStorage check needed)
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
@@ -45,42 +44,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(false)
   }, [userData])
 
-  const login = (accessToken: string, refreshToken: string) => {
-    localStorage.setItem('access_token', accessToken)
-    localStorage.setItem('refresh_token', refreshToken)
-    refetch()
+  const login = async (email: string, password: string) => {
+    const res = await apiClient.post('/auth/login', { email, password })
+    if (!res.data || res.data.status !== 'ok') {
+      throw new Error('Login failed')
+    }
+    // No localStorage - cookies are set by backend
+    await refetch()
   }
 
-  const logout = () => {
-    localStorage.removeItem('access_token')
-    localStorage.removeItem('refresh_token')
+  const logout = async () => {
+    try {
+      await apiClient.post('/auth/logout')
+    } catch {
+      // Ignore errors
+    }
+    // No localStorage to clear - cookies are cleared by backend
     setUser(null)
   }
 
-  const googleLogin = () => {
-    window.location.href = '/api/v1/auth/login/google'
-  }
-
   const devLogin = async () => {
-    const res = await fetch('/api/v1/auth/dev-login', { method: 'POST' })
-    if (!res.ok) throw new Error('Dev login failed')
-    const data = await res.json()
-    login(data.access_token, data.refresh_token)
+    const res = await apiClient.post('/auth/dev-login')
+    if (!res.data || res.data.status !== 'ok') {
+      throw new Error('Dev login failed')
+    }
+    await refetch()
   }
 
   const initializeAuth = async () => {
-    if (localStorage.getItem('access_token')) {
-      try {
-        await refetch()
-      } catch {
-        logout()
-      }
+    try {
+      await refetch()
+    } catch {
+      // Not authenticated
     }
     setLoading(false)
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, googleLogin, devLogin, logout, initializeAuth }}>
+    <AuthContext.Provider value={{ user, loading, login, devLogin, logout, initializeAuth }}>
       {children}
     </AuthContext.Provider>
   )

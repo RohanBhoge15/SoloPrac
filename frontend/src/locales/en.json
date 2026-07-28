@@ -1,0 +1,134 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "patients": "Patients",
+    "calendar": "Calendar",
+    "documents": "Documents",
+    "scratchpad": "Scratchpad",
+    "settings": "Settings",
+    "search": "Find a Doctor",
+    "profile": "My Profile",
+    "appointments": "My Appointments",
+    "inbox": "Inbox",
+    "logout": "Logout"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "submit": "Submit",
+    "close": "Close",
+    "yes": "Yes",
+    "no": "No",
+    "all": "All",
+    "none": "None",
+    "required": "Required",
+    "optional": "Optional"
+  },
+  "auth": {
+    "login": "Login",
+    "register": "Register",
+    "email": "Email",
+    "password": "Password",
+    "confirmPassword": "Confirm Password",
+    "forgotPassword": "Forgot Password?",
+    "loginTitle": "Doctor Portal",
+    "registerTitle": "Create Account",
+    "noAccount": "Don't have an account?",
+    "hasAccount": "Already have an account?"
+  },
+  "patient": {
+    "name": "Patient Name",
+    "phone": "Phone",
+    "dob": "Date of Birth",
+    "gender": "Gender",
+    "address": "Address",
+    "bloodGroup": "Blood Group",
+    "allergies": "Allergies",
+    "conditions": "Known Conditions",
+    "height": "Height (cm)",
+    "weight": "Weight (kg)",
+    "emergencyContact": "Emergency Contact",
+    "insurance": "Insurance Info"
+  },
+  "doctor": {
+    "clinicName": "Clinic Name",
+    "clinicAddress": "Clinic Address",
+    "speciality": "Speciality",
+    "registrationNumber": "Registration Number",
+    "pincode": "PIN Code",
+    "location": "Practice Location"
+  },
+  "settings": {
+    "profile": "Profile",
+    "notifications": "Notifications",
+    "schedule": "Schedule",
+    "security": "Security",
+    "billing": "Billing",
+    "saveChanges": "Save Changes",
+    "saved": "Saved!"
+  },
+  "appointment": {
+    "book": "Book Appointment",
+    "availableSlots": "Available Slots",
+    "noSlots": "No slots available this week",
+    "booked": "Booked! Check your appointments.",
+    "bookingFailed": "Booking failed. Please try again.",
+    "consent": "I consent to telemedicine consultation as per the Telemedicine Practice Guidelines (2020). I understand that this consultation is not a substitute for in-person examination.",
+    "reason": "Reason for visit"
+  },
+  "search": {
+    "findDoctor": "Find a Doctor",
+    "searchPlaceholder": "Search by name, clinic, or speciality...",
+    "pincodePlaceholder": "PIN code",
+    "noDoctors": "No doctors found. Try a different search.",
+    "allSpecialities": "All"
+  },
+  "documents": {
+    "upload": "Upload Document",
+    "view": "View Document",
+    "type": "Document Type",
+    "date": "Date",
+    "description": "Description"
+  },
+  "prescription": {
+    "title": "Prescription",
+    "diagnosis": "Diagnosis",
+    "medications": "Medications",
+    "instructions": "Instructions",
+    "followUp": "Follow Up",
+    "generate": "Generate Prescription"
+  },
+  "invoice": {
+    "title": "Invoice",
+    "consultationFee": "Consultation Fee",
+    "medicineCost": "Medicine Cost",
+    "total": "Total",
+    "paid": "Paid",
+    "pending": "Pending",
+    "generate": "Generate Invoice"
+  },
+  "consent": {
+    "title": "Privacy & Consent",
+    "dataSharing": "Data Sharing",
+    "dataSharingDesc": "Allow sharing your data with healthcare providers",
+    "marketing": "Marketing Communications",
+    "marketingDesc": "Receive health tips and promotional offers",
+    "research": "Research Use",
+    "researchDesc": "Allow anonymized data use for medical research"
+  },
+  "erasure": {
+    "title": "Data Erasure",
+    "warning": "This will permanently anonymize your personal information. Clinical records will be preserved for audit compliance.",
+    "confirm": "I understand this action cannot be undone",
+    "button": "Erase My Data"
+  }
+}

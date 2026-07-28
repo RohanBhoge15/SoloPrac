@@ -2,7 +2,7 @@
 
 > A multimodal, agentic clinical operating system for solo medical practitioners in India, built around a **version-controlled patient intelligence layer** with **tiered doctor verification** and **cross-clinic patient identity**.
 
-## 🎯 Vision
+## Vision
 
 Every solo GP in India deserves clinical intelligence that matches hospital systems — without the cost, complexity, or vendor lock-in. SoloPrac AI makes this possible by combining:
 
@@ -15,7 +15,7 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -34,15 +34,15 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 └──┬─────────┬─────────┬─────────┬───────────────────────────────┘
    │         │         │         │
 ┌──▼──┐  ┌──▼──┐  ┌──▼──┐  ┌──▼───────┐
-│ PG  │  │Qdrant│ │Redis │ │Langfuse  │
-│16+  │  │Hybrid│ │arq   │ │Observab. │
-│RLS  │  │Vectors│ │Queue │ │+Tracing  │
+│ PG  │  │Qdrant│ │Redis │ │MinIO S3  │
+│16+  │  │Hybrid│ │arq   │ │Object    │
+│RLS  │  │Vectors│ │Queue │ │Storage   │
 └─────┘  └──────┘  └──────┘  └──────────┘
 ```
 
 ---
 
-## ✨ Features
+## Features
 
 ### Core Clinical Workflow
 | Feature | Description |
@@ -66,56 +66,71 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 | Feature | Description |
 |---------|-------------|
 | **Smart Document Engine** | Auto-routes: Docling (typed PDF) → Surya (scanned) → Nanonets-OCR2 (handwritten) → MedGemma fallback |
+| **OCR Quality Alerts** | Detects blur, low contrast, bad brightness, low resolution — warns doctor before processing |
 | **Wound/Skin Comparison** | ORB feature matching + homography overlay + AI clinical summary |
 | **Scratchpad** | Drag-drop any PDF/image → extract → "Save to Patient" |
+| **Voice-to-Text** | Mic buttons on PrescriptionBox and ChatUI — faster-whisper + IndicWhisper for Hindi |
 
 ### Scheduling & Voice
 | Feature | Description |
 |---------|-------------|
 | **Semantic Calendar** | 9 LangGraph tools: book, reschedule, cancel, bulk, block, smart-rearrange, NL query |
+| **Booking Dialog** | Click empty slot → patient search → date/time → reason → book (with race condition protection) |
 | **Voice Scheduling** | 5 locked commands in Hindi/English → ASR → intent → tools → TTS confirmation |
 | **Doctor-Off Handling** | "I'm off Fri-Sat" → blocks → smart-rearranges → drafts personalized emails → approval screen |
 
 ### Patient-Facing
 | Feature | Description |
 |---------|-------------|
-| **Doctor Search + Map** | Leaflet.js + OpenStreetMap (free, no API key) |
-| **Self-Booking** | See real availability → book → instant confirmation |
-| **Report Inbox** | Prescriptions, invoices, certificates as PDF |
-| **AI Notifications** | Maverick generates contextual messages per event type |
+| **Doctor Search + Map** | OpenStreetMap (free, no API key) with PostGIS radius search + PIN code search |
+| **Self-Booking** | See real availability → book → instant confirmation with telemedicine consent |
+| **Report Inbox** | Prescriptions, invoices, certificates as PDF — downloadable from patient portal |
+| **Document Timeline** | Unified chronological view of all patient documents with version citations |
+| **AI Notifications** | Maverick generates contextual messages per event type via WebSocket |
+| **Patient Profile** | Auto-populated demographics from registration — fills booking form automatically |
+| **Consent Management** | DPDP-compliant consent tracking + data erasure (anonymize PII, preserve clinical records) |
 
 ### Billing & Documents
 | Feature | Description |
 |---------|-------------|
-| **Prescription Box** | AI draft → JSON schema validated → in-app highlight → print-ready PDF |
+| **Prescription Box** | AI draft → JSON schema validated → doctor approves → version created → print-ready PDF |
 | **Invoice/Billing** | Auto from consult, line items, tax, status tracking, QR code |
 | **Medical Certificates** | Type-based templates (sick leave, fitness, school) → QR verification |
+| **State-Specific Prescriptions** | 24 Indian states' regulatory header/footer text applied automatically |
 
 ### Security & Compliance
-- **Multi-tenant RLS** on every table via PostgreSQL Row-Level Security
-- **PII encryption** (pgcrypto) for phone, email, address
-- **Append-only audit log** — every read/write/AI-suggestion/export logged
-- **Structured LLM output** — JSON Schema prevents prompt injection
-- **Rate limiting** per doctor (protects free-tier quotas)
+| Feature | Description |
+|---------|-------------|
+| **Multi-tenant RLS** | PostgreSQL Row-Level Security on every patient-bearing table |
+| **PII Encryption** | pgcrypto for phone, email, address columns |
+| **PII De-identification** | Strip pseudonyms at indexer, tools, and synthesizer boundaries |
+| **Append-only Audit Log** | Every read/write/AI-suggestion/export logged |
+| **Rate Limiting** | Per-doctor RPM limits via slowapi |
+| **Sentry Error Tracking** | Backend + frontend error monitoring (opt-in via DSN) |
+| **Offline PWA** | Service worker with Workbox caching for offline access |
+| **Permissions-Policy** | Browser geolocation API enabled for map features |
+
+### Doctor Profile
+| Feature | Description |
+|---------|-------------|
+| **Profile Photo** | Upload + oval crop with drag-to-position and zoom control |
+| **NMC Verification** | Registration number + state medical council + year — verified via NMC API or admin review |
+| **Years of Experience** | Computed from year_of_registration — zero maintenance, auto-updates yearly |
+| **Profile Completion Banner** | Amber prompt when verification is incomplete — drives search visibility |
+| **Multi-Device Sessions** | Track active sessions, revoke individual devices |
+| **State Selection** | Doctor's state controls which prescription regulatory header is applied |
+
+### Developer Experience
+| Feature | Description |
+|---------|-------------|
+| **Alembic Migrations** | Database schema versioning with baseline migration |
+| **Hindi UI** | react-i18next with full translation files — language switcher in user menu |
+| **Sentry DSN** | Environment-variable-driven error tracking |
+| **Backup System** | pg_dump to MinIO with restore capability |
 
 ---
 
-## 📚 Research Contributions (IEEE Paper)
-
-| Feature | Section | Contribution |
-|---------|---------|--------------|
-| **A — Temporal Multimodal RAG** | Sec III | Time-aware clinical retrieval with formal scoring |
-| **B — Self-Planning Agent** | Sec IV | Dynamic plan-execute-critic for medical workflows |
-| **C — Cross-Modal Retrieval** | Sec V | Linear projector BiomedCLIP→BGE-M3 with InfoNCE |
-| **D — Schema Alignment** | Sec VI | Zero-shot document-to-EMR mapping with critic loop |
-| **E — Trajectory Clustering** | Sec VI | HDBSCAN + Mahalanobis on clinical embeddings |
-| **F — Significance Reports** | Sec VI | Tiered clinical significance for automated digests |
-
-> **Evaluation methodology:** See [`docs/research/research_features_evaluation_method.md`](docs/research/research_features_evaluation_method.md) for how to produce real, publishable numbers (baselines, ablation tables, LLM-as-judge, datasets) for each feature.
-
----
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Docker Desktop 4.30+
@@ -130,14 +145,17 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 git clone https://github.com/RohanBhoge15/SoloPrac.git
 cd SoloPrac
 
-# Start all services (Postgres, Qdrant, Redis, Langfuse, Caddy, Backend, Frontend)
+# Start all services (Postgres, Qdrant, Redis, MinIO, Backend)
 docker compose up -d
 
 # Backend logs
 docker compose logs -f backend
 
+# Run migrations
+cd backend && alembic upgrade head
+
 # Frontend dev server (separate terminal)
-cd frontend && pnpm dev
+cd frontend && npm run dev
 ```
 
 ### Services
@@ -146,13 +164,30 @@ cd frontend && pnpm dev
 | **Frontend** | http://localhost:5173 |
 | **Backend API** | http://localhost:8000 |
 | **API Docs (OpenAPI)** | http://localhost:8000/docs |
-| **Langfuse** | http://localhost:3000 |
 | **Qdrant** | http://localhost:6333 |
 | **PostgreSQL** | localhost:5432 |
+| **MinIO Console** | http://localhost:9001 |
+| **Redis** | localhost:6379 |
+
+### Environment Variables
+```bash
+# .env (required)
+JWT_SECRET_KEY=generate_strong_secret
+ENCRYPTION_KEY=generate_32_byte_hex
+POSTGRES_PASSWORD=generate_strong_password
+NIM_API_KEY=your_nvidia_nim_key
+GROQ_API_KEY=your_groq_key
+
+# Optional
+SENTRY_DSN=your_sentry_dsn
+VITE_SENTRY_DSN=your_sentry_dsn
+NMC_API_URL=  # empty = localhost direct verify
+NMC_API_KEY=  # empty = admin review fallback
+```
 
 ---
 
-## 📦 Deployment (Oracle Cloud Free Tier)
+## Deployment (Oracle Cloud Free Tier)
 
 ```bash
 # 1. Provision Oracle Cloud Free Tier instance (4 OCPU ARM, 24GB RAM)
@@ -166,35 +201,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ---
 
-## 🧪 Running Evaluations
-
-> **Methodology:** For how to turn these endpoints into publishable paper numbers (baselines, ablation tables, datasets, doctor study), see [`docs/research/research_features_evaluation_method.md`](docs/research/research_features_evaluation_method.md).
-
-Evaluations run via API endpoints (no separate scripts needed):
-
-```bash
-# Feature A: Full eval suite (Temporal RAG + baselines)
-curl -X POST http://localhost:8000/api/v1/evaluation/run
-
-# Feature B: Self-planning (100-query test set)
-curl -X POST http://localhost:8000/api/v1/evaluation/feature-b
-
-# Feature C: Cross-modal projector (trains + evaluates)
-curl -X POST "http://localhost:8000/api/v1/evaluation/feature-c?num_pairs=200"
-
-# Feature E: Trajectory clustering (synthetic cohort)
-curl -X POST "http://localhost:8000/api/v1/evaluation/feature-e?num_patients=100"
-
-# Feature F: Likert study design
-curl -X GET http://localhost:8000/api/v1/weekly-report/likert-study
-
-# Feature D: Schema alignment (via document upload)
-curl -X POST -F "file=@prescription.pdf" http://localhost:8000/api/v1/documents/parse
-```
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 SoloPrac/
@@ -204,6 +211,7 @@ SoloPrac/
 │   │   ├── services/           # Business logic + research features
 │   │   ├── agents/             # LangGraph agent (planner, router, tools)
 │   │   ├── middleware/         # Audit log, RLS identity middleware
+│   │   ├── utils/              # Phone normalization, helpers
 │   │   ├── uploads/            # Uploaded documents, images
 │   │   ├── config.py           # Settings via pydantic-settings
 │   │   ├── database.py         # Async SQLAlchemy + init_db
@@ -211,15 +219,33 @@ SoloPrac/
 │   │   ├── models.py           # SQLAlchemy models (User, Doctor, Patient, etc.)
 │   │   ├── schemas.py          # Pydantic schemas
 │   │   └── main.py             # FastAPI entrypoint
+│   ├── alembic/                # Database migrations
+│   │   └── versions/
+│   │       └── 001_baseline.py
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── frontend/                   # React 19 + Vite
 │   ├── src/
 │   │   ├── components/        # shadcn/ui components
+│   │   │   ├── ImageCropModal.tsx   # Profile photo crop
+│   │   │   ├── MapPicker.tsx        # OpenStreetMap location picker
+│   │   │   ├── PrescriptionBox.tsx  # Rx with voice mic
+│   │   │   └── ChatUI.tsx          # Chat with voice mic
 │   │   ├── pages/             # Page components
+│   │   │   ├── Landing.tsx          # Professional landing page
+│   │   │   ├── Register.tsx         # Doctor registration
+│   │   │   ├── Login.tsx           # Login page
+│   │   │   ├── Calendar.tsx        # Calendar with booking dialog
+│   │   │   ├── Settings.tsx        # Profile photo, verification banner
+│   │   │   ├── DoctorSearch.tsx    # Patient doctor search
+│   │   │   ├── Scratchpad.tsx      # OCR with quality alerts
+│   │   │   └── PatientDetail.tsx   # Document timeline
 │   │   ├── hooks/             # Custom React hooks
 │   │   ├── services/          # API clients
 │   │   ├── store/             # Zustand stores
+│   │   ├── locales/           # i18n translation files
+│   │   │   ├── en.json
+│   │   │   └── hi.json
 │   │   └── main.tsx
 │   ├── package.json
 │   ├── tailwind.config.js
@@ -229,39 +255,52 @@ SoloPrac/
 │   ├── architecture/          # System, DB, Agent architecture
 │   ├── research/              # Lit survey, gap analysis, market research
 │   ├── planning/              # Proposal, feasibility, Gantt, requirements
-│   └── images/                # Mermaid diagrams (PNG + source)
+│   └── demo-flow.md
 ├── docker-compose.yml
 ├── Caddyfile
 ├── init-schema.sql
+├── UpdatedIdea.MD
 └── README.md
 ```
 
 ---
 
-## 📊 Tech Stack Summary
+## Tech Stack Summary
 
 | Category | Technology |
 |----------|------------|
-| **Frontend** | React 19, Vite, TypeScript, Tailwind, shadcn/ui, Framer Motion, TanStack Query, Zustand, cmdk, Leaflet |
-| **Backend** | FastAPI, Pydantic v2, SQLAlchemy 2.0, arq, LangGraph |
+| **Frontend** | React 19, Vite, TypeScript, Tailwind, shadcn/ui, Framer Motion, TanStack Query, Zustand, cmdk, Leaflet, react-i18next, vite-plugin-pwa |
+| **Backend** | FastAPI, Pydantic v2, SQLAlchemy 2.0, arq, LangGraph, Alembic |
 | **Database** | PostgreSQL 16 + PostGIS, Qdrant, Redis |
+| **Object Storage** | MinIO S3 (avatars, documents, PDFs) |
 | **LLMs** | Llama-4 Maverick (NIM), Llama-3.1-8B (NIM), MedGemma-4B (local) |
-| **AI/ML** | MedCPT, BGE-M3, BiomedCLIP, faster-whisper, IndicWhisper, Indic-Parler-TTS, OpenCV ORB |
+| **AI/ML** | MedCPT, BGE-M3, BiomedCLIP, faster-whisper, IndicWhisper, OpenCV ORB |
 | **Document** | Docling, Surya, Nanonets-OCR2-1.5B-exp |
 | **PDF** | Jinja2, Playwright, ECharts |
-| **Observability** | Langfuse (self-hosted) |
+| **Observability** | Langfuse (self-hosted), Sentry (opt-in) |
 | **Infrastructure** | Docker Compose, Caddy, Oracle Cloud Free Tier |
 | **Maps** | Leaflet.js + OpenStreetMap (zero cost) |
+| **Auth** | Email + password (bcrypt), HttpOnly cookies, JWT |
+| **Compliance** | DPDP Act (consent records, data erasure), NMC verification |
 
 ---
 
-## 📝 License
+## Research Contributions (IEEE Paper)
 
-MIT License — Free for academic and research use.
+| Feature | Section | Contribution |
+|---------|---------|--------------|
+| **A — Temporal Multimodal RAG** | Sec III | Time-aware clinical retrieval with formal scoring |
+| **B — Self-Planning Agent** | Sec IV | Dynamic plan-execute-critic for medical workflows |
+| **C — Cross-Modal Retrieval** | Sec V | Linear projector BiomedCLIP→BGE-M3 with InfoNCE |
+| **D — Schema Alignment** | Sec VI | Zero-shot document-to-EMR mapping with critic loop |
+| **E — Trajectory Clustering** | Sec VI | HDBSCAN + Mahalanobis on clinical embeddings |
+| **F — Significance Reports** | Sec VI | Tiered clinical significance for automated digests |
+
+> **Evaluation methodology:** See [`docs/research/research_features_evaluation_method.md`](docs/research/research_features_evaluation_method.md) for how to produce real, publishable numbers (baselines, ablation tables, LLM-as-judge, datasets) for each feature.
 
 ---
 
-## 🤝 Team
+## Team
 
 | Member | Role | GitHub |
 |--------|------|--------|
@@ -272,7 +311,7 @@ MIT License — Free for academic and research use.
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **NVIDIA NIM** for free-tier Llama 4 Maverick access
 - **Groq** for free-tier Llama 3.2 90B Vision
@@ -281,10 +320,11 @@ MIT License — Free for academic and research use.
 - **Oracle Cloud** for Forever Free Tier infrastructure
 - **Langfuse** for self-hosted observability
 - **OpenStreetMap** for free map tiles
+- **Sentry** for error tracking
 
 ---
 
-## 📄 Citation
+## Citation
 
 If you use SoloPrac AI in your research, please cite:
 
@@ -296,3 +336,9 @@ If you use SoloPrac AI in your research, please cite:
   year={2025}
 }
 ```
+
+---
+
+## License
+
+MIT License — Free for academic and research use.

@@ -235,6 +235,7 @@ async def create_appointment(
     reason: str = "",
     source: str = "manual",
     send_notification: bool = True,
+    telemedicine_consent: bool = False,
 ) -> Dict[str, Any]:
     """Create a new appointment with patient preference logging.
 
@@ -248,13 +249,15 @@ async def create_appointment(
     if not patient:
         raise ValueError("Patient not found")
 
-    # Fetch doctor for notification
+    # Lock doctor row to prevent concurrent double-booking (SELECT FOR UPDATE)
     doc_result = await db.execute(
-        select(Doctor).where(Doctor.id == doctor_id)
+        select(Doctor).where(Doctor.id == doctor_id).with_for_update()
     )
     doctor = doc_result.scalar_one_or_none()
+    if not doctor:
+        raise ValueError("Doctor not found")
 
-    # Check for conflicts
+    # Check for conflicts (safe: doctor row is locked, no concurrent booking can sneak in)
     conflict = await db.execute(
         select(Appointment).where(
             Appointment.doctor_id == doctor_id,
@@ -276,6 +279,8 @@ async def create_appointment(
         reason=reason,
         status="scheduled",
         source=source,
+        telemedicine_consent=telemedicine_consent,
+        telemedicine_consent_at=datetime.now(timezone.utc) if telemedicine_consent else None,
     )
     db.add(apt)
     await db.flush()

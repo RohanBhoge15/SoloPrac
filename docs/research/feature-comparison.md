@@ -2,7 +2,7 @@
 
 ## 1. Comparison Methodology
 
-Systems were evaluated across 15 feature dimensions relevant to solo medical practitioners. Scoring: ✅ (Full support), ⚠️ (Partial), ❌ (Not supported), — (Not applicable).
+Systems were evaluated across 20 feature dimensions relevant to solo medical practitioners. Scoring: ✅ (Full support), ⚠️ (Partial), ❌ (Not supported), — (Not applicable).
 
 ---
 
@@ -26,13 +26,17 @@ Systems were evaluated across 15 feature dimensions relevant to solo medical pra
 | Wound Photo Comparison (ORB) | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
 | Medical Image Analysis (VLM) | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Document OCR Pipeline | **✅** | ⚠️ | ❌ | ❌ | ❌ |
+| OCR Quality Alerts | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Voice-to-Text (PrescriptionBox) | **✅** | ❌ | ❌ | ❌ | ❌ |
 | **Calendar & Scheduling** | | | | | |
 | Appointment Management | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Voice Scheduling (Hindi+English) | **✅** | ❌ | ❌ | ❌ | ❌ |
-| Smart Reschedule with Preferences | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Booking Dialog with Patient Search | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Race Condition Protection | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Patient Self-Booking Portal | **✅** | ⚠️ | ✅ | ✅ | ❌ |
 | **Documents & Billing** | | | | | |
 | AI Prescription Generation | **✅** | ❌ | ❌ | ❌ | ❌ |
+| State-Specific Prescriptions | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Invoice/Billing | **✅** | ✅ | ✅ | ✅ | ✅ |
 | Medical Certificates with QR | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
 | Weekly AI Reports | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
@@ -40,23 +44,35 @@ Systems were evaluated across 15 feature dimensions relevant to solo medical pra
 | Hindi Speech Recognition | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Hindi Text-to-Speech | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Voice-Only Scheduling Scope | **✅** | ❌ | ❌ | ❌ | ❌ |
-| **Identity & Trust (NEW)** | | | | | |
+| **Identity & Trust** | | | | | |
 | Cross-Clinic Patient Identity | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
 | Tiered Doctor Verification | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
+| NMC Verification | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Email/Password Registration | **✅** | ✅ | ✅ | ✅ | ✅ |
-| Doctor Public Profile + Trust Badge | **✅ Novel** | ❌ | ❌ | ❌ | ❌ |
-| Admin Verification Dashboard | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Doctor Profile Photo | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Years Experience Display | **✅** | ❌ | ❌ | ❌ | ❌ |
+| **Patient Portal** | | | | | |
+| Doctor Search + Map | **✅** | ❌ | ✅ | ✅ | ❌ |
+| PIN Code Search | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Telemedicine Consent | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Document Timeline | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Patient PDF Downloads | **✅** | ❌ | ✅ | ✅ | ❌ |
+| DPDP Consent Management | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Data Erasure (Right to be Forgotten) | **✅** | ❌ | ❌ | ❌ | ❌ |
 | **Technical** | | | | | |
 | Multi-Tenant RLS | **✅** | ⚠️ | ✅ | ✅ | ✅ |
 | Audit Log (Medico-Legal) | **✅** | ✅ | ✅ | ✅ | ✅ |
 | PII Encryption at Rest | **✅** | ❌ | ✅ | ✅ | ❌ |
+| PII De-identification | **✅** | ❌ | ❌ | ❌ | ❌ |
 | Free Tier Deployment | **✅** | ✅ | ❌ | ❌ | ✅ |
 | Open Source | **✅** | ✅ | ❌ | ❌ | ✅ |
-| Offline Mode | ❌ | ✅ | ❌ | ✅ | ✅ |
+| Offline Mode (PWA) | **✅** | ✅ | ❌ | ✅ | ✅ |
+| Sentry Error Tracking | **✅** | ❌ | ❌ | ❌ | ❌ |
 | **Language & Localization** | | | | | |
 | Hindi UI | **✅** | ❌ | ⚠️ | ❌ | ❌ |
-| Indian Drug Database | **✅** | ⚠️ | ✅ | ❌ | ❌ |
 | OpenStreetMap Doctor Search | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Multi-Device Sessions | **✅** | ❌ | ❌ | ❌ | ❌ |
+| Backup System | **✅** | ❌ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -80,25 +96,17 @@ Systems were evaluated across 15 feature dimensions relevant to solo medical pra
 | 1 | Voice scheduling (Hindi/English) | "I'm off Friday, handle it" — 5 seconds vs. 10 minutes |
 | 2 | AI prescription draft | 30 seconds vs. 3 minutes per Rx |
 | 3 | Document OCR (photos of old records) | Digitize 50 paper records in minutes |
-| 4 | Patient search with map | New patients can find and book instantly |
+| 4 | Patient search with map + PIN | New patients can find and book instantly |
 | 5 | AI-generated notifications | No manual effort to remind patients |
 | 6 | Wound photo comparison | Objective healing assessment over time |
+| 7 | Profile photo + verification badge | Builds patient trust |
+| 8 | Offline PWA | Works in areas with poor connectivity |
+| 9 | Hindi UI | Accessible to non-English-speaking staff |
 
 ---
 
 ## 4. Competitive Analysis Summary
 
-```
-                     Complexity
-                        ↑
-          Practo ───── Hospital EMRs
-         (Paid) │        (Bahmni)
-                │
-        OpenEMR │    ★ SoloPrac AI
-       (Free)   │    (Free + AI)
-                │
-                └──────────────────→ AI Capability
-                 Low                 High
-```
+SoloPrac AI occupies an **uncontested space**: free-tier stack + high AI capability + solo-GP focus + India compliance. No existing system combines these attributes.
 
-SoloPrac AI occupies an **uncontested space**: free-tier stack + high AI capability + solo-GP focus. No existing system combines these three attributes.
+**All 6 research features are implemented.** The system is ready for testing and IEEE paper evaluation.

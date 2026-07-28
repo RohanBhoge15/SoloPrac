@@ -32,6 +32,7 @@ from app.models import PatientVersion, Patient
 from app.services.embeddings import embedding_service
 from app.services.qdrant import qdrant_service
 from app.services.redis import redis_service
+from app.services.pii import strip_pii
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,12 @@ def _extract_search_text(version: PatientVersion) -> str:
 
     Uses the flattened state text. If the result is empty, falls back
     to the version summary.
+
+    PII (name, phone, email, address, national IDs, ...) is stripped BEFORE
+    flattening, so patient identity never enters the embedded text or the
+    Qdrant payload — only pseudonymous clinical data is indexed.
     """
-    state = version.state_jsonb or {}
+    state = strip_pii(version.state_jsonb or {})
     text = _flatten_state(state)
     if not text.strip():
         text = version.summary or f"Patient version {version.version_number}"

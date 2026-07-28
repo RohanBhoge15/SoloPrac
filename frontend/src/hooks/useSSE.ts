@@ -12,6 +12,16 @@ export interface SSEState {
   isStreaming: boolean
   trace: string[]
   response: string
+  citations: Array<{
+    version_number: number
+    date: string
+    summary?: string
+    score?: number
+    edit_type?: string
+    modality?: string
+    s3_key?: string
+    image_url?: string
+  }>
   error: string | null
   tookMs: number
 }
@@ -19,7 +29,7 @@ export interface SSEState {
 interface UseSSEOptions {
   onToken?: (text: string) => void
   onTrace?: (message: string) => void
-  onDone?: (response: string, trace: string[]) => void
+  onDone?: (response: string, trace: string[], citations: Array<{ version_number: number; date: string }>) => void
   onError?: (message: string) => void
 }
 
@@ -36,6 +46,7 @@ export function useSSE(options?: UseSSEOptions) {
     isStreaming: false,
     trace: [],
     response: '',
+    citations: [],
     error: null,
     tookMs: 0,
   })
@@ -48,6 +59,7 @@ export function useSSE(options?: UseSSEOptions) {
       isStreaming: false,
       trace: [],
       response: '',
+      citations: [],
       error: null,
       tookMs: 0,
     })
@@ -67,11 +79,12 @@ export function useSSE(options?: UseSSEOptions) {
       setState(prev => ({ ...prev, isConnected: true, isStreaming: true }))
 
       try {
+        const token = localStorage.getItem('access_token') || localStorage.getItem('patient_token')
         const response = await fetch('/api/v1/agent/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('access_token') || ''}`,
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
             query,
@@ -82,8 +95,7 @@ export function useSSE(options?: UseSSEOptions) {
         })
 
         if (!response.ok) {
-          const errorBody = await response.text()
-          throw new Error(`Server error ${response.status}: ${errorBody}`)
+          throw new Error(`HTTP ${response.status}`)
         }
 
         const reader = response.body?.getReader()
@@ -126,14 +138,16 @@ export function useSSE(options?: UseSSEOptions) {
                 } else if (eventType === 'done') {
                   currentResponse = data.response || currentResponse
                   currentTrace = data.trace_events || currentTrace
+                  const doneCitations = data.citations || []
                   setState(prev => ({
                     ...prev,
                     isStreaming: false,
                     response: currentResponse,
                     trace: currentTrace,
+                    citations: doneCitations,
                     tookMs: data.took_ms || 0,
                   }))
-                  options?.onDone?.(data.response, data.trace_events)
+                  options?.onDone?.(data.response, data.trace_events, doneCitations)
                 } else if (eventType === 'error') {
                   setState(prev => ({
                     ...prev,

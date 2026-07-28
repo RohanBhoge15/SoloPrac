@@ -1,7 +1,7 @@
 # SoloPrac Backend Routers
 
 from fastapi import APIRouter
-from app.routers import health, auth, patients, agent, images, evaluation, documents, security, prescriptions, certificates, invoices, calendar, portal, weekly_report, risk_alerts, admin
+from app.routers import health, auth, patients, agent, images, evaluation, documents, security, prescriptions, certificates, invoices, calendar, portal, weekly_report, risk_alerts, admin, dpdp, backup, voice, patient_documents
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health.router, tags=["health"])
@@ -13,6 +13,7 @@ api_router.include_router(evaluation.router, tags=["evaluation"])
 api_router.include_router(documents.router, tags=["documents"])
 api_router.include_router(security.router, tags=["security"])
 api_router.include_router(prescriptions.router, tags=["prescriptions"])
+api_router.include_router(prescriptions.approve_router, tags=["prescriptions"])
 api_router.include_router(certificates.router, tags=["certificates"])
 api_router.include_router(invoices.router, tags=["invoices"])
 api_router.include_router(calendar.router, tags=["calendar"])
@@ -22,3 +23,7 @@ api_router.include_router(portal.patient_router, tags=["portal-patient"])
 api_router.include_router(weekly_report.router, tags=["weekly_report"])
 api_router.include_router(risk_alerts.router, tags=["risk-alerts"])
 api_router.include_router(admin.router, tags=["admin"])
+api_router.include_router(dpdp.router, tags=["dpdp-consent"])
+api_router.include_router(backup.router, tags=["admin-backup"])
+api_router.include_router(voice.router, tags=["voice"])
+api_router.include_router(patient_documents.router, tags=["patient-documents"])

@@ -13,6 +13,7 @@ from app.models import Patient, PatientVersion, EDIT_TYPE_CHOICES
 from app.schemas import (
     PatientCreate, PatientRead, PatientVersionCreate, PatientVersionRead,
     PatientVersionTimeline, PatientVersionDiff,
+    PatientFieldUpdate, DemographicsPatch,
 )
 from app.dependencies import get_current_doctor
 from app.models import AuditLog
@@ -125,40 +126,31 @@ async def search_patients(
     doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search patients by name, phone, email, etc. across versions."""
-    # Search in head version demographics
-    # Use DB-side text search on patient version state_jsonb for better perf
+    """Search patients by name, phone, email, etc. across versions.
+    
+    Uses pg_trgm index on patient_versions.name for fast ILIKE search.
+    """
     from sqlalchemy import text
     q_safe = q.lower()
-    # Search via jsonb containment + text pattern on head version demographics
-    # We join patient -> head_version ON head_version_id = patient_versions.id
-    # and search demographics text fields within state_jsonb
-    # Use a lateral join approach for PostgreSQL jsonb search
-    # First, find all patients for this doctor, then narrow via head version search
+    
+    # Search via ILIKE on head version demographics (uses pg_trgm index)
     join_query = (
         select(Patient)
         .outerjoin(PatientVersion, PatientVersion.id == Patient.head_version_id)
         .where(Patient.doctor_id == doctor.id)
         .limit(limit)
     )
-    # Apply text search on the head version's state_jsonb demographics
-    # PostgreSQL 16 supports jsonb_path_exists or jsonb_text_pattern
-    # Use a simple ILIKE on demographics extracted as text
-    name_condition = func.lower(
-        func.coalesce(
-            PatientVersion.state_jsonb["demographics"]["name"].astext(), ''
-        )
-    ).contains(q_safe)
-    phone_condition = func.lower(
-        func.coalesce(
-            PatientVersion.state_jsonb["demographics"]["phone"].astext(), ''
-        )
-    ).contains(q_safe)
-    email_condition = func.lower(
-        func.coalesce(
-            PatientVersion.state_jsonb["demographics"]["email"].astext(), ''
-        )
-    ).contains(q_safe)
+    
+    # Use ILIKE with wildcards - this will use the pg_trgm GIN index
+    name_condition = func.coalesce(
+        PatientVersion.state_jsonb["demographics"]["name"].astext(), ''
+    ).ilike(f"%{q_safe}%")
+    phone_condition = func.coalesce(
+        PatientVersion.state_jsonb["demographics"]["phone"].astext(), ''
+    ).ilike(f"%{q_safe}%")
+    email_condition = func.coalesce(
+        PatientVersion.state_jsonb["demographics"]["email"].astext(), ''
+    ).ilike(f"%{q_safe}%")
 
     result = await db.execute(
         join_query.where(name_condition | phone_condition | email_condition)
@@ -168,13 +160,40 @@ async def search_patients(
     output = []
     for p in all_patients:
         name = f"Patient {str(p.id)[:8]}"
+        phone = None
+        gender = None
+        age = None
+        dob_str = None
         if p.head_version_id and p.head_version and p.head_version.state_jsonb:
             demo = p.head_version.state_jsonb.get("demographics", {})
-            if isinstance(demo, dict) and demo.get("name"):
-                name = demo["name"]
+            if isinstance(demo, dict):
+                if demo.get("name"):
+                    name = demo["name"]
+                phone = demo.get("phone")
+                gender = demo.get("gender")
+                dob_str = demo.get("dob")
+
+        # Compute initials from name
+        parts = name.strip().split()
+        initials = "".join(w[0].upper() for w in parts[:2]) if parts else "P"
+
+        # Compute age from dob
+        if dob_str:
+            try:
+                from datetime import date as _date
+                dob = _date.fromisoformat(dob_str)
+                today = _date.today()
+                age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+            except (ValueError, TypeError):
+                pass
+
         output.append({
             "id": str(p.id),
             "name": name,
+            "initials": initials,
+            "age": age,
+            "gender": gender,
+            "phone": phone,
             "head_version_id": str(p.head_version_id) if p.head_version_id else None,
             "updated_at": p.updated_at.isoformat() if p.updated_at else None,
         })
@@ -230,10 +249,36 @@ async def create_patient(
     doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new patient with an initial version (v1)."""
+    """Create a new patient with an initial version (v1).
+
+    If a User account exists with a matching phone number (from demographics),
+    the patient is automatically linked to that User.
+    """
+    # Check for existing User with matching phone (walk-in → user linking)
+    existing_user_id = None
+    phone = (payload.state_jsonb or {}).get("demographics", {}).get("phone", "")
+    if phone:
+        from app.utils.phone import normalize_phone
+        from app.models import User
+        normalized = normalize_phone(phone)
+        if len(normalized) == 10:
+            # Search users by phone (iterate — no index on plaintext phone)
+            user_result = await db.execute(select(User))
+            for u in user_result.scalars().all():
+                if u.phone:
+                    from app.utils.phone import phones_match
+                    if phones_match(u.phone, phone):
+                        existing_user_id = u.id
+                        logger.info(
+                            "Auto-linking walk-in patient to existing user %s (phone match)",
+                            u.id,
+                        )
+                        break
+
     patient = Patient(
         id=uuid.uuid4(),
         doctor_id=doctor.id,
+        user_id=existing_user_id,
     )
     db.add(patient)
     await db.flush()
@@ -420,12 +465,15 @@ async def revert_patient_to_version(
 @router.patch("/{patient_id}/fields", response_model=PatientVersionRead)
 async def patch_patient_fields(
     patient_id: uuid.UUID,
-    field_updates: dict,
+    field_updates: PatientFieldUpdate,
     expected_version: int = Query(..., ge=1, description="Optimistic lock — expected current version"),
     doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Inline field edit with optimistic locking on version_number (conflict → 409)."""
+    """Inline field edit with optimistic locking on version_number (conflict → 409).
+    
+    Only allows updating known demographic fields via PatientFieldUpdate schema.
+    """
     result = await db.execute(
         select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
     )
@@ -448,9 +496,21 @@ async def patch_patient_fields(
         )
 
     new_state = dict(head.state_jsonb or {})
-    new_state.update(field_updates)
-    if not new_state:
-        raise HTTPException(status_code=400, detail="No fields to update")
+    
+    # Apply validated updates
+    updated_fields = []
+    if field_updates.demographics is not None:
+        demo = field_updates.demographics.model_dump(exclude_none=True)
+        if not demo:
+            raise HTTPException(status_code=400, detail="No demographic fields to update")
+        
+        if "demographics" not in new_state:
+            new_state["demographics"] = {}
+        new_state["demographics"].update(demo)
+        updated_fields = list(demo.keys())
+
+    if not updated_fields:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
 
     new_version = await _mint_version(
         db, patient, doctor.id,
@@ -458,8 +518,8 @@ async def patch_patient_fields(
         edit_type="manual",
         author=f"doctor:{doctor.id}",
         parent_version_id=head.id,
-        summary=f"Updated {len(field_updates)} field(s): {', '.join(field_updates.keys())}",
-        tags=list(field_updates.keys()),
+        summary=f"Updated {len(updated_fields)} field(s): {', '.join(updated_fields)}",
+        tags=updated_fields,
         clinical_significance=0.3,
     )
     return _build_version_number(new_version)

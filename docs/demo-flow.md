@@ -1,22 +1,28 @@
 # Demo Flow — SoloPrac AI Walkthrough
 
 ## Overview
-5-minute scripted walkthrough covering all 12 weeks of features.
+5-minute scripted walkthrough covering all features.
 Suitable for mentor review, capstone presentation, and demo video.
 
 ---
 
-## 1. Login & Verification (60s)
-1. Open `http://localhost:5173`
-2. Click "Register with Email" → enter email + password + name → new doctor created (`verification_status: unverified`)
-3. Show you can access dashboard immediately as unverified doctor (private practice works)
-4. Click "Upload License" → submit registration number + license PDF → status becomes `pending_verification`
-5. Login as admin → `GET /admin/verifications/pending` → see pending doctor
-6. Click "Approve" → doctor becomes `verified`
-7. Logout, login as the verified doctor → profile shows "Verified Practice" badge
-8. (Alt: Click "Login with Google" to use OAuth flow)
+## 1. Landing Page & Registration (45s)
+1. Open `http://localhost:5173` — professional landing page with hero, features, how-it-works
+2. Click "Register" → `/register` page
+3. Fill form: name, email, phone, clinic name, clinic address, password
+4. Submit → new doctor created (`verification_status: unverified`)
+5. Show you can access dashboard immediately as unverified doctor
 
-## 2. Patient Timeline + Versioning (45s)
+## 2. Doctor Verification (30s)
+1. Go to Settings → Profile tab
+2. Show amber "Complete your profile" banner
+3. Fill: registration number, state medical council, year of registration
+4. Upload profile photo → oval crop modal with drag + zoom
+5. Submit → status becomes `pending_verification`
+6. Login as admin → `GET /admin/verifications/pending` → approve
+7. Doctor becomes `verified` — badge appears
+
+## 3. Patient Timeline + Versioning (45s)
 1. Click any patient → Timeline view loads
 2. Show version chain with dates and summaries
 3. Click a specific version → state displayed
@@ -24,69 +30,71 @@ Suitable for mentor review, capstone presentation, and demo video.
 5. Make an inline edit → new version created (show in sidebar)
 6. Click "Revert" → version rolled back
 
-## 3. AI Chat + Agent (45s)
+## 4. AI Chat + Voice Input (45s)
 1. Go to Chat page (`/chat`)
 2. Type: "What is this patient's BP trend?"
 3. Show SSE streaming: Router → Plan → Execute → Synthesize → Respond
 4. Click a citation chip `[v3 · Jan 15]` → jumps to that version
-5. Type: "Generate a prescription for Metformin 500mg"
-6. Show AI-assisted prescription created
+5. Click mic button → speak a question → text appears in input
+6. Type: "Generate a prescription for Metformin 500mg"
+7. Show AI-assisted prescription created + approval popup
 
-## 4. Document Parsing + OCR (30s)
+## 5. Document Parsing + OCR Quality Alerts (30s)
 1. Go to Scratchpad (`/scratchpad`)
-2. Upload a prescription PDF/image
-3. Show: parsing → schema alignment → extracted fields (Nanonets-OCR2 for handwritten)
-4. Click "Save to Patient" → document linked to patient
-
-## 5. Image Registration + Comparison (45s)
-1. Go to a patient → Images tab
-2. Upload a wound photo
-3. Upload a follow-up photo
-4. Click "Compare" → 3-panel view (Previous/Current/Overlay)
-5. Drag opacity slider → overlay blends
-6. Show metrics: area change %, edge convergence, color shift
-7. Click "Generate Clinical Summary" → Maverick summary appears
-8. Click "Save to Record" → summary saved
+2. Upload a blurry photo → amber quality warning appears
+3. Upload a clear prescription PDF/image
+4. Show: parsing → schema alignment → extracted fields
+5. Click "Save to Patient" → document linked to patient
 
 ## 6. Prescriptions / Invoices / Certificates (30s)
 1. Go to Prescription Box → add medications table
-2. Generate PDF → show preview with clinic letterhead + watermark
-3. Go to Invoices → add line items with auto-calculate
-4. Generate Invoice PDF with QR code
-5. Go to Certificates → select type → generate with verification code
+2. Click mic on diagnosis field → speak → text fills
+3. Generate PDF → show preview with state-specific regulatory header
+4. Approval popup → "Approve to Record" → version created
+5. Go to Invoices → add line items with auto-calculate
+6. Generate Invoice PDF with QR code
+7. Go to Certificates → select type → generate with verification code
 
-## 7. Calendar + Scheduling (45s)
+## 7. Calendar + Booking (45s)
 1. Go to Calendar (`/calendar`)
 2. Show weekly view with appointment blocks (colored by status)
-3. Click a free slot → booking modal
-4. Schedule appointment → confirmed
-5. Click existing appointment → detail modal
-6. Reschedule → appointment moved
-7. Cancel → two-step confirmation
-8. Go to Settings → Calendar tab → modify working hours
+3. Click a free slot → booking dialog opens
+4. Search patient by name → shows photo, age, gender
+5. Select date/time, add reason → book
+6. Show real-time update via WebSocket (no refresh needed)
+7. Click existing appointment → detail modal
+8. Reschedule → appointment moved
+9. Cancel → two-step confirmation
 
-## 8. Smart Scheduling + Voice (30s)
-1. Show "Find Optimal Window" → suggests best slot based on patient preference
-2. Demo "Doctor Off" scenario → affected appointments listed
-3. Smart Rearrange → proposed moves with accept/reject
-
-## 9. Patient Portal (30s)
-1. Open `/patient/login` in new tab/incognito
-2. Enter phone → receive OTP → SHA256 phone_hash lookup → login (cross-tenant User)
+## 8. Patient Portal (45s)
+1. Open `/patient/login` in new tab
+2. Login with email + password
 3. Show Patient Dashboard with appointment count + notifications
-4. Search for a doctor → Leaflet map with doctor locations (**only verified doctors shown**)
-5. Click doctor → see profile with `verification_status` badge ("Verified Practice" / "Practice Account")
-6. See available slots → book appointment (creates Patient row under that doctor with user_id)
-7. Show Inbox with real-time notifications via WebSocket
+4. Search for a doctor → PostGIS radius search + PIN code input
+5. Doctor cards show photo, name, years experience, distance
+6. Click doctor → see profile
+7. See available slots → book appointment (with telemedicine consent checkbox)
+8. Show Inbox with real-time notifications via WebSocket
+9. Show Reports → download prescription PDF
+10. Show Documents → unified timeline with version citations
+11. Show Consent → DPDP consent management
+12. Click "Delete Account" → data erasure confirmation
 
-## 10. Weekly Reports + Risk Alerts (30s)
-1. Go to Weekly Report page
-2. Select patient, choose layout (Executive/Clinical/Family-friendly)
-3. Generate report → significance-scored sections
-4. Show AI summary of the week
-5. Show Risk Alerts panel (Feature E) — trajectory drifts detected
+## 9. Settings & Profile (30s)
+1. Go to Settings → Profile tab
+2. Show profile photo with change-on-hover
+3. Show years of experience (computed from year_of_registration)
+4. Show state selector (controls prescription regulatory text)
+5. Show map picker (OpenStreetMap + Nominatim search + geolocation)
+6. Show multi-device sessions → revoke a session
+7. Switch language to Hindi → UI updates
 
-## Total: ~7 minutes
+## 10. Offline + Error Tracking (15s)
+1. Show service worker registration in DevTools
+2. Disconnect network → page still loads cached content
+3. Show Sentry DSN configuration (opt-in)
+
+## Total: ~5.5 minutes
 
 ---
 
@@ -96,4 +104,6 @@ Suitable for mentor review, capstone presentation, and demo video.
 - Open DevTools Network tab to show SSE streaming in Chat
 - Pre-generate a PDF for faster display
 - Use incognito window for patient portal demo
-- Mute microphone if voice features are unstable
+- Test voice features with quiet microphone
+- Show Hindi UI switch in user menu
+- Show OCR quality alert with a deliberately blurry image

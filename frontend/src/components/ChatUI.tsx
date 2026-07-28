@@ -6,9 +6,11 @@ import { cn } from '@/utils/helpers'
 import { Button } from '@/components/ui/Button'
 import { AgentTrace } from '@/components/AgentTrace'
 import { useSSE } from '@/hooks/useSSE'
+import apiClient from '@/services/api'
 import {
   Send,
   Mic,
+  MicOff,
   Square,
   Bot,
   User,
@@ -22,9 +24,12 @@ import {
 interface Citation {
   version_number: number
   date: string
-  summary: string
+  summary?: string
   score?: number
   edit_type?: string
+  modality?: string
+  s3_key?: string
+  image_url?: string
 }
 
 interface Message {
@@ -103,6 +108,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
   })
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(true)
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -133,7 +139,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
         return updated
       })
     },
-    onDone: (responseText, traceEvents) => {
+    onDone: (responseText, traceEvents, citations) => {
       setMessages(prev => {
         const updated = [...prev]
         const lastMsg = updated[updated.length - 1]
@@ -142,6 +148,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
             ...lastMsg,
             content: responseText,
             trace: traceEvents,
+            citations: citations,
             isStreaming: false,
           }
         }
@@ -198,9 +205,59 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
     }
   }
 
-  const handleMicClick = useCallback(() => {
-    setInput(prev => prev + (prev ? ' ' : '') + '[Voice input coming in Week 10]')
-  }, [])
+  const [chatRecording, setChatRecording] = useState(false)
+  const chatMediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const chatChunksRef = useRef<Blob[]>([])
+
+  const handleMicClick = useCallback(async () => {
+    if (chatRecording) {
+      chatMediaRecorderRef.current?.stop()
+      setChatRecording(false)
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm',
+      })
+      chatChunksRef.current = []
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chatChunksRef.current.push(e.data)
+      }
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(chatChunksRef.current, { type: 'audio/webm' })
+        if (blob.size < 1000) return
+
+        try {
+          const formData = new FormData()
+          formData.append('file', blob, `chat-voice-${Date.now()}.webm`)
+          const res = await apiClient.post('/voice/transcribe', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 30000,
+          })
+          const text = res.data?.text || ''
+          if (text) {
+            setInput(text)
+          }
+        } catch (err: any) {
+          const msg = err?.response?.status === 503
+            ? 'Voice transcription not available — ASR model not installed'
+            : 'Transcription failed'
+          console.warn('[ChatVoice]', msg, err)
+        }
+      }
+
+      chatMediaRecorderRef.current = mediaRecorder
+      mediaRecorder.start()
+      setChatRecording(true)
+    } catch (err) {
+      console.warn('[ChatVoice] Microphone access denied:', err)
+    }
+  }, [chatRecording])
 
   const handleSuggestionClick = useCallback((suggestion: string) => {
     setInput(suggestion)
@@ -272,16 +329,32 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
                 {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && !msg.isStreaming && (
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     {msg.citations.slice(0, 4).map((cite, i) => (
-                      <button
-                        key={`cite-${i}`}
-                        onClick={() => onCiteVersion?.(cite.version_number)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-colors"
-                      >
-                        <GitCommit className="h-2.5 w-2.5" />
-                        <span>v{cite.version_number}</span>
-                        <span className="text-gray-400">·</span>
-                        <span>{cite.date || 'recent'}</span>
-                      </button>
+                      <div key={`cite-${i}`} className="flex items-center gap-1">
+                        {cite.modality === 'image' && cite.s3_key && (
+                          <button
+                            type="button"
+                            onClick={() => cite.s3_key && setLightboxUrl(`/api/v1/agent/citation-url?s3_key=${encodeURIComponent(cite.s3_key)}`)}
+                            className="shrink-0"
+                          >
+                            <img
+                              src={`/api/v1/agent/citation-url?s3_key=${encodeURIComponent(cite.s3_key)}`}
+                              alt={`v${cite.version_number}`}
+                              className="h-8 w-8 rounded border border-gray-200 dark:border-gray-700 object-cover cursor-pointer hover:ring-2 hover:ring-primary-400 transition-all"
+                              loading="lazy"
+                              onError={(e) => { e.currentTarget.style.display = 'none' }}
+                            />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onCiteVersion?.(cite.version_number)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-colors"
+                        >
+                          <GitCommit className="h-2.5 w-2.5" />
+                          <span>v{cite.version_number}</span>
+                          <span className="text-gray-400">·</span>
+                          <span>{cite.date || 'recent'}</span>
+                        </button>
+                      </div>
                     ))}
                     {msg.citations.length > 4 && (
                       <span className="text-[10px] text-gray-400 self-center">
@@ -360,11 +433,14 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
             {!input && !isStreaming && (
               <button
                 onClick={handleMicClick}
-                className="absolute right-3 bottom-2.5 text-gray-400 hover:text-red-500 transition-colors"
-                aria-label="Voice input"
-                title="Voice input (coming Week 10)"
+                className={cn(
+                  'absolute right-3 bottom-2.5 transition-colors',
+                  chatRecording ? 'text-red-500 animate-pulse' : 'text-gray-400 hover:text-red-500',
+                )}
+                aria-label={chatRecording ? 'Stop recording' : 'Voice input'}
+                title={chatRecording ? 'Stop recording' : 'Voice input'}
               >
-                <Mic className="h-4 w-4" />
+                {chatRecording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
               </button>
             )}
           </div>
@@ -403,10 +479,40 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
 
         {!isStreaming && (
           <p className="text-[10px] text-gray-400 mt-2 max-w-3xl mx-auto">
-            AI responses are suggestions — requires doctor validation. Shift+Enter for new line.
+            AI responses are verified by AI — doctor review recommended. Shift+Enter for new line.
           </p>
         )}
       </div>
+
+      {/* Image lightbox */}
+      <AnimatePresence>
+        {lightboxUrl && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+            onClick={() => setLightboxUrl(null)}
+          >
+            <motion.img
+              initial={{ scale: 0.8 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.8 }}
+              src={lightboxUrl}
+              alt="Full size"
+              className="max-h-[85vh] max-w-[90vw] rounded-lg shadow-2xl object-contain"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              onClick={() => setLightboxUrl(null)}
+              className="absolute top-4 right-4 p-2 rounded-full bg-white/20 hover:bg-white/40 text-white transition-colors"
+            >
+              <span className="sr-only">Close</span>
+              ✕
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

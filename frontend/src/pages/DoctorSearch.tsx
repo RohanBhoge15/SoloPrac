@@ -9,6 +9,7 @@ import { Search, Clock, Stethoscope, Loader2, AlertCircle, CheckCircle } from 'l
 export function DoctorSearch() {
   const [query, setQuery] = useState('')
   const [speciality, setSpeciality] = useState('')
+  const [pincode, setPincode] = useState('')
   const [doctors, setDoctors] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -18,6 +19,19 @@ export function DoctorSearch() {
   const [bookingSlot, setBookingSlot] = useState<any>(null)
   const [booking, setBooking] = useState(false)
   const [booked, setBooked] = useState(false)
+  const [patientId, setPatientId] = useState<string>('')
+  const [telemedicineConsent, setTelemedicineConsent] = useState(false)
+
+  // Fetch patient ID from profile endpoint on mount
+  useEffect(() => {
+    apiClient.get('/patient/me/profile')
+      .then(res => {
+        if (res.data?.user_id) {
+          setPatientId(res.data.user_id)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     loadDoctors()
@@ -29,6 +43,7 @@ export function DoctorSearch() {
     try {
       const params: any = {}
       if (speciality) params.speciality = speciality
+      if (pincode) params.pincode = pincode
       if (query) params.q = query
       const res = await apiClient.get('/public/doctors/search', { params })
       setDoctors(res.data?.doctors || [])
@@ -59,7 +74,6 @@ export function DoctorSearch() {
   }
 
   const handleBookSlot = async (slot: any) => {
-    const patientId = localStorage.getItem('patient_id')
     if (!patientId) {
       window.location.href = '/patient/login'
       return
@@ -72,6 +86,7 @@ export function DoctorSearch() {
         start_at: slot.start,
         end_at: slot.end,
         reason: 'Online booking',
+        telemedicine_consent: telemedicineConsent,
       })
       setBookingSlot(slot)
       setBooked(true)
@@ -103,6 +118,14 @@ export function DoctorSearch() {
               <option value="Pediatrics">Pediatrics</option>
               <option value="Gynecology">Gynecology</option>
             </select>
+            <Input
+              value={pincode}
+              onChange={e => setPincode(e.target.value)}
+              placeholder="PIN code"
+              maxLength={6}
+              className="w-28"
+              onKeyDown={e => e.key === 'Enter' && handleSearch()}
+            />
             <Button onClick={handleSearch} disabled={loading}>
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Search'}
             </Button>
@@ -121,13 +144,20 @@ export function DoctorSearch() {
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
-                      <span className="text-lg font-bold text-primary-700">{doc.name.split(' ').map((n: string) => n[0]).join('')}</span>
-                    </div>
+                    {doc.photo_url ? (
+                      <img src={doc.photo_url} alt={doc.name} className="h-12 w-12 rounded-full object-cover" />
+                    ) : (
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
+                        <span className="text-lg font-bold text-primary-700">{doc.name.split(' ').map((n: string) => n[0]).join('')}</span>
+                      </div>
+                    )}
                     <div>
                       <p className="font-medium text-gray-900 dark:text-white">{doc.name}</p>
                       <p className="text-sm text-gray-500 flex items-center gap-1"><Stethoscope className="h-3 w-3" /> {doc.speciality}</p>
                       {doc.clinic_name && <p className="text-xs text-gray-400">{doc.clinic_name}</p>}
+                      {doc.years_experience != null && (
+                        <p className="text-xs text-gray-400">{doc.years_experience} years experience</p>
+                      )}
                     </div>
                   </div>
                   <Badge variant="outline">{doc.clinic_address?.split(',')[0] || 'Available'}</Badge>
@@ -143,15 +173,30 @@ export function DoctorSearch() {
               <Card>
                 <CardHeader><CardTitle className="text-sm">{selectedDoctor.name}</CardTitle></CardHeader>
                 <CardContent className="text-sm space-y-1">
+                  {selectedDoctor.photo_url && (
+                    <img src={selectedDoctor.photo_url} alt={selectedDoctor.name} className="h-16 w-16 rounded-full object-cover mx-auto mb-2" />
+                  )}
                   <p><span className="text-gray-500">Speciality:</span> {selectedDoctor.speciality}</p>
                   <p><span className="text-gray-500">Clinic:</span> {selectedDoctor.clinic_name || 'N/A'}</p>
                   <p><span className="text-gray-500">Address:</span> {selectedDoctor.clinic_address || 'N/A'}</p>
+                  {selectedDoctor.years_experience != null && (
+                    <p><span className="text-gray-500">Experience:</span> {selectedDoctor.years_experience} years</p>
+                  )}
                 </CardContent>
               </Card>
 
               <Card>
                 <CardHeader><CardTitle className="text-sm flex items-center gap-1"><Clock className="h-4 w-4" />Available Slots</CardTitle></CardHeader>
                 <CardContent>
+                  <label className="flex items-start gap-2 mb-3 p-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-xs text-blue-700 dark:text-blue-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={telemedicineConsent}
+                      onChange={e => setTelemedicineConsent(e.target.checked)}
+                      className="mt-0.5 accent-primary-600"
+                    />
+                    <span>I consent to telemedicine consultation as per the Telemedicine Practice Guidelines (2020). I understand that this consultation is not a substitute for in-person examination.</span>
+                  </label>
                   {loadingSlots ? <Loader2 className="h-5 w-5 animate-spin mx-auto" /> : slots.length === 0 ? <p className="text-sm text-gray-400">No slots available this week</p> : (
                     <div className="space-y-1.5 max-h-64 overflow-y-auto">
                       {slots.slice(0, 15).map((slot, i) => (

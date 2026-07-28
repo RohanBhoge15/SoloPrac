@@ -80,6 +80,7 @@ async def agent_chat(
                         "response": event.get("response", ""),
                         "intent": event.get("intent", "unknown"),
                         "trace_events": event.get("trace_events", []),
+                        "citations": event.get("citations", []),
                         "took_ms": event.get("took_ms", 0),
                     }),
                 }
@@ -114,3 +115,23 @@ async def agent_health():
         "tools_registered": len(tools),
         "tools": [t["name"] for t in tools],
     }
+
+
+@router.get("/citation-url")
+async def get_citation_url(
+    s3_key: str,
+    doctor=Depends(get_current_doctor),
+):
+    """Generate a presigned URL for a citation's S3 object (image/document)."""
+    from app.services.storage import storage_service
+    from fastapi.responses import RedirectResponse
+
+    if not s3_key:
+        raise HTTPException(status_code=400, detail="s3_key is required")
+
+    try:
+        url = await storage_service.get_presigned_url(s3_key, expires_in=3600)
+        return RedirectResponse(url=url, status_code=307)
+    except Exception as exc:
+        logger.error("Failed to generate presigned URL for %s: %s", s3_key, exc)
+        raise HTTPException(status_code=500, detail="Failed to generate citation URL")

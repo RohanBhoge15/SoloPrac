@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useLocation, Outlet } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
-import { CalendarDays, Home, FileText, Bell, LogOut, Menu, X, Search } from 'lucide-react'
+import { CalendarDays, Home, FileText, Bell, LogOut, Menu, X, Search, User } from 'lucide-react'
 
 const NAV_ITEMS = [
   { path: '/patient/dashboard', label: 'Dashboard', icon: Home },
@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { path: '/patient/appointments', label: 'Appointments', icon: CalendarDays },
   { path: '/patient/inbox', label: 'Inbox', icon: Bell },
   { path: '/patient/reports', label: 'Reports', icon: FileText },
+  { path: '/patient/profile', label: 'My Profile', icon: User },
 ]
 
 export function PatientLayout() {

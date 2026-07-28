@@ -198,7 +198,7 @@ class TemporalMultimodalRetriever:
         patient_id: str,
         doctor_id: str,
         query_time: Optional[datetime] = None,
-        k: int = 8,
+        k: Optional[int] = None,
         image_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Temporal multimodal retrieval — full scoring pipeline.
@@ -209,7 +209,7 @@ class TemporalMultimodalRetriever:
             doctor_id: UUID of the doctor (for RLS isolation).
             query_time: Query timestamp (defaults to now). Used for temporal decay
                 and future-leak prevention (v_i.timestamp ≤ query_time).
-            k: Number of results to return.
+            k: Number of results to return (defaults to RETRIEVAL_TOP_K config).
             image_path: Optional path to an image for BiomedCLIP query.
 
         Returns:
@@ -221,6 +221,9 @@ class TemporalMultimodalRetriever:
         """
         if query_time is None:
             query_time = datetime.now(timezone.utc)
+        if k is None:
+            from app.config import settings
+            k = settings.RETRIEVAL_TOP_K
 
         start = datetime.now(timezone.utc)
 
@@ -412,6 +415,8 @@ class TemporalMultimodalRetriever:
                 "timestamp": ts_str,
                 "clinical_significance": point_sig,
                 "temporal_decay": round(point_decay, 4),
+                "modality": modality,
+                "s3_key": payload.get("s3_key", ""),
             }
             results.append(result_item)
 
@@ -426,6 +431,8 @@ class TemporalMultimodalRetriever:
                 "summary": payload.get("summary", ""),
                 "score": round(point.score, 3),
                 "edit_type": payload.get("edit_type", ""),
+                "modality": modality,
+                "s3_key": payload.get("s3_key", ""),
             })
 
         elapsed_ms = (datetime.now(timezone.utc) - start).total_seconds() * 1000

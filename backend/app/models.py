@@ -12,6 +12,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, INET, ARRAY as PG_ARRAY
 from sqlalchemy.orm import relationship, declared_attr
 from sqlalchemy import text
+from geoalchemy2 import Geography
 from app.database import Base
 
 
@@ -22,23 +23,37 @@ def utc_now():
 class User(Base):
     """Cross-tenant app user — no doctor scope, no RLS.
 
-    A user authenticates via OTP (phone). They can be a patient at
+    A user authenticates via email/password. They can be a patient at
     multiple clinics; each visit creates a separate Patient row
     scoped to that doctor.
     """
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False)
     phone = Column(String(20), nullable=False)
     phone_hash = Column(String(64), unique=True, nullable=False, index=True)
-    name = Column(String(255), nullable=True)
+    dob = Column(DateTime(timezone=True), nullable=True)
+    gender = Column(String(20), nullable=True)
+    address = Column(Text, nullable=True)
+    # Medical profile (filled at first login)
+    blood_group = Column(String(5), nullable=True)
+    allergies = Column(Text, nullable=True)
+    known_conditions = Column(Text, nullable=True)
+    height_cm = Column(Float, nullable=True)
+    weight_kg = Column(Float, nullable=True)
+    emergency_contact_name = Column(String(255), nullable=True)
+    emergency_contact_phone = Column(String(20), nullable=True)
+    insurance_info = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     # No RLS — this table is intentionally cross-tenant
 
     def __repr__(self):
-        return f"<User(id={self.id}, phone={self.phone[-4:]})>"
+        return f"<User(id={self.id}, email={self.email})>"
 
 
 class Doctor(Base):
@@ -48,11 +63,12 @@ class Doctor(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
     speciality = Column(String(100), default="General Practice")
-    location = Column(String(255), nullable=True)  # coordinates as "lat,lng"
-    clinic_name = Column(String(255))
-    clinic_address = Column(Text)
-    phone = Column(String(50))
-    registration_number = Column(String(100))
+    location = Column(Geography(geometry_type="POINT", srid=4326), nullable=True)  # PostGIS geography point
+    clinic_name = Column(String(255), nullable=False, default="")
+    clinic_address = Column(Text, nullable=False, default="")
+    pincode = Column(String(6), nullable=True, index=True)  # Indian 6-digit PIN code
+    phone = Column(String(50), nullable=False, default="")
+    registration_number = Column(String(100), nullable=True)
     password_hash = Column(String(255), nullable=True)
     verification_status = Column(
         String(20), nullable=False, default="unverified",
@@ -61,6 +77,12 @@ class Doctor(Base):
     license_document_path = Column(String(500), nullable=True)
     rejection_reason = Column(Text, nullable=True)
     verified_at = Column(DateTime(timezone=True), nullable=True)
+    # ABDM verification fields
+    state_medical_council = Column(String(255), nullable=True)
+    year_of_registration = Column(Integer, nullable=True)
+    qualification = Column(String(255), nullable=True)  # populated from ABDM
+    abdm_verified_at = Column(DateTime(timezone=True), nullable=True)
+    photo_url = Column(String(500), nullable=True)  # profile photo S3/MinIO path
     settings = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
@@ -71,6 +93,7 @@ class Doctor(Base):
     certificates = relationship("Certificate", back_populates="doctor")
     appointments = relationship("Appointment", back_populates="doctor")
     audit_logs = relationship("AuditLog", back_populates="doctor")
+    sessions = relationship("DoctorSession", back_populates="doctor")
 
 
 class Patient(Base):
@@ -107,6 +130,7 @@ class Patient(Base):
     appointments = relationship("Appointment", back_populates="patient")
     time_preferences = relationship("PatientTimePreference", back_populates="patient")
     risk_alerts = relationship("RiskAlert", back_populates="patient")
+    consent_records = relationship("ConsentRecord", back_populates="patient")
     notifications = relationship("PatientNotification", back_populates="patient")
 
 
@@ -244,6 +268,8 @@ class Appointment(Base):
     status = Column(String(20), default="scheduled")
     source = Column(String(20), default="manual")
     notified = Column(Boolean, default=False)
+    telemedicine_consent = Column(Boolean, default=False)
+    telemedicine_consent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     doctor = relationship("Doctor", back_populates="appointments")
@@ -282,6 +308,38 @@ class RiskAlert(Base):
     acknowledged_at = Column(DateTime(timezone=True))
 
     patient = relationship("Patient", back_populates="risk_alerts")
+
+
+class ConsentRecord(Base):
+    __tablename__ = "consent_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False, index=True)
+    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False, index=True)
+    consent_type = Column(String(50), nullable=False)
+    granted = Column(Boolean, nullable=False, default=False)
+    purpose = Column(Text, nullable=True)
+    granted_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    patient = relationship("Patient", back_populates="consent_records")
+
+
+class DoctorSession(Base):
+    __tablename__ = "doctor_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_jti = Column(String(64), unique=True, nullable=False, index=True)
+    device_info = Column(Text, nullable=True)
+    ip_address = Column(String(45), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    last_active_at = Column(DateTime(timezone=True), default=utc_now)
+    revoked = Column(Boolean, default=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+    doctor = relationship("Doctor", back_populates="sessions")
 
 
 class PatientNotification(Base):

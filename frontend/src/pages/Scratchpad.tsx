@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
-import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File, Search } from 'lucide-react'
+import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File, Search, ChevronRight, ChevronLeft, Camera, AlertTriangle } from 'lucide-react'
 
 interface ParsedDocument {
   doc_id: string
@@ -16,6 +16,7 @@ interface ParsedDocument {
   structured: Record<string, unknown>
   confidence: number
   took_ms: number
+  quality_warnings?: string[]
 }
 
 interface UploadingFile {
@@ -62,7 +63,12 @@ export function Scratchpad() {
   const [saved, setSaved] = useState(false)
   const [patients, setPatients] = useState<PatientSummary[]>([])
   const [patientsLoading, setPatientsLoading] = useState(false)
+  const [viewingDoc, setViewingDoc] = useState<{ url: string; type: string; name: string } | null>(null)
   const [patientSearch, setPatientSearch] = useState('')
+  const [modalStep, setModalStep] = useState<'review' | 'patient'>('review')
+  const [editedText, setEditedText] = useState('')
+  const [doctorNotes, setDoctorNotes] = useState('')
+  const [editingResult, setEditingResult] = useState<ParsedDocument | null>(null)
 
   // Fetch real patients on mount
   useEffect(() => {
@@ -157,6 +163,35 @@ export function Scratchpad() {
     }
   }
 
+  // Clipboard paste handler (Ctrl+V / Cmd+V)
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+
+      const imageFiles: File[] = []
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (file) {
+            // Rename clipboard image with timestamp
+            const ext = file.type.split('/')[1] || 'png'
+            const renamed = new window.File([file], `pasted-image-${Date.now()}.${ext}`, { type: file.type })
+            imageFiles.push(renamed)
+          }
+        }
+      }
+
+      if (imageFiles.length > 0) {
+        e.preventDefault()
+        handleDrop(imageFiles)
+      }
+    }
+
+    window.addEventListener('paste', handlePaste)
+    return () => window.removeEventListener('paste', handlePaste)
+  }, [handleDrop])
+
   const removeFile = (id: string) => {
     setFiles(prev => {
       const file = prev.find(f => f.id === id)
@@ -177,6 +212,8 @@ export function Scratchpad() {
     try {
       const formData = new FormData()
       formData.append('patient_id', selectedPatient)
+      if (editedText.trim()) formData.append('edited_text', editedText.trim())
+      if (doctorNotes.trim()) formData.append('doctor_notes', doctorNotes.trim())
       await apiClient.post(`/documents/${selectedDocId}/save-to-patient`, formData)
       setSaving(false)
       setSaved(true)
@@ -186,6 +223,9 @@ export function Scratchpad() {
         setFiles([])
         setSelectedPatient(null)
         setSelectedDocId(null)
+        setEditedText('')
+        setDoctorNotes('')
+        setModalStep('review')
       }, 2000)
     } catch {
       setSaving(false)
@@ -193,9 +233,14 @@ export function Scratchpad() {
   }
 
   const openSaveDialog = (docId: string) => {
+    const file = files.find(f => f.result?.doc_id === docId)
     setSelectedDocId(docId)
     setSelectedPatient(null)
     setPatientSearch('')
+    setEditedText(file?.result?.raw_text || '')
+    setDoctorNotes('')
+    setEditingResult(file?.result || null)
+    setModalStep('review')
     setShowSaveDialog(true)
   }
 
@@ -231,6 +276,9 @@ export function Scratchpad() {
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
           PDF, JPG, PNG, WebP — max 25MB each
         </p>
+        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500 hidden sm:block">
+          Tip: Ctrl+V to paste from clipboard
+        </p>
         <Input
           id="file-input"
           type="file"
@@ -240,6 +288,25 @@ export function Scratchpad() {
           onChange={handleFileInput}
         />
       </div>
+
+      {/* Mobile Camera Button — visible only on small screens */}
+      <Button
+        variant="outline"
+        className="w-full sm:hidden"
+        onClick={() => document.getElementById('camera-input')?.click()}
+      >
+        <Camera className="h-4 w-4 mr-2" />
+        Take Photo
+      </Button>
+      <input
+        id="camera-input"
+        type="file"
+        className="hidden"
+        accept="image/*"
+        capture="environment"
+        multiple
+        onChange={handleFileInput}
+      />
 
       {/* Files List */}
       {files.length > 0 && (
@@ -296,15 +363,33 @@ export function Scratchpad() {
                     </div>
                   )}
                   {file.status === 'completed' && file.result && (
-                    <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
-                      <span>Confidence: {(file.result.confidence * 100).toFixed(0)}%</span>
-                      <span>·</span>
-                      <span>{(file.result.took_ms / 1000).toFixed(1)}s</span>
-                      {file.result.structured && typeof file.result.structured === 'object' && 'text_length' in file.result.structured && (
-                        <>
-                          <span>·</span>
-                          <span>{String(file.result.structured.text_length)} chars</span>
-                        </>
+                    <div className="mt-1 space-y-1">
+                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                        <span>Confidence: {(file.result.confidence * 100).toFixed(0)}%</span>
+                        <span>·</span>
+                        <span>{(file.result.took_ms / 1000).toFixed(1)}s</span>
+                        {file.result.structured && typeof file.result.structured === 'object' && 'text_length' in file.result.structured && (
+                          <>
+                            <span>·</span>
+                            <span>{String(file.result.structured.text_length)} chars</span>
+                          </>
+                        )}
+                      </div>
+                      {file.result.confidence < 0.5 && (
+                        <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                          <AlertTriangle className="h-3 w-3" />
+                          <span>Low OCR confidence — please verify extracted text</span>
+                        </div>
+                      )}
+                      {file.result.quality_warnings && file.result.quality_warnings.length > 0 && (
+                        <div className="space-y-0.5">
+                          {file.result.quality_warnings.map((w, i) => (
+                            <div key={i} className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                              <AlertTriangle className="h-3 w-3 shrink-0" />
+                              <span>{w}</span>
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
                   )}
@@ -321,8 +406,13 @@ export function Scratchpad() {
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        title="View extracted text"
-                        onClick={() => {}}
+                        title="View document"
+                        onClick={() => {
+                          if (file.result) {
+                            const url = `/api/v1/documents/${file.result.doc_id}/file`
+                            setViewingDoc({ url, type: file.type, name: file.name })
+                          }
+                        }}
                       >
                         <Eye className="h-3.5 w-3.5" />
                       </Button>
@@ -392,22 +482,84 @@ export function Scratchpad() {
         </div>
       )}
 
-      {/* Save to Patient Dialog — Real Patient List */}
+      {/* Save to Patient Dialog — Two-step: Review → Pick Patient */}
       {showSaveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => !saving && setShowSaveDialog(false)}>
-          <div className="bg-white dark:bg-gray-900 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl border border-gray-200 dark:border-gray-700 max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Save to Patient Record</h3>
-
+          <div className="bg-white dark:bg-gray-900 rounded-xl p-6 max-w-lg w-full mx-4 shadow-2xl border border-gray-200 dark:border-gray-700 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
             {saved ? (
               <div className="text-center py-6">
                 <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
                 <p className="text-green-700 dark:text-green-300 font-medium">Saved successfully!</p>
                 <p className="text-sm text-gray-500 mt-1">Document added to patient record as a new version.</p>
               </div>
+            ) : modalStep === 'review' ? (
+              <>
+                {/* Step 1: Review extracted text + add notes */}
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Review Extracted Text</h3>
+                  <span className="text-xs text-gray-400">Step 1 of 2</span>
+                </div>
+
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                  Review and edit the OCR output before saving. Add any clinical notes below.
+                </p>
+
+                {/* Quality warnings in review dialog */}
+                {editingResult?.quality_warnings && editingResult.quality_warnings.length > 0 && (
+                  <div className="mb-3 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                    {editingResult.quality_warnings.map((w, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                        <span>{w}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {editingResult && editingResult.confidence < 0.5 && (
+                  <div className="mb-3 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                    <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      <span>OCR confidence is low ({(editingResult.confidence * 100).toFixed(0)}%) — please carefully verify the text below</span>
+                    </div>
+                  </div>
+                )}
+
+                <label className="text-xs font-medium text-gray-500 uppercase mb-1 block">Extracted Text</label>
+                <textarea
+                  value={editedText}
+                  onChange={e => setEditedText(e.target.value)}
+                  className="w-full h-40 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-sm font-mono text-gray-900 dark:text-white resize-y focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="OCR extracted text..."
+                />
+
+                <label className="text-xs font-medium text-gray-500 uppercase mt-3 mb-1 block">Doctor Notes (optional)</label>
+                <textarea
+                  value={doctorNotes}
+                  onChange={e => setDoctorNotes(e.target.value)}
+                  className="w-full h-20 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white resize-y focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="Add your clinical observations, context, or instructions..."
+                />
+
+                <div className="flex items-center justify-end gap-3 mt-4">
+                  <Button variant="outline" onClick={() => setShowSaveDialog(false)} disabled={saving}>
+                    Cancel
+                  </Button>
+                  <Button onClick={() => setModalStep('patient')}>
+                    Next: Pick Patient
+                    <ChevronRight className="ml-1 h-4 w-4" />
+                  </Button>
+                </div>
+              </>
             ) : (
               <>
+                {/* Step 2: Pick patient */}
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Select Patient</h3>
+                  <span className="text-xs text-gray-400">Step 2 of 2</span>
+                </div>
+
                 <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                  Select a patient to save this parsed document as a new versioned record entry.
+                  Choose a patient to save this document as a new versioned record entry.
                 </p>
 
                 {/* Patient search */}
@@ -456,6 +608,10 @@ export function Scratchpad() {
                 </div>
 
                 <div className="flex items-center justify-end gap-3">
+                  <Button variant="outline" onClick={() => setModalStep('review')} disabled={saving}>
+                    <ChevronLeft className="mr-1 h-4 w-4" />
+                    Back
+                  </Button>
                   <Button variant="outline" onClick={() => setShowSaveDialog(false)} disabled={saving}>
                     Cancel
                   </Button>
@@ -469,6 +625,27 @@ export function Scratchpad() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Document Viewer Modal */}
+      {viewingDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setViewingDoc(null)}>
+          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[90vw] h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{viewingDoc.name}</span>
+              <button onClick={() => setViewingDoc(null)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
+                <X className="h-4 w-4 text-gray-500" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-2">
+              {viewingDoc.type.startsWith('image/') ? (
+                <img src={viewingDoc.url} alt={viewingDoc.name} className="max-w-full max-h-full mx-auto object-contain rounded" />
+              ) : (
+                <iframe src={viewingDoc.url} className="w-full h-full border-0 rounded" title={viewingDoc.name} />
+              )}
+            </div>
           </div>
         </div>
       )}

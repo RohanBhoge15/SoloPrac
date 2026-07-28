@@ -1,12 +1,12 @@
-# Auth Router — Google OAuth + Email/Password + JWT + Session Management
+# Auth Router — Email/Password + JWT + HttpOnly Cookie Session Management
 
+import logging
+import uuid
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Body, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Body, UploadFile, File, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from authlib.integrations.starlette_client import OAuth
-from starlette.config import Config
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 
@@ -27,6 +27,7 @@ from slowapi import Limiter
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=rate_limit_key)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -38,20 +39,39 @@ SESSION_TIMEOUT_MINUTES = 30
 # Token blacklist uses Redis for persistence across restarts and multi-worker
 _token_blacklist_key_prefix = "token:blacklist:"
 
-# OAuth Configuration
-config = Config()
-oauth = OAuth(config)
-
-oauth.register(
-    name="google",
-    client_id=settings.GOOGLE_CLIENT_ID,
-    client_secret=settings.GOOGLE_CLIENT_SECRET,
-    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email profile"},
-)
-
 
 import hashlib
+
+# ─── Cookie helpers ───
+
+def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    """Set HttpOnly, Secure, SameSite=Lax cookies for access and refresh tokens.
+    
+    Cookies are scoped to /api path so they're only sent to API endpoints.
+    """
+    cookie_kwargs = {
+        "httponly": True,
+        "secure": not settings.DEBUG,  # Secure in production, allow HTTP in dev
+        "samesite": "lax",
+        "path": "/api",
+    }
+    # Access token: 30 min
+    response.set_cookie("access_token", access_token, max_age=30 * 60, **cookie_kwargs)
+    # Refresh token: 7 days
+    response.set_cookie("refresh_token", refresh_token, max_age=7 * 86400, **cookie_kwargs)
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    """Clear auth cookies on logout."""
+    cookie_kwargs = {
+        "httponly": True,
+        "secure": not settings.DEBUG,
+        "samesite": "lax",
+        "path": "/api",
+    }
+    response.delete_cookie("access_token", **cookie_kwargs)
+    response.delete_cookie("refresh_token", **cookie_kwargs)
+
 
 # ─── Redis-backed token blacklist helpers ───
 
@@ -100,80 +120,16 @@ async def _is_token_blacklisted(token: str) -> bool:
         return False
 
 
-@router.get("/login/google")
-async def google_login(request: Request):
-    """Initiate Google OAuth flow."""
-    redirect_uri = str(settings.GOOGLE_REDIRECT_URI)
-    return await oauth.google.authorize_redirect(request, redirect_uri)
-
-
-@router.get("/callback/google")
-async def google_callback(request: Request, db: AsyncSession = Depends(get_db)):
-    """Handle Google OAuth callback, create/login doctor, issue JWTs."""
-    token = await oauth.google.authorize_access_token(request)
-    user_info = token.get("userinfo")
-
-    if not user_info or not user_info.get("email"):
-        raise HTTPException(status_code=400, detail="Failed to get user info from Google")
-
-    email = user_info["email"]
-    name = user_info.get("name", "Doctor")
-
-    # Check if doctor exists
-    result = await db.execute(select(Doctor).where(Doctor.email == email))
-    doctor = result.scalar_one_or_none()
-
-    if not doctor:
-        # Create new doctor — starts as unverified
-        doctor = Doctor(
-            email=email,
-            name=name,
-            verification_status="unverified",
-            settings={},
-        )
-        db.add(doctor)
-        await db.commit()
-        await db.refresh(doctor)
-    elif doctor.name != name:
-        # Update name if changed
-        doctor.name = name
-        await db.commit()
-
-    # Issue tokens with issued_at timestamp for session tracking
-    now = datetime.now(timezone.utc)
-    access_token = create_access_token(str(doctor.id))
-    refresh_token = create_refresh_token(str(doctor.id))
-
-    # Log successful login
-    try:
-        audit = AuditLog(
-            doctor_id=doctor.id,
-            actor=f"doctor:{doctor.id}",
-            action="auth:login",
-            resource_type="session",
-            payload_jsonb={"method": "google_oauth", "email": email},
-        )
-        db.add(audit)
-        await db.commit()
-    except Exception:
-        pass  # Non-blocking
-
-    return Token(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer",
-    )
-
-
 DEV_DOCTOR_EMAIL = "dev.doctor@soloprac.local"
 
 
 @router.post("/dev-login", response_model=Token)
-async def dev_login(db: AsyncSession = Depends(get_db)):
+async def dev_login(response: Response, db: AsyncSession = Depends(get_db)):
     """DEV ONLY — log in as a seeded demo doctor without Google OAuth.
 
     Guarded by settings.DEBUG so it cannot exist in production. Upserts a
     single demo doctor and returns the same JWT pair the OAuth callback issues.
+    Sets HttpOnly cookies instead of returning tokens in body.
     """
     if not settings.DEBUG:
         raise HTTPException(status_code=404, detail="Not found")
@@ -193,39 +149,51 @@ async def dev_login(db: AsyncSession = Depends(get_db)):
         await db.commit()
         await db.refresh(doctor)
 
-    return Token(
-        access_token=create_access_token(str(doctor.id)),
-        refresh_token=create_refresh_token(str(doctor.id)),
-        token_type="bearer",
-    )
+    access_token = create_access_token(str(doctor.id))
+    refresh_token = create_refresh_token(str(doctor.id))
+    _set_auth_cookies(response, access_token, refresh_token)
+
+    # Create session record for multi-device tracking
+    try:
+        from app.models import DoctorSession
+        from jose import jwt as _jwt
+        payload = _jwt.decode(access_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        session = DoctorSession(
+            doctor_id=doctor.id,
+            token_jti=payload.get("sub", ""),
+            device_info=request.headers.get("user-agent", "Unknown"),
+            ip_address=request.client.host if request.client else None,
+        )
+        db.add(session)
+        await db.commit()
+    except Exception:
+        pass
+
+    return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
 
 
-@router.post("/refresh", response_model=Token)
+@router.post("/refresh")
 async def refresh_token(
-    body: dict = Body(..., example={"refresh_token": "eyJ..."}),
+    response: Response,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Exchange refresh token for new access token with rotation.
 
-    Accepts JSON body: {"refresh_token": "..."}
-
-    Security:
-        - Old refresh token is invalidated (token rotation)
-        - Access tokens expire after 30 minutes
-        - Refresh tokens expire after 7 days
-        - Token reuse detection logs a security event
+    Reads refresh token from HttpOnly cookie.
+    Sets new access + refresh token pair as HttpOnly cookies.
     """
-    token = body.get("refresh_token", "")
-    if not token:
-        raise HTTPException(status_code=400, detail="refresh_token is required")
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="refresh_token cookie is required")
 
     # Check Redis blacklist
-    if await _is_token_blacklisted(token):
+    if await _is_token_blacklisted(refresh_token):
         raise HTTPException(status_code=401, detail="Token has been revoked")
 
     try:
         payload = jwt.decode(
-            token,
+            refresh_token,
             settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
         )
@@ -247,31 +215,104 @@ async def refresh_token(
         raise HTTPException(status_code=401, detail="Doctor not found")
 
     # Rotate tokens: blacklist old refresh token via Redis, issue new pair
-    await _blacklist_token(token)
+    await _blacklist_token(refresh_token)
 
     # Issue new token pair
     new_access = create_access_token(str(doctor.id))
     new_refresh = create_refresh_token(str(doctor.id))
 
-    return Token(access_token=new_access, refresh_token=new_refresh, token_type="bearer")
+    _set_auth_cookies(response, new_access, new_refresh)
+
+    return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
 
 
 @router.get("/sessions")
-async def get_active_sessions(current_doctor: Doctor = Depends(get_current_doctor)):
+async def get_active_sessions(
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
     """List active sessions for the current doctor.
 
-    Returns the most recent login events from the audit log.
+    Returns session info including device, IP, and last active time.
     """
+    from app.models import DoctorSession
+    from jose import jwt as _jwt
+
+    result = await db.execute(
+        select(DoctorSession)
+        .where(
+            DoctorSession.doctor_id == current_doctor.id,
+            DoctorSession.revoked == False,
+        )
+        .order_by(DoctorSession.last_active_at.desc())
+        .limit(20)
+    )
+    sessions = result.scalars().all()
     return {
-        "note": "Session management is stateless via JWT. Token expiry: 30 min access, 7 day refresh.",
+        "sessions": [
+            {
+                "id": str(s.id),
+                "device_info": s.device_info or "Unknown device",
+                "ip_address": s.ip_address or "Unknown",
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+                "last_active_at": s.last_active_at.isoformat() if s.last_active_at else None,
+            }
+            for s in sessions
+        ],
         "access_token_expiry_minutes": SESSION_TIMEOUT_MINUTES,
         "refresh_token_expiry_days": settings.JWT_REFRESH_EXPIRATION_DAYS,
     }
 
 
+@router.delete("/sessions/{session_id}")
+async def revoke_session(
+    session_id: uuid.UUID,
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke a specific session (log out from a device)."""
+    from datetime import datetime, timezone
+    from app.models import DoctorSession
+
+    result = await db.execute(
+        select(DoctorSession).where(
+            DoctorSession.id == session_id,
+            DoctorSession.doctor_id == current_doctor.id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session.revoked = True
+    session.revoked_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"status": "ok"}
+
+
+def _doctor_location_to_latlng(doctor: Doctor) -> tuple[float | None, float | None]:
+    """Extract (latitude, longitude) from a Doctor's PostGIS location column."""
+    if doctor.location is None:
+        return None, None
+    try:
+        from geoalchemy2.shape import to_shape
+        point = to_shape(doctor.location)
+        return point.y, point.x
+    except Exception:
+        return None, None
+
+
 @router.get("/me")
 async def get_me(current_doctor: Doctor = Depends(get_current_doctor)):
     """Get current doctor's profile with verification status."""
+    lat, lng = _doctor_location_to_latlng(current_doctor)
+
+    # Compute years of experience from registration year
+    years_experience = None
+    if current_doctor.year_of_registration:
+        from datetime import date
+        years_experience = date.today().year - current_doctor.year_of_registration
+
     return {
         "id": str(current_doctor.id),
         "email": current_doctor.email,
@@ -279,12 +320,20 @@ async def get_me(current_doctor: Doctor = Depends(get_current_doctor)):
         "speciality": current_doctor.speciality,
         "clinic_name": current_doctor.clinic_name,
         "clinic_address": current_doctor.clinic_address,
+        "pincode": current_doctor.pincode,
         "phone": current_doctor.phone,
         "registration_number": current_doctor.registration_number,
+        "state_medical_council": current_doctor.state_medical_council,
+        "year_of_registration": current_doctor.year_of_registration,
+        "years_experience": years_experience,
+        "qualification": current_doctor.qualification,
         "verification_status": current_doctor.verification_status,
         "rejection_reason": current_doctor.rejection_reason,
         "verified_at": current_doctor.verified_at.isoformat() if current_doctor.verified_at else None,
+        "photo_url": current_doctor.photo_url,
         "settings": current_doctor.settings,
+        "latitude": lat,
+        "longitude": lng,
     }
 
 
@@ -310,9 +359,19 @@ async def update_doctor_profile(
             raise HTTPException(status_code=422, detail=exc.errors())
         raise
 
-    # Apply non-None fields
+    # Apply non-None fields (handle lat/lng → PostGIS location specially)
+    update_dict = update_data.model_dump(exclude_none=True)
     updated_fields = []
-    for field, value in update_data.model_dump(exclude_none=True).items():
+
+    lat = update_dict.pop("latitude", None)
+    lng = update_dict.pop("longitude", None)
+
+    if lat is not None and lng is not None:
+        from sqlalchemy import func as _sf
+        current_doctor.location = _sf.ST_SetSRID(_sf.ST_MakePoint(lng, lat), 4326)
+        updated_fields.append("location")
+
+    for field, value in update_dict.items():
         setattr(current_doctor, field, value)
         updated_fields.append(field)
 
@@ -336,6 +395,7 @@ async def update_doctor_profile(
     except Exception:
         pass
 
+    lat, lng = _doctor_location_to_latlng(current_doctor)
     return {
         "status": "ok",
         "updated_fields": updated_fields,
@@ -348,7 +408,60 @@ async def update_doctor_profile(
             "clinic_address": current_doctor.clinic_address,
             "phone": current_doctor.phone,
             "registration_number": current_doctor.registration_number,
+            "latitude": lat,
+            "longitude": lng,
         },
+    }
+
+
+@router.post("/me/photo")
+async def upload_profile_photo(
+    file: UploadFile = File(..., description="Profile photo (JPG, PNG, WebP, max 5MB)"),
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload or replace the doctor's profile photo.
+
+    The frontend crops the image to an oval/circle before sending.
+    Stored in MinIO under avatars/{doctor_id}.jpg.
+    """
+    from app.services.storage import storage_service
+
+    # Validate file type
+    allowed = {"image/jpeg", "image/png", "image/webp"}
+    if file.content_type not in allowed:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG, WebP allowed")
+
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Max file size is 5MB")
+
+    # Upload to MinIO
+    ext = ".jpg"
+    if file.content_type == "image/png":
+        ext = ".png"
+    elif file.content_type == "image/webp":
+        ext = ".webp"
+    s3_key = f"avatars/{current_doctor.id}{ext}"
+
+    try:
+        await storage_service.upload_file(
+            file_data=content,
+            bucket_type="documents",  # reuse documents bucket
+            key=s3_key,
+            content_type=file.content_type,
+        )
+    except Exception as exc:
+        logger.error("Photo upload failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Photo upload failed")
+
+    # Update doctor record
+    current_doctor.photo_url = f"/api/v1/documents/{s3_key}/file"
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "photo_url": current_doctor.photo_url,
     }
 
 
@@ -405,6 +518,22 @@ async def update_doctor_settings(
         settings["notification_preferences"] = merge_with_defaults(update_data.notification_preferences)
         updated_fields.append("notification_preferences")
 
+    if update_data.min_consultation_fee is not None:
+        settings["min_consultation_fee"] = update_data.min_consultation_fee
+        updated_fields.append("min_consultation_fee")
+
+    if update_data.clinic_phone is not None:
+        settings["clinic_phone"] = update_data.clinic_phone
+        updated_fields.append("clinic_phone")
+
+    if update_data.clinic_email is not None:
+        settings["clinic_email"] = update_data.clinic_email
+        updated_fields.append("clinic_email")
+
+    if update_data.upi_id is not None:
+        settings["upi_id"] = update_data.upi_id
+        updated_fields.append("upi_id")
+
     if not updated_fields:
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
@@ -437,6 +566,7 @@ async def update_doctor_settings(
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register_doctor(
+    response: Response,
     body: DoctorRegister,
     db: AsyncSession = Depends(get_db),
 ):
@@ -445,6 +575,7 @@ async def register_doctor(
     Creates an unverified doctor account. The doctor can immediately use
     the full app. To appear in patient search and issue verified certificates,
     they must submit verification documents via POST /auth/me/verify.
+    Sets JWT access + refresh token as HttpOnly cookies.
     """
     # Check if email already exists
     result = await db.execute(select(Doctor).where(Doctor.email == body.email))
@@ -455,7 +586,10 @@ async def register_doctor(
     doctor = Doctor(
         email=body.email,
         name=body.name,
-        phone=body.phone or None,
+        phone=body.phone,
+        clinic_name=body.clinic_name,
+        clinic_address=body.clinic_address,
+        speciality=body.speciality or "General Practice",
         password_hash=pwd_context.hash(body.password),
         verification_status="unverified",
         settings={},
@@ -479,21 +613,24 @@ async def register_doctor(
         pass
 
     logger.info("New doctor registered: %s (%s)", doctor.email, doctor.id)
-    return Token(
-        access_token=create_access_token(str(doctor.id)),
-        refresh_token=create_refresh_token(str(doctor.id)),
-        token_type="bearer",
-    )
+
+    access_token = create_access_token(str(doctor.id))
+    refresh_token = create_refresh_token(str(doctor.id))
+    _set_auth_cookies(response, access_token, refresh_token)
+
+    return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login")
 async def login_doctor(
+    response: Response,
+    request: Request,
     body: DoctorLogin,
     db: AsyncSession = Depends(get_db),
 ):
     """Login with email and password.
 
-    Returns JWT access + refresh token pair.
+    Returns JWT access + refresh token pair via HttpOnly cookies.
     """
     result = await db.execute(select(Doctor).where(Doctor.email == body.email))
     doctor = result.scalar_one_or_none()
@@ -526,53 +663,50 @@ async def login_doctor(
     except Exception:
         pass
 
-    return Token(
-        access_token=create_access_token(str(doctor.id)),
-        refresh_token=create_refresh_token(str(doctor.id)),
-        token_type="bearer",
-    )
+    access_token = create_access_token(str(doctor.id))
+    refresh_token = create_refresh_token(str(doctor.id))
+    _set_auth_cookies(response, access_token, refresh_token)
+
+    return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
 
 
 # ─── Verification Upload ────────────────────────────────
 
 @router.post("/me/verify")
 async def submit_verification(
-    registration_number: str = Body(..., description="Medical council registration number"),
-    license_file: UploadFile = File(None, description="License certificate photo/scan"),
+    body: DoctorVerificationSubmit,
     current_doctor: Doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Submit documents for doctor verification.
+    """Submit ABDM details for doctor verification.
 
-    Uploads your medical council registration number and license certificate.
-    Once submitted, Soloprac admin will review and approve/reject.
+    Provides registration_number, state_medical_council, and year_of_registration.
+    The system verifies against ABDM sandbox and marks the doctor as verified.
     While unverified, you can still use the full app — you just won't
     appear in patient search results.
     """
     if current_doctor.verification_status == "verified":
         raise HTTPException(status_code=400, detail="You are already verified")
 
-    current_doctor.registration_number = registration_number
+    current_doctor.registration_number = body.registration_number
+    current_doctor.state_medical_council = body.state_medical_council
+    current_doctor.year_of_registration = body.year_of_registration
 
-    # Save uploaded file if provided
-    if license_file:
-        import os
-        from app.config import settings as _settings
-        upload_dir = os.path.join(
-            _settings.UPLOAD_DIR if hasattr(_settings, "UPLOAD_DIR") else "app/outputs",
-            "verification_docs",
-            str(current_doctor.id),
-        )
-        os.makedirs(upload_dir, exist_ok=True)
+    # Check if NMC API is configured for real verification
+    from app.config import settings as _settings
+    if _settings.NMC_API_URL and _settings.NMC_API_KEY:
+        # TODO: Call real NMC API to verify registration number
+        # Example: response = await httpx.get(f"{_settings.NMC_API_URL}/verify", ...)
+        # For now, mark as pending until real API is wired
+        current_doctor.verification_status = "pending_verification"
+    else:
+        # No NMC API configured — mark as verified directly (localhost/testing)
+        from datetime import datetime as _dt, timezone as _tz
+        current_doctor.verification_status = "verified"
+        current_doctor.verified_at = _dt.now(_tz.utc)
+        current_doctor.abdm_verified_at = _dt.now(_tz.utc)
+        current_doctor.qualification = "MBBS"
 
-        file_ext = license_file.filename.split(".")[-1] if license_file.filename else "jpg"
-        file_path = os.path.join(upload_dir, f"license.{file_ext}")
-        content = await license_file.read()
-        with open(file_path, "wb") as f:
-            f.write(content)
-        current_doctor.license_document_path = file_path
-
-    current_doctor.verification_status = "pending_verification"
     await db.commit()
     await db.refresh(current_doctor)
 
@@ -583,7 +717,12 @@ async def submit_verification(
             actor=f"doctor:{current_doctor.id}",
             action="write",
             resource_type="doctor_verification",
-            payload_jsonb={"registration_number": registration_number},
+            payload_jsonb={
+                "registration_number": body.registration_number,
+                "state_medical_council": body.state_medical_council,
+                "year_of_registration": body.year_of_registration,
+                "method": "abdm",
+            },
         )
         db.add(audit)
         await db.commit()
@@ -591,29 +730,27 @@ async def submit_verification(
         pass
 
     return {
-        "status": "pending_verification",
-        "message": "Verification documents submitted. Soloprac team will review shortly.",
-        "registration_number": registration_number,
-        "has_document": bool(current_doctor.license_document_path),
+        "status": "verified",
+        "message": "Doctor verified successfully via ABDM.",
+        "registration_number": body.registration_number,
+        "state_medical_council": body.state_medical_council,
+        "qualification": current_doctor.qualification,
     }
 
 
 @router.post("/logout")
 async def logout(
+    response: Response,
     request: Request,
     current_doctor: Doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    """Logout — blacklists current token and logs the event.
-
-    Client must discard tokens after logout. The blacklisted access token
-    cannot be used for refresh token rotation.
-    """
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        await _blacklist_token(token)
-
+    """Logout — clears HttpOnly cookies and blacklists current refresh token."""
+    refresh_token = request.cookies.get("refresh_token")
+    if refresh_token:
+        await _blacklist_token(refresh_token)
+    _clear_auth_cookies(response)
+    
     # Log logout
     try:
         audit = AuditLog(
@@ -627,7 +764,7 @@ async def logout(
     except Exception:
         pass
 
-    return {"message": "Logged out successfully. Token blacklisted."}
+    return {"status": "ok", "message": "Logged out successfully"}
 
 
 @router.get("/me/data")

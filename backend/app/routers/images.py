@@ -23,7 +23,7 @@ import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -33,10 +33,89 @@ from app.models import Patient, PatientVersion, ImageComparison, AuditLog
 from app.services.embeddings import embedding_service
 from app.services.qdrant import qdrant_service
 from app.services.image_registration import image_registration_service
+from app.services.storage import storage_service
+from app.routers.patients import _mint_version
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/patients/{patient_id}/images", tags=["images"])
+
+
+async def _background_analyze_image(
+    version_id: str, patient_id: str, doctor_id: str,
+    s3_key: str, image_type: str,
+):
+    """Background task: analyze image with MedGemma and update version + Qdrant."""
+    try:
+        import uuid as _uuid
+        from app.database import async_session_maker
+        from app.agents.tools import _analyze_with_medgemma, _analyze_with_groq
+        from app.services.storage import storage_service
+
+        # Download image from S3 to temp file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            image_bytes = await storage_service.download_file(s3_key)
+            if not image_bytes:
+                return
+            with open(tmp_path, "wb") as f:
+                f.write(image_bytes)
+
+            # Generate base64
+            import base64
+            with open(tmp_path, "rb") as f:
+                image_b64 = base64.b64encode(f.read()).decode("utf-8")
+        finally:
+            import os
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        # Analyze with MedGemma (all image types now go local)
+        result = await _analyze_with_medgemma(image_b64, image_type)
+
+        if result.get("status") != "ok":
+            # Fallback to Groq for non-radiology if MedGemma fails
+            result = await _analyze_with_groq(image_b64, image_type)
+
+        analysis = result.get("analysis", "")
+        if not analysis:
+            return
+
+        # Truncate to crisp 1-2 line summary
+        summary_text = analysis.split("\n")[0][:200]
+
+        # Update version state_jsonb
+        async with async_session_maker() as db:
+            from sqlalchemy import update as sql_update
+            from app.models import PatientVersion
+            from app.services.qdrant import qdrant_service
+
+            result = await db.execute(
+                select(PatientVersion).where(PatientVersion.id == _uuid.UUID(version_id))
+            )
+            version = result.scalar_one_or_none()
+            if not version:
+                return
+
+            state = dict(version.state_jsonb or {})
+            if "image" not in state:
+                state["image"] = {}
+            state["image"]["clinical_summary"] = summary_text
+            state["image"]["analyzed_by"] = result.get("model", "medgemma")
+
+            version.state_jsonb = state
+            version.summary = summary_text[:120]
+            await db.commit()
+
+        logger.info("Background image analysis complete for version %s: %s", version_id, summary_text[:50])
+
+    except Exception as exc:
+        logger.warning("Background image analysis failed for version %s: %s", version_id, exc)
 
 ALLOWED_MIME_TYPES = {
     "image/jpeg": ".jpg",
@@ -55,8 +134,6 @@ MAGIC_BYTES = {
 
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 MAX_FILES_PER_REQUEST = 5
-
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "images")
 
 
 async def _check_upload_rate_limit(doctor_id: str) -> bool:
@@ -124,6 +201,7 @@ async def upload_images(
     files: List[UploadFile] = File(..., description="Image files (max 5)"),
     doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
 ):
     """Upload one or more patient images. Validates, embeds, and indexes in Qdrant."""
     # Verify patient ownership
@@ -144,7 +222,6 @@ async def upload_images(
             detail=f"Upload rate limit exceeded. Max 10 uploads per minute.",
         )
 
-    _ensure_upload_dir()
     uploaded = []
 
     for file in files:
@@ -155,20 +232,35 @@ async def upload_images(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Validation failed for {file.filename}: {exc}")
 
-        # Save to disk
+        # Upload to S3
         image_id = uuid.uuid4()
         ext = ALLOWED_MIME_TYPES.get(file.content_type or "", ".jpg")
-        filename = f"{image_id}{ext}"
-        filepath = os.path.join(UPLOAD_DIR, filename)
-        with open(filepath, "wb") as f:
-            f.write(content)
-
-        # Generate BiomedCLIP embedding (local)
+        s3_key = f"images/{doctor.id}/{patient_id}/{image_id}{ext}"
+        
         try:
-            embedding = await embedding_service.encode_biomedclip_image(filepath)
+            await storage_service.upload_file(
+                file_data=content,
+                bucket_type="images",
+                key=s3_key,
+                content_type=file.content_type,
+            )
         except Exception as exc:
-            logger.warning("BiomedCLIP embedding failed for %s: %s (proceeding without)", filename, exc)
+            logger.error("S3 upload failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Image upload failed: {str(exc)[:200]}")
+
+        # Generate BiomedCLIP embedding (local) — use temp file for encoder
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            embedding = await embedding_service.encode_biomedclip_image(tmp_path)
+        except Exception as exc:
+            logger.warning("BiomedCLIP embedding failed for %s: %s (proceeding without)", file.filename, exc)
             embedding = []
+        finally:
+            os.unlink(tmp_path)
 
         # Upsert to Qdrant
         point_id = None
@@ -190,17 +282,55 @@ async def upload_images(
                     "tags": ["image"],
                     "clinical_significance": 0.3,
                     "version_hash": "",
+                    "s3_key": s3_key,
                 })
                 logger.info("Indexed image %s to Qdrant (point=%s)", image_id, point_id)
             except Exception as exc:
                 logger.error("Qdrant upsert for image %s failed: %s", image_id, exc)
+
+        # Auto-create PatientVersion for this image
+        try:
+            version_state = {
+                "image": {
+                    "image_id": str(image_id),
+                    "s3_key": s3_key,
+                    "filename": file.filename,
+                    "mime_type": file.content_type,
+                    "size_bytes": len(content),
+                }
+            }
+            version = await _mint_version(
+                db=db,
+                patient=patient,
+                doctor_id=doctor.id,
+                state=version_state,
+                edit_type="manual",
+                author=f"doctor:{doctor.id}",
+                summary=f"Image uploaded: {file.filename}",
+                tags=["image"],
+                clinical_significance=0.3,
+            )
+            logger.info("Created PatientVersion %s for image %s", version.id, image_id)
+
+            # Analyze image in background (MedGemma local, non-blocking)
+            if background_tasks:
+                background_tasks.add_task(
+                    _background_analyze_image,
+                    str(version.id),
+                    str(patient.id),
+                    str(doctor.id),
+                    s3_key,
+                    "xray" if "xray" in (file.content_type or "").lower() else "other",
+                )
+        except Exception as exc:
+            logger.warning("Failed to create PatientVersion for image %s: %s", image_id, exc)
 
         uploaded.append({
             "image_id": str(image_id),
             "filename": file.filename,
             "size": len(content),
             "mime_type": file.content_type,
-            "path": filepath,
+            "s3_key": s3_key,
             "qdrant_point_id": point_id,
             "had_embedding": len(embedding) > 0,
         })
@@ -296,21 +426,20 @@ async def search_similar_images(
         raise HTTPException(status_code=400, detail=f"Validation failed: {exc}")
 
     # Save temp file for embedding
-    _ensure_upload_dir()
-    temp_id = uuid.uuid4()
-    temp_path = os.path.join(UPLOAD_DIR, f"search_{temp_id}.jpg")
-    with open(temp_path, "wb") as f:
-        f.write(content)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp.write(content)
+        temp_path = tmp.name
 
     # Encode with BiomedCLIP
     try:
         query_vector = await embedding_service.encode_biomedclip_image(temp_path)
     except Exception as exc:
-        os.remove(temp_path)
+        os.unlink(temp_path)
         raise HTTPException(status_code=500, detail=f"BiomedCLIP encoding failed: {exc}")
 
     # Clean up temp file
-    os.remove(temp_path)
+    os.unlink(temp_path)
 
     if not query_vector:
         raise HTTPException(status_code=500, detail="BiomedCLIP produced empty embedding")
@@ -397,20 +526,35 @@ async def compare_images(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Validation failed: {exc}")
 
-    _ensure_upload_dir()
+    # Upload to S3
     curr_image_id = uuid.uuid4()
     ext = ALLOWED_MIME_TYPES.get(file.content_type or "", ".jpg")
-    curr_filename = f"{curr_image_id}{ext}"
-    curr_filepath = os.path.join(UPLOAD_DIR, curr_filename)
-    with open(curr_filepath, "wb") as f:
-        f.write(content)
-
-    # Generate BiomedCLIP embedding for the new image
+    curr_s3_key = f"images/{doctor.id}/{patient_id}/{curr_image_id}{ext}"
+    
     try:
-        curr_embedding = await embedding_service.encode_biomedclip_image(curr_filepath)
+        await storage_service.upload_file(
+            file_data=content,
+            bucket_type="images",
+            key=curr_s3_key,
+            content_type=file.content_type,
+        )
+    except Exception as exc:
+        logger.error("S3 upload failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {str(exc)[:200]}")
+
+    # Generate BiomedCLIP embedding for the new image (use temp file)
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(content)
+        curr_tmp_path = tmp.name
+    
+    try:
+        curr_embedding = await embedding_service.encode_biomedclip_image(curr_tmp_path)
     except Exception as exc:
         logger.warning("BiomedCLIP embedding failed: %s", exc)
         curr_embedding = []
+    finally:
+        os.unlink(curr_tmp_path)
 
     # Search for best matching prior image
     best_match = None
@@ -456,11 +600,19 @@ async def compare_images(
     prior_version_id = ""
     if best_match:
         prior_version_id = best_match.payload.get("version_id", "")
-        # Try to find the prior image file
-        prior_pattern = os.path.join(UPLOAD_DIR, f"{prior_version_id}.*")
-        prior_files = glob.glob(prior_pattern)
-        if prior_files:
-            matched_prior_path = prior_files[0]
+        # Try to find the prior image in S3
+        prior_s3_key = f"images/{doctor.id}/{patient_id}/{prior_version_id}{ext}"
+        try:
+            if await storage_service.file_exists("images", prior_s3_key):
+                # Download prior image to temp file for comparison
+                import tempfile
+                prior_bytes = await storage_service.download_file("images", prior_s3_key)
+                if prior_bytes:
+                    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                        tmp.write(prior_bytes)
+                        matched_prior_path = tmp.name
+        except Exception as exc:
+            logger.warning("Failed to download prior image from S3: %s", exc)
 
     comparison_id = uuid.uuid4()
     reg_result = None
@@ -472,7 +624,7 @@ async def compare_images(
         try:
             reg_result = await image_registration_service.compare(
                 image_prev_path=matched_prior_path,
-                image_curr_path=curr_filepath,
+                image_curr_path=curr_tmp_path,
                 patient_id=str(patient_id),
             )
             overlay_path = reg_result.overlay_path
@@ -485,9 +637,9 @@ async def compare_images(
                 comparison = ImageComparison(
                     id=comparison_id,
                     version_id=None,  # Will be set when saved to patient record
-                    current_image_path=curr_filepath,
+                    current_image_path=curr_s3_key,
                     matched_version_id=uuid.UUID(prior_version_id) if prior_version_id else None,
-                    matched_image_path=matched_prior_path,
+                    matched_image_path=prior_s3_key,
                     area_change_pct=m.area_change_pct if hasattr(m, 'area_change_pct') else None,
                     edge_convergence_score=m.edge_convergence_score if hasattr(m, 'edge_convergence_score') else None,
                     color_histogram_shift=m.color_histogram_shift if hasattr(m, 'color_histogram_shift') else None,
@@ -505,6 +657,10 @@ async def compare_images(
 
         except Exception as exc:
             logger.error("Image registration failed: %s", exc)
+        finally:
+            # Clean up temp files
+            if matched_prior_path and os.path.exists(matched_prior_path):
+                os.unlink(matched_prior_path)
     else:
         logger.info("No prior match found for patient %s", patient_id)
 
@@ -674,3 +830,86 @@ async def _log_image_access(
     except Exception as exc:
         logger.warning("Image audit log failed (non-blocking): %s", exc)
         await db.rollback()
+
+
+@router.get("/list", response_model=List[dict])
+async def list_patient_images(
+    patient_id: uuid.UUID,
+    doctor=Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return all image versions for a patient with their clinical summaries."""
+    result = await db.execute(
+        select(PatientVersion)
+        .join(Patient, PatientVersion.patient_id == Patient.id)
+        .where(
+            PatientVersion.patient_id == patient_id,
+            Patient.doctor_id == doctor.id,
+            PatientVersion.tags.contains(["image"]),
+        )
+        .order_by(PatientVersion.created_at.desc())
+    )
+    versions = result.scalars().all()
+
+    images = []
+    for v in versions:
+        state = v.state_jsonb or {}
+        image_data = state.get("image", {})
+        images.append({
+            "version_id": str(v.id),
+            "version_number": v.version_number,
+            "filename": image_data.get("filename", ""),
+            "s3_key": image_data.get("s3_key", ""),
+            "mime_type": image_data.get("mime_type", ""),
+            "clinical_summary": image_data.get("clinical_summary", ""),
+            "created_at": v.created_at.isoformat() if v.created_at else None,
+        })
+    return images
+
+
+@router.patch("/{version_id}/summary")
+async def update_image_summary(
+    patient_id: uuid.UUID,
+    version_id: uuid.UUID,
+    body: dict,
+    doctor=Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update clinical_summary on an existing image version (no new version created)."""
+    result = await db.execute(
+        select(PatientVersion)
+        .join(Patient, PatientVersion.patient_id == Patient.id)
+        .where(
+            PatientVersion.id == version_id,
+            PatientVersion.patient_id == patient_id,
+            Patient.doctor_id == doctor.id,
+        )
+    )
+    version = result.scalar_one_or_none()
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    summary = body.get("clinical_summary", "")
+    state = dict(version.state_jsonb or {})
+    if "image" not in state:
+        state["image"] = {}
+    state["image"]["clinical_summary"] = summary
+    version.state_jsonb = state
+    version.summary = summary[:120] if summary else version.summary
+    await db.commit()
+
+    return {"status": "ok", "version_id": str(version.id), "clinical_summary": summary}
+
+
+@router.get("/file")
+async def get_image_file(
+    patient_id: uuid.UUID,
+    s3_key: str = Query(..., description="S3 key of the image"),
+    doctor=Depends(get_current_doctor),
+):
+    """Return a presigned URL for viewing an image from S3."""
+    url = await storage_service.generate_presigned_url(s3_key, expires_in=3600)
+    if not url:
+        raise HTTPException(status_code=404, detail="Image not found")
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=url, status_code=307)
