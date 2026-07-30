@@ -569,21 +569,33 @@ class PDFGenerator:
                 except Exception as exc:
                     logger.warning("Watermark failed (non-blocking): %s", exc)
 
-            # Upload to S3
+            # Upload to S3 with local filesystem fallback
             with open(tmp_path, "rb") as f:
                 pdf_bytes = f.read()
             
-            await storage_service.upload_file(
-                file_data=pdf_bytes,
-                bucket_type="pdfs",
-                key=s3_key,
-                content_type="application/pdf",
-            )
-            
-            logger.info("PDF generated and uploaded to S3: %s (%s)", s3_key, template_name)
-            return s3_key
+            try:
+                await storage_service.upload_file(
+                    file_data=pdf_bytes,
+                    bucket_type="pdfs",
+                    key=s3_key,
+                    content_type="application/pdf",
+                )
+                logger.info("PDF generated and uploaded to S3: %s (%s)", s3_key, template_name)
+                return s3_key
+            except Exception as exc:
+                logger.warning("S3 upload failed, saving locally: %s", exc)
+                local_dir = os.path.join(tempfile.gettempdir(), "soloprac_pdfs", os.path.dirname(s3_key))
+                os.makedirs(local_dir, exist_ok=True)
+                local_path = os.path.join(tempfile.gettempdir(), "soloprac_pdfs", s3_key)
+                import shutil
+                shutil.copy(tmp_path, local_path)
+                logger.info("PDF saved locally: %s", local_path)
+                return local_path
         finally:
-            os.unlink(tmp_path)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     # ─── Prescription ───
 

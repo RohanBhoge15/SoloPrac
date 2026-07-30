@@ -35,7 +35,7 @@ import os
 import re
 import json
 import logging
-import magic
+import mimetypes
 from enum import Enum
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,6 +44,36 @@ from datetime import datetime, timezone
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# python-magic needs the native libmagic library, which is not present on a
+# default Windows install (and optional elsewhere). Guard the import and fall
+# back to extension-based sniffing via the stdlib.
+try:
+    import magic as _magic
+except Exception as _magic_exc:  # ImportError, OSError from libmagic lookup
+    _magic = None
+    logger.info(
+        "python-magic/libmagic unavailable (%s) — MIME sniffing falls back to "
+        "file extensions via mimetypes.",
+        _magic_exc,
+    )
+
+HAS_MAGIC = _magic is not None
+
+
+def sniff_mime_type(file_path: str) -> str:
+    """Best-effort MIME type for a file.
+
+    Uses libmagic content sniffing when available, otherwise the filename
+    extension. Returns "application/octet-stream" when nothing can be decided.
+    """
+    if HAS_MAGIC:
+        try:
+            return _magic.from_file(file_path, mime=True) or "application/octet-stream"
+        except Exception as exc:
+            logger.warning("libmagic sniff failed for %s: %s", file_path, exc)
+    guessed, _ = mimetypes.guess_type(file_path)
+    return guessed or "application/octet-stream"
 
 # ─── Schema Aligner (Feature D) ───
 # Lazy import to avoid circular dependency
@@ -227,18 +257,138 @@ class ParserRouter:
             return False
 
     async def _detect_handwriting(self, file_path: str) -> bool:
-        """Detect if image contains handwriting vs printed text.
+        """Detect whether an image is handwritten rather than machine-printed.
 
-        Heuristic: check file name patterns and basic image properties.
-        Full detection requires an ML model (deferred to Week 9).
+        This is an image-content heuristic, not an ML classifier. It thresholds
+        the image, extracts connected components (ink blobs) and looks at three
+        signals that reliably separate print from handwriting:
+
+          1. Baseline regularity — printed text sits on evenly spaced baselines,
+             so the row-projection profile of ink is strongly periodic. Measured
+             as the coefficient of variation of blob bottom-edge positions
+             within each detected text row.
+          2. Glyph size variance — printed glyphs are near-uniform in height;
+             handwriting varies far more.
+          3. Stroke-width variance — printed strokes have near-constant width
+             (distance transform of the ink mask has low spread); pen strokes
+             vary with pressure and speed.
+
+        Returns True when at least two of the three signals look handwritten.
+        Falls back to :meth:`_guess_handwriting_from_filename` when OpenCV or
+        NumPy is unavailable.
         """
-        # Heuristic: check if filename contains "rx", "presc", "hand"
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            logger.info(
+                "OpenCV/NumPy unavailable — handwriting detection degrades to a "
+                "filename guess."
+            )
+            return self._guess_handwriting_from_filename(file_path)
+
+        try:
+            gray = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
+            if gray is None:
+                return self._guess_handwriting_from_filename(file_path)
+
+            # Normalize scale so thresholds are resolution-independent
+            max_side = max(gray.shape)
+            if max_side > 1600:
+                scale = 1600.0 / max_side
+                gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+            # Adaptive threshold handles uneven lighting in phone photos.
+            # Ink becomes 255 (foreground) on a 0 background.
+            ink = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV, 31, 10,
+            )
+
+            num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(ink, 8)
+
+            # Keep plausible glyph-sized components; drop specks and page-sized blobs
+            page_area = float(gray.shape[0] * gray.shape[1])
+            heights: List[float] = []
+            bottoms: List[float] = []
+            for i in range(1, num_labels):
+                x, y, w, h, area = (
+                    stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
+                    stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT],
+                    stats[i, cv2.CC_STAT_AREA],
+                )
+                if area < 12 or area > page_area * 0.05:
+                    continue
+                if h < 4 or h > gray.shape[0] * 0.2:
+                    continue
+                heights.append(float(h))
+                bottoms.append(float(y + h))
+
+            if len(heights) < 25:
+                # Too little ink to judge from content — fall back to the name.
+                return self._guess_handwriting_from_filename(file_path)
+
+            heights_arr = np.asarray(heights)
+            bottoms_arr = np.asarray(bottoms)
+
+            # (2) Glyph height variance
+            height_cv = float(np.std(heights_arr) / max(np.mean(heights_arr), 1e-6))
+
+            # (1) Baseline regularity: cluster bottoms into rows using the median
+            # glyph height as the row tolerance, then measure spread within rows.
+            tol = max(float(np.median(heights_arr)) * 0.5, 2.0)
+            order = np.argsort(bottoms_arr)
+            sorted_bottoms = bottoms_arr[order]
+            rows: List[List[float]] = [[float(sorted_bottoms[0])]]
+            for b in sorted_bottoms[1:]:
+                if b - rows[-1][-1] <= tol:
+                    rows[-1].append(float(b))
+                else:
+                    rows.append([float(b)])
+            within_row_spread = [float(np.std(r)) for r in rows if len(r) >= 3]
+            baseline_jitter = (
+                float(np.mean(within_row_spread)) / max(float(np.median(heights_arr)), 1e-6)
+                if within_row_spread else 1.0
+            )
+
+            # (3) Stroke-width variance via distance transform of the ink mask.
+            dist = cv2.distanceTransform(ink, cv2.DIST_L2, 3)
+            stroke_radii = dist[dist > 0.5]
+            if stroke_radii.size >= 50:
+                stroke_cv = float(np.std(stroke_radii) / max(np.mean(stroke_radii), 1e-6))
+            else:
+                stroke_cv = 0.0
+
+            signals = {
+                "glyph_height_cv": height_cv > 0.45,
+                "baseline_jitter": baseline_jitter > 0.18,
+                "stroke_width_cv": stroke_cv > 0.55,
+            }
+            votes = sum(signals.values())
+            logger.debug(
+                "Handwriting heuristic for %s: height_cv=%.3f baseline_jitter=%.3f "
+                "stroke_cv=%.3f votes=%d",
+                os.path.basename(file_path), height_cv, baseline_jitter, stroke_cv, votes,
+            )
+            return votes >= 2
+        except Exception as exc:
+            logger.warning(
+                "Handwriting detection failed for %s (%s) — falling back to "
+                "filename guess.", file_path, exc,
+            )
+            return self._guess_handwriting_from_filename(file_path)
+
+    @staticmethod
+    def _guess_handwriting_from_filename(file_path: str) -> bool:
+        """Guess handwriting purely from the file NAME — no image analysis.
+
+        This inspects the basename for substrings like "rx"/"presc"/"hand". It is
+        a last-resort fallback used only when image analysis is impossible; it
+        knows nothing about the actual image content.
+        """
         basename = os.path.basename(file_path).lower()
         handwriting_indicators = ["rx", "presc", "hand", "note", "scrip"]
-        for indicator in handwriting_indicators:
-            if indicator in basename:
-                return True
-        return False
+        return any(indicator in basename for indicator in handwriting_indicators)
 
     async def _check_image_quality(self, file_path: str) -> list[str]:
         """Analyze image quality and return warning messages.
@@ -508,17 +658,21 @@ class OCRService:
         Falls back to Tesseract if Nanonets-OCR isn't available.
         """
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoModelForVision2Seq, AutoProcessor
             from PIL import Image
             import torch
 
             model_name = settings.NANONETS_OCR_MODEL
 
-            # Cache model and tokenizer
+            # Cache model and processor. A vision-language model needs an
+            # AutoProcessor (tokenizer + image processor); a bare AutoTokenizer
+            # accepts no `images=` argument and cannot feed the vision tower.
             if not hasattr(self, "_nanonets_model") or self._nanonets_model is None:
                 logger.info("Loading Nanonets-OCR2-1.5B model...")
-                self._nanonets_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-                self._nanonets_model = AutoModelForCausalLM.from_pretrained(
+                self._nanonets_processor = AutoProcessor.from_pretrained(
+                    model_name, trust_remote_code=True,
+                )
+                self._nanonets_model = AutoModelForVision2Seq.from_pretrained(
                     model_name,
                     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                     device_map="auto" if torch.cuda.is_available() else None,
@@ -526,16 +680,17 @@ class OCRService:
                 )
                 logger.info("Nanonets-OCR2 loaded successfully")
 
-            tokenizer = self._nanonets_tokenizer
+            processor = self._nanonets_processor
             model = self._nanonets_model
 
             with Image.open(file_path) as image:
                 if image.mode != "RGB":
                     image = image.convert("RGB")
-                prompt = "Extract all text from this document."
-                inputs = tokenizer(prompt, images=image, return_tensors="pt").to(model.device)
-                outputs = model.generate(**inputs, max_new_tokens=1024, do_sample=False)
-                text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                text = await self._vlm_generate(
+                    processor, model, image,
+                    "Extract all text from this document.",
+                    max_new_tokens=1024,
+                )
                 if text.strip():
                     return text, 0.90  # High confidence for SOTA model
         except ImportError:
@@ -573,25 +728,29 @@ class OCRService:
         Model is cached after first load to avoid reloading on every call.
         """
         try:
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from transformers import AutoModelForImageTextToText, AutoProcessor
             from PIL import Image
 
             model_name = settings.MEDGEMMA_PATH or "/models/medgemma-4b-it"
 
-            # Cache model and tokenizer to avoid reloading on every call
+            # Cache model and processor to avoid reloading on every call.
+            # MedGemma-4B-it is multimodal: it requires AutoProcessor so the
+            # image actually reaches the vision tower.
             if not hasattr(self, "_medgemma_model") or self._medgemma_model is None:
-                self._medgemma_tokenizer = AutoTokenizer.from_pretrained(model_name)
-                self._medgemma_model = AutoModelForCausalLM.from_pretrained(model_name)
+                self._medgemma_processor = AutoProcessor.from_pretrained(model_name)
+                self._medgemma_model = AutoModelForImageTextToText.from_pretrained(model_name)
 
-            tokenizer = self._medgemma_tokenizer
+            processor = self._medgemma_processor
             model = self._medgemma_model
 
-            # Open image and pass to VLM (was previously ignored)
             with Image.open(file_path) as image:
-                prompt = "Extract all text from this medical document."
-                inputs = tokenizer(prompt, images=image, return_tensors="pt")
-                outputs = model.generate(**inputs, max_new_tokens=512)
-                text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                text = await self._vlm_generate(
+                    processor, model, image,
+                    "Extract all text from this medical document.",
+                    max_new_tokens=512,
+                )
                 if text.strip():
                     return text, 0.75
         except ImportError:
@@ -601,6 +760,52 @@ class OCRService:
             logger.warning("MedGemma parsing failed: %s, falling back", exc)
             return await self._tesseract_fallback(file_path)
         return "", 0.0
+
+    # ─── VLM helper ───
+
+    @staticmethod
+    async def _vlm_generate(
+        processor: Any,
+        model: Any,
+        image: Any,
+        prompt: str,
+        max_new_tokens: int = 512,
+    ) -> str:
+        """Run one image+prompt turn through a HF vision-language model.
+
+        Builds the prompt with the processor's chat template when the model
+        provides one (required by Qwen2-VL-style and Gemma-3-style checkpoints so
+        the image placeholder tokens line up), otherwise passes the raw prompt.
+        Only the newly generated tokens are decoded, so the echoed prompt is not
+        mistaken for OCR output.
+        """
+        import asyncio
+        import torch
+
+        text_prompt = prompt
+        if getattr(processor, "chat_template", None) or getattr(
+            getattr(processor, "tokenizer", None), "chat_template", None
+        ):
+            messages = [{
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": prompt}],
+            }]
+            text_prompt = processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            )
+
+        inputs = processor(text=text_prompt, images=image, return_tensors="pt")
+        inputs = inputs.to(model.device)
+        input_len = inputs["input_ids"].shape[-1]
+
+        def _generate():
+            with torch.inference_mode():
+                return model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+
+        outputs = await asyncio.to_thread(_generate)
+        # Strip the prompt tokens; keep only the model's continuation.
+        generated = outputs[0][input_len:]
+        return processor.decode(generated, skip_special_tokens=True)
 
     # ─── Fallbacks ───
 

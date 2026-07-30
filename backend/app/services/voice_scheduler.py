@@ -35,6 +35,7 @@ class ASRService:
     def __init__(self):
         self._whisper_model = None
         self._indic_model = None
+        self._use_mock = settings.DEBUG
 
     async def _load_whisper(self):
         """Lazy-load faster-whisper model."""
@@ -149,7 +150,18 @@ class ASRService:
             ) from exc
 
     def _stub_transcribe(self) -> Dict[str, Any]:
-        """Return stub result when no ASR model is available."""
+        """Return stub result when no ASR model is available.
+        
+        In DEBUG mode, returns a mock transcription for testing without the ML model.
+        In production, raises RuntimeError to inform the user to install faster-whisper.
+        """
+        if self._use_mock:
+            return {
+                "text": "Patient has been experiencing fever and cough for the past three days",
+                "language": "en",
+                "confidence": 0.95,
+                "segments": [],
+            }
         raise RuntimeError(
             "ASR model not loaded. Install faster-whisper or configure WHISPER_PATH/INDIC_WHISPER_PATH."
         )

@@ -186,12 +186,18 @@ async def get_patient_for_doctor(
     return patient
 
 
+def _make_jti() -> str:
+    """Generate a unique JWT ID for blacklist support."""
+    import uuid
+    return uuid.uuid4().hex
+
+
 def create_access_token(sub: str, token_type: str = "access") -> str:
     """Create a short-lived access token (30 minutes)."""
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=settings.JWT_EXPIRATION_MINUTES)
-    payload = TokenPayload(sub=sub, exp=expire, iat=now, type=token_type)
+    payload = TokenPayload(sub=sub, jti=_make_jti(), exp=expire, iat=now, type=token_type)
     return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -200,7 +206,7 @@ def create_refresh_token(sub: str) -> str:
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS)
-    payload = TokenPayload(sub=sub, exp=expire, iat=now, type="refresh")
+    payload = TokenPayload(sub=sub, jti=_make_jti(), exp=expire, iat=now, type="refresh")
     return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -209,7 +215,7 @@ def create_user_token(user_id: str) -> str:
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=30)
-    payload = TokenPayload(sub=user_id, exp=expire, iat=now, type="patient")
+    payload = TokenPayload(sub=user_id, jti=_make_jti(), exp=expire, iat=now, type="patient")
     return jwt.encode(payload.model_dump(), settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 

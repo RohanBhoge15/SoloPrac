@@ -79,13 +79,12 @@ export function useSSE(options?: UseSSEOptions) {
       setState(prev => ({ ...prev, isConnected: true, isStreaming: true }))
 
       try {
-        const token = localStorage.getItem('access_token') || localStorage.getItem('patient_token')
         const response = await fetch('/api/v1/agent/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
+          credentials: 'include',
           body: JSON.stringify({
             query,
             patient_id: opts?.patient_id,

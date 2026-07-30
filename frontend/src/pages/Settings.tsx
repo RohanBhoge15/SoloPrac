@@ -381,7 +381,7 @@ function ScheduleTab() {
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
-    } catch { alert('Failed to save. Check console.') }
+    } catch { setError('Failed to save. Check console.'); setSaved(false); }
     finally { setSaving(false) }
   }
 

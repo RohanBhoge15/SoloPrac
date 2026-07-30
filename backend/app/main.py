@@ -1,6 +1,5 @@
 # Main FastAPI Application — with security middleware, rate limiting, audit log
 
-import sentry_sdk
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +35,7 @@ limiter = Limiter(
 
 # Sentry error tracking (free tier: 5k errors/month)
 if settings.SENTRY_DSN:
+    import sentry_sdk
     sentry_sdk.init(
         dsn=settings.SENTRY_DSN,
         traces_sample_rate=0.1,

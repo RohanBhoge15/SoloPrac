@@ -33,7 +33,7 @@ services:
       - "6333:6333"
       - "6334:6334"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -68,16 +68,17 @@ services:
       NEXTAUTH_SECRET: ${LANGFUSE_SECRET:-changeme_generate_strong_secret}
       NEXTAUTH_URL: http://localhost:3000
       SALT: ${LANGFUSE_SALT:-changeme_generate_strong_salt}
+      HOSTNAME: 0.0.0.0
       LOG_LEVEL: info
     volumes:
       - langfuse_data:/data
     ports:
-      - "3000:3000"
+      - "3001:3000"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/public/health"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/public/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -122,6 +123,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-soloprac}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-soloprac_redis_dev_password}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - LANGFUSE_HOST=http://langfuse:3000
@@ -138,9 +140,11 @@ services:
       # Persist HuggingFace model downloads (MedCPT, BGE-M3, BiomedCLIP, etc.)
       # so they are downloaded once and reused across rebuilds/restarts.
       - HF_HOME=/hf_cache
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
     volumes:
       - ./backend:/app
       - hf_cache:/hf_cache
+      - D:\models:/models
     ports:
       - "8000:8000"
     depends_on:
@@ -155,7 +159,7 @@ services:
       minio:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ['CMD-SHELL', "python -c \"import urllib.request; exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health').status == 200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -179,7 +183,7 @@ services:
     depends_on:
       - backend
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5173"]
+      test: ['CMD-SHELL', "wget --no-verbose --tries=1 --spider http://127.0.0.1:5173 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -202,6 +206,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-soloprac}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-soloprac_redis_dev_password}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - LANGFUSE_HOST=http://langfuse:3000
@@ -210,11 +215,13 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - NIM_API_KEY=${NIM_API_KEY:-}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       # Share the same HuggingFace cache as the backend (see backend service).
       - HF_HOME=/hf_cache
     volumes:
       - ./backend:/app
       - hf_cache:/hf_cache
+      - D:\models:/models
     depends_on:
       postgres:
         condition: service_healthy

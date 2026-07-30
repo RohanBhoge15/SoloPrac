@@ -123,7 +123,7 @@ async def _is_token_blacklisted(token: str) -> bool:
 DEV_DOCTOR_EMAIL = "dev.doctor@soloprac.local"
 
 
-@router.post("/dev-login", response_model=Token)
+@router.post("/dev-login")
 async def dev_login(response: Response, db: AsyncSession = Depends(get_db)):
     """DEV ONLY — log in as a seeded demo doctor without Google OAuth.
 

@@ -35,7 +35,7 @@ export default defineConfig({
             },
           },
           {
-            urlPattern: /\/api\/v1\//,
+            urlPattern: /\/api\/v1\/(health|specialities|public)/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',

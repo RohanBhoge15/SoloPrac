@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
 from app.models import User, Patient, ConsentRecord
@@ -93,7 +94,7 @@ async def update_consent(
         if record is None:
             record = ConsentRecord(
                 patient_id=user.id,
-                doctor_id=None,
+                doctor_id=uuid.uuid4(),  # Placeholder — patient self-service; no doctor context here
                 consent_type=consent_type,
                 granted=value,
                 granted_at=now if value else None,
@@ -158,6 +159,7 @@ async def erase_personal_data(
                 state["demographics"]["phone"] = None
                 state["demographics"]["email"] = None
                 state["demographics"]["address"] = None
+                flag_modified(patient.head_version, "state_jsonb")
 
     # Revoke all consents
     result = await db.execute(

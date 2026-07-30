@@ -94,13 +94,17 @@ async def verify_rls_isolation(db: AsyncSession) -> dict:
             count = row.scalar() or 0
 
             # RLS should have blocked doctor_b's rows since we're set to doctor_a
-            # This test is meaningful only if we know there's data in the table,
-            # but the structure itself is what we're verifying — that the policy exists
+            blocked = count == 0
             results[table] = {
-                "passed": True,
-                "detail": f"RLS policy exists and filters by doctor_id",
+                "passed": blocked,
+                "detail": (
+                    f"RLS isolated doctor_b rows (count={count})"
+                    if blocked else
+                    f"RLS did NOT block doctor_b rows (count={count})"
+                ),
             }
-            passed_count += 1
+            if blocked:
+                passed_count += 1
 
         except Exception as exc:
             error_msg = str(exc)

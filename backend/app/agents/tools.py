@@ -341,52 +341,57 @@ async def _analyze_with_groq(image_b64: str, image_type: str) -> dict:
 
 
 async def _analyze_with_medgemma(image_b64: str, image_type: str) -> dict:
-    """Analyze radiology image using MedGemma-4B-IT locally."""
-    import torch
-    from transformers import AutoModelForCausalLM, AutoProcessor
-    from app.config import settings
-    from app.services.gpu_optimizer import gpu_optimizer
+    """Analyze radiology image using MedGemma-4B-IT locally.
 
-    # Ensure model is loaded on GPU
-    await gpu_optimizer.ensure_model_loaded("medgemma")
+    Uses the model/processor cached by gpu_optimizer — a fresh
+    ``from_pretrained`` per call would re-read several GB from disk and blow the
+    VRAM budget the optimizer exists to manage.
+    """
+    import asyncio
+    import torch
+    from app.services.gpu_optimizer import gpu_optimizer, ModelName
+
+    # Ensure model is loaded on GPU and reuse the cached objects
+    model_info = await gpu_optimizer.ensure_model_loaded(ModelName.MEDGEMMA)
 
     try:
-        # Load model and processor (cached by gpu_optimizer)
-        model_path = settings.MEDGEMMA_PATH
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            device_map="cuda",
-            trust_remote_code=True,
-        )
-        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        model = model_info.model_obj
+        processor = model_info.processor
+        if model is None or processor is None:
+            return {
+                "status": "error",
+                "message": "MedGemma is not loaded (gpu_optimizer returned no model object)",
+            }
 
         # Prepare inputs
         from PIL import Image
         import io
         import base64
         image = Image.open(io.BytesIO(base64.b64decode(image_b64)))
+        if image.mode != "RGB":
+            image = image.convert("RGB")
 
         # MedGemma prompt format for radiology
         prompt = f"<image>Analyze this {image_type} medical image. Provide clinical findings, potential diagnoses, and recommendations."
 
-        inputs = processor(text=prompt, images=image, return_tensors="pt").to("cuda")
+        inputs = processor(text=prompt, images=image, return_tensors="pt")
+        inputs = inputs.to(model.device)
+        input_len = inputs["input_ids"].shape[-1]
 
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=1024,
-                temperature=0.2,
-                do_sample=True,
-            )
+        def _generate():
+            with torch.inference_mode():
+                return model.generate(
+                    **inputs,
+                    max_new_tokens=1024,
+                    temperature=0.2,
+                    do_sample=True,
+                )
 
-        response = processor.decode(outputs[0], skip_special_tokens=True)
-        # Strip the prompt from the generated response
-        analysis = response
-        if prompt in response:
-            analysis = response.split(prompt, 1)[-1]
-        elif "Analyze this" in response:
-            analysis = response.split("Analyze this", 1)[-1]
+        outputs = await asyncio.to_thread(_generate)
+
+        # Decode only the newly generated tokens — string-splitting the echoed
+        # prompt out of the full decode is unreliable.
+        analysis = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
 
         return {
             "status": "ok",
@@ -459,13 +464,19 @@ async def compare_images(patient_id: str, image_paths: list, **kwargs) -> dict:
         # Add clinical summary if available
         if result.matched:
             try:
-                from app.services.clinical_summary import ClinicalSummaryGenerator
-                summary_result = await ClinicalSummaryGenerator.generate_summary(
+                # generate_summary is a module-level coroutine, not a
+                # classmethod on ClinicalSummaryGenerator.
+                from app.services.clinical_summary import generate_summary
+                summary_result = await generate_summary(
                     metrics=metrics,
                     patient_name=f"Patient {patient_id[:8]}",
                 )
                 response["clinical_summary"] = summary_result.get("summary")
                 response["summary_confidence"] = summary_result.get("confidence", 0.0)
+            except (ImportError, AttributeError, TypeError) as e:
+                # Wiring/API errors here mean the feature is broken, not merely
+                # degraded — log loudly so it cannot fail silently again.
+                logger.exception("Clinical summary is misconfigured (bug, not data): %s", e)
             except Exception as e:
                 logger.warning("Clinical summary generation failed: %s", e)
 

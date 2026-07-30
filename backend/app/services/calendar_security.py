@@ -17,9 +17,11 @@ from __future__ import annotations
 import time
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 from uuid import UUID
+
+from sqlalchemy import text
 
 from app.models import AuditLog
 
@@ -160,7 +162,7 @@ class CalendarSecurityService:
         results = {}
         try:
             row = await db_session.execute(
-                "SELECT relrowsecurity FROM pg_class WHERE relname = 'appointments'"
+                text("SELECT relrowsecurity FROM pg_class WHERE relname = 'appointments'")
             )
             rls_enabled = row.scalar()
             results["appointments"] = {

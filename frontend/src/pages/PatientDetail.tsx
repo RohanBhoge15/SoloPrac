@@ -761,11 +761,11 @@ export function PatientDetail() {
                   id: id || '',
                 }}
                 vitals={{
-                  bp_systolic: clinical.vitals?.[0]?.bp_systolic ?? 140,
-                  bp_diastolic: clinical.vitals?.[0]?.bp_diastolic ?? 90,
-                  heart_rate: clinical.vitals?.[0]?.heart_rate ?? 78,
-                  weight: clinical.vitals?.[0]?.weight ?? 72,
-                  date: clinical.vitals?.[0]?.date ?? '2026-07-15',
+                  bp_systolic: clinical.vitals?.[0]?.bp_systolic ?? null,
+                  bp_diastolic: clinical.vitals?.[0]?.bp_diastolic ?? null,
+                  heart_rate: clinical.vitals?.[0]?.heart_rate ?? null,
+                  weight: clinical.vitals?.[0]?.weight ?? null,
+                  date: clinical.vitals?.[0]?.date ?? null,
                 }}
                 medications={medications}
                 diagnoses={diagnoses}

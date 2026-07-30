@@ -333,8 +333,14 @@ async def download_prescription_pdf(
     
     # Generate presigned URL for S3 access
     presigned_url = await storage_service.get_presigned_url("pdfs", rx.pdf_path)
-    if not presigned_url:
-        raise HTTPException(status_code=500, detail="Failed to generate PDF URL")
+    if presigned_url:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=presigned_url)
     
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=presigned_url)
+    # Fallback: serve from local filesystem if S3 is unavailable
+    import os
+    if os.path.isabs(rx.pdf_path) and os.path.exists(rx.pdf_path):
+        from fastapi.responses import FileResponse
+        return FileResponse(rx.pdf_path, media_type="application/pdf", filename=f"prescription_{prescription_id}.pdf")
+    
+    raise HTTPException(status_code=404, detail="PDF file not found on storage")

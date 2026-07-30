@@ -82,7 +82,7 @@ export function PatientInbox() {
                     {!n.read && <Badge className="bg-blue-500 text-white text-[10px]">New</Badge>}
                     {n.doctor && (
                       <Badge variant="outline" className="text-[10px] text-gray-600 dark:text-gray-400">
-                        Dr. {n.doctor.name} {n.doctor.speciality ? `· {n.doctor.speciality}` : ''} {n.doctor.clinic_name ? `({n.doctor.clinic_name})` : ''}
+                        Dr. {n.doctor.name} {n.doctor.speciality ? `· ${n.doctor.speciality}` : ''} {n.doctor.clinic_name ? `(${n.doctor.clinic_name})` : ''}
                       </Badge>
                     )}
                   </div>

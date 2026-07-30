@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e "."
+RUN pip install -e "."
 
 # Install Playwright browsers
 RUN playwright install chromium && playwright install-deps chromium

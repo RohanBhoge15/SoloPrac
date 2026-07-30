@@ -127,16 +127,16 @@ class WeeklyReportService:
             select(PatientVersion)
             .where(
                 PatientVersion.patient_id == patient_id,
-                PatientVersion.created_at >= cutoff,
+                PatientVersion.timestamp >= cutoff,
             )
-            .order_by(PatientVersion.created_at.desc())
+            .order_by(PatientVersion.timestamp.desc())
         )
         versions = result.scalars().all()
         return [
             {
                 "id": str(v.id),
                 "version_number": v.version_number,
-                "created_at": v.created_at,
+                "created_at": v.timestamp,
                 "state_jsonb": v.state_jsonb,
                 "summary": v.summary,
                 "tags": v.tags,
@@ -569,3 +569,4 @@ def build_likert_study(
             "Overall significance scoring expected >= 4.0."
         ),
     }
+

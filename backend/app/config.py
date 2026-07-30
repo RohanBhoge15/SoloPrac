@@ -119,6 +119,9 @@ class Settings(BaseSettings):
     # Frontend URL (for CORS)
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # Admin access
+    ADMIN_EMAILS: str = "admin@soloprac.io"  # Comma-separated list of admin emails
+
     # Sentry Error Tracking (free tier: 5k errors/month)
     SENTRY_DSN: str = ""
 

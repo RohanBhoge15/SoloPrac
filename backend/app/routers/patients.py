@@ -2,6 +2,7 @@
 # Each write mints an immutable version; the chain is content-addressed via SHA256.
 
 import uuid
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func, desc
@@ -17,6 +18,8 @@ from app.schemas import (
 )
 from app.dependencies import get_current_doctor
 from app.models import AuditLog
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -143,13 +146,13 @@ async def search_patients(
     
     # Use ILIKE with wildcards - this will use the pg_trgm GIN index
     name_condition = func.coalesce(
-        PatientVersion.state_jsonb["demographics"]["name"].astext(), ''
+        PatientVersion.state_jsonb["demographics"]["name"].astext, ''
     ).ilike(f"%{q_safe}%")
     phone_condition = func.coalesce(
-        PatientVersion.state_jsonb["demographics"]["phone"].astext(), ''
+        PatientVersion.state_jsonb["demographics"]["phone"].astext, ''
     ).ilike(f"%{q_safe}%")
     email_condition = func.coalesce(
-        PatientVersion.state_jsonb["demographics"]["email"].astext(), ''
+        PatientVersion.state_jsonb["demographics"]["email"].astext, ''
     ).ilike(f"%{q_safe}%")
 
     result = await db.execute(

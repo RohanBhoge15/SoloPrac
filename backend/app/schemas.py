@@ -1,6 +1,6 @@
 # Pydantic Schemas — Version 2
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict, field_validator
@@ -268,8 +268,9 @@ class Token(BaseModel):
 
 class TokenPayload(BaseModel):
     sub: str
-    exp: int
-    iat: int
+    exp: Union[int, datetime]
+    iat: Union[int, datetime]
+    jti: str = ""
     doctor_id: Optional[UUID] = None
     patient_id: Optional[UUID] = None
     type: str = "access"

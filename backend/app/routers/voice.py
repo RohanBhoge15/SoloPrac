@@ -7,7 +7,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-from fastapi import APIRouter, File, UploadFile, HTTPException, Form
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Form
 from typing import Optional
 
 from app.dependencies import get_current_doctor

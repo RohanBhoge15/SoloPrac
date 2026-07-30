@@ -270,9 +270,13 @@ async def patient_websocket(patient_id: str, websocket: WebSocket, token: str = 
         await websocket.close(code=4001, reason="Unauthorized")
         return
 
-    # Verify the patient_id belongs to this user (defer to get_patient_for_doctor)
-    # Since we don't have a DB session in WS handshake, we do a lightweight check
-    # at connection time. The patient_id is for routing notifications only.
+    # Verify the patient_id matches the token's subject (user_id).
+    # The patient_id URL param is used for routing notifications to the correct
+    # connection. If the token has a patient_id claim, it must match.
+    token_patient_id = payload.get("patient_id")
+    if token_patient_id and str(token_patient_id) != patient_id:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
     await ws_manager.connect(patient_id, websocket)
     try:
         while True:
@@ -471,11 +475,11 @@ async def search_doctors(
     limit: int = Query(20, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for doctors by location, speciality, or name.
+    """Search for doctors by location, speciality, name, or clinic address.
 
     Only returns verified doctors (they have submitted credentials).
     Uses PostGIS distance query when lat/lng provided.
-    Falls back to text search on name/speciality/clinic.
+    Falls back to text search on name/speciality/clinic/address.
     """
     query = select(Doctor).where(Doctor.verification_status == "verified")
 
@@ -497,16 +501,21 @@ async def search_doctors(
         query = query.where(
             Doctor.name.ilike(f"%{q}%") |
             Doctor.clinic_name.ilike(f"%{q}%") |
+            Doctor.clinic_address.ilike(f"%{q}%") |
             Doctor.speciality.ilike(f"%{q}%")
         )
 
     query = query.limit(limit)
     result = await db.execute(query)
-    rows = result.all()  # Returns tuples when distance column is added
+    has_distance = lat is not None and lng is not None
+    if has_distance:
+        rows = result.all()
+    else:
+        rows = result.scalars().all()
 
     doctors = []
     for row in rows:
-        if isinstance(row, tuple):
+        if has_distance:
             doc = row[0]
             distance = row[1] if len(row) > 1 else None
         else:
@@ -672,7 +681,7 @@ async def patient_book_appointment(
         select(Patient).where(
             Patient.user_id == user.id,
             Patient.doctor_id == doctor_uuid,
-        )
+        ).order_by(Patient.created_at.desc()).limit(1)
     )
     patient = result.scalar_one_or_none()
     if not patient:
@@ -1165,12 +1174,28 @@ async def patient_weekly_report_pdf(
 # ── WebSocket endpoints (mounted under api_router) ──
 
 @router.websocket("/ws/doctor/{doctor_id}")
-async def doctor_websocket(doctor_id: str, websocket: WebSocket):
+async def doctor_websocket(doctor_id: str, websocket: WebSocket, token: str = Query("")):
     """WebSocket for doctor real-time alerts (risk alerts, notifications).
+
+    Connect: ws://host/api/v1/ws/doctor/{doctor_id}?token=JWT_TOKEN
+    The doctor JWT token is required as a query parameter.
+    Verifies that the doctor_id in the URL matches the authenticated doctor.
 
     Registers with ws_manager so background jobs (Feature E risk scan) can
     push alerts here via ws_manager.notify_doctor.
     """
+    from jose import jwt as _jwt, JWTError as _JWTError
+    from app.config import settings as _settings
+    try:
+        payload = _jwt.decode(token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM])
+        token_sub = payload.get("sub")
+        if not token_sub or token_sub != doctor_id:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+    except _JWTError:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
     await ws_manager.connect_doctor(doctor_id, websocket)
     try:
         while True:
