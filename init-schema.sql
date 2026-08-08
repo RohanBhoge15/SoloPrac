@@ -16,7 +16,7 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
-    phone_hash TEXT UNIQUE NOT NULL,  -- SHA256 for fast lookup
+    phone_hash TEXT NOT NULL,  -- SHA256 for fast lookup (NOT unique: family members legitimately share a phone)
     dob TIMESTAMPTZ,
     gender TEXT,
     address TEXT,
@@ -135,7 +135,7 @@ CREATE TABLE invoices (
     patient_id UUID NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
     doctor_id UUID NOT NULL REFERENCES doctors(id) ON DELETE CASCADE,
     appointment_id UUID REFERENCES appointments(id) ON DELETE SET NULL,
-    invoice_number TEXT NOT NULL UNIQUE,
+    invoice_number TEXT NOT NULL,
     items JSONB NOT NULL,
     subtotal INTEGER NOT NULL,  -- in paise/cents
     tax INTEGER DEFAULT 0,
@@ -145,7 +145,8 @@ CREATE TABLE invoices (
     notes TEXT,
     generated_at TIMESTAMPTZ DEFAULT NOW(),
     paid_at TIMESTAMPTZ,
-    pdf_path TEXT
+    pdf_path TEXT,
+    UNIQUE (doctor_id, invoice_number)
 );
 
 -- Certificates

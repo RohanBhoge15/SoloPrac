@@ -1,14 +1,16 @@
 # Pydantic Schemas — Version 2
 
-from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ─── User ──────────────────────────────────────
 class UserRegister(BaseModel):
     """Patient registration — all compulsory fields."""
+
     email: str = Field(..., max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
     name: str = Field(..., max_length=255)
@@ -20,12 +22,14 @@ class UserRegister(BaseModel):
 
 class UserLogin(BaseModel):
     """Patient login with email and password."""
+
     email: str
     password: str
 
 
 class UserUpdate(BaseModel):
     """Update user profile fields."""
+
     name: Optional[str] = Field(None, max_length=255)
     phone: Optional[str] = Field(None, max_length=20)
     dob: Optional[str] = None
@@ -99,6 +103,12 @@ class PatientVersionBase(BaseModel):
     def state_not_empty(cls, v):
         if not v:
             raise ValueError("state_jsonb must not be empty")
+        if isinstance(v, dict):
+            demo = v.get("demographics")
+            if isinstance(demo, dict) and demo.get("name") is not None:
+                name = str(demo["name"])
+                if len(name) > 500:
+                    raise ValueError("Patient name must not exceed 500 characters")
         return v
 
 
@@ -128,6 +138,7 @@ class PatientVersionDiff(BaseModel):
 
 class PatientVersionTimeline(BaseModel):
     """Lightweight version (no full state_jsonb) for timeline display."""
+
     id: UUID
     version_number: int
     parent_version_id: Optional[UUID] = None
@@ -291,6 +302,7 @@ class DoctorSettingsUpdate(BaseModel):
 
 class DoctorProfileUpdate(BaseModel):
     """Update doctor's profile fields — name, clinic, contact, location, etc."""
+
     name: Optional[str] = Field(None, max_length=255)
     speciality: Optional[str] = Field(None, max_length=100)
     clinic_name: Optional[str] = Field(None, max_length=255)
@@ -306,6 +318,7 @@ class DoctorProfileUpdate(BaseModel):
 # ─── Patient Field Update ─────────────────────────
 class DemographicsPatch(BaseModel):
     """Allowed demographics fields for inline edit."""
+
     name: Optional[str] = Field(None, max_length=255)
     phone: Optional[str] = Field(None, max_length=20)
     email: Optional[str] = Field(None, max_length=255)
@@ -324,6 +337,7 @@ class DemographicsPatch(BaseModel):
 
 class PatientFieldUpdate(BaseModel):
     """Validated patch for patient fields — only allows known top-level sections."""
+
     demographics: Optional[DemographicsPatch] = None
     # Add other sections as needed:
     # vitals: Optional[Dict] = None
@@ -336,6 +350,7 @@ class PatientFieldUpdate(BaseModel):
 # ─── Doctor Registration & Verification ──────────────
 class DoctorRegister(BaseModel):
     """Onboard a new doctor via email/password."""
+
     email: str = Field(..., max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
     name: str = Field(..., max_length=255)
@@ -347,12 +362,14 @@ class DoctorRegister(BaseModel):
 
 class DoctorLogin(BaseModel):
     """Login with email and password."""
+
     email: str
     password: str
 
 
 class DoctorVerificationSubmit(BaseModel):
     """Submit ABDM details for verification."""
+
     registration_number: str = Field(..., max_length=100)
     state_medical_council: str = Field(..., max_length=255)
     year_of_registration: int = Field(..., ge=1900, le=2030)
@@ -360,6 +377,7 @@ class DoctorVerificationSubmit(BaseModel):
 
 class DoctorProfileRead(BaseModel):
     """Full doctor profile returned to the doctor."""
+
     id: UUID
     email: str
     name: str
@@ -389,12 +407,14 @@ class DoctorProfileRead(BaseModel):
         data = super().from_orm(obj)
         if obj.year_of_registration:
             from datetime import date
+
             data.years_experience = date.today().year - obj.year_of_registration
         return data
 
 
 class VerificationPending(BaseModel):
     """A doctor pending verification review (admin view)."""
+
     id: UUID
     email: str
     name: str
@@ -411,5 +431,6 @@ class VerificationPending(BaseModel):
 
 class VerificationAction(BaseModel):
     """Admin action on a verification request."""
+
     doctor_id: UUID
     reason: Optional[str] = Field(None, max_length=500, description="Rejection reason")

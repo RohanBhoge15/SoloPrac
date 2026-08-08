@@ -11,8 +11,9 @@ Endpoints:
 
 from __future__ import annotations
 
-import uuid
 import logging
+
+import numpy as np
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,14 +22,26 @@ from app.dependencies import get_current_doctor
 from app.models import Doctor
 from app.services.evaluation import EvaluationHarness
 from app.services.feature_b_eval import FeatureBEvaluator, generate_100_query_set
+from app.services.feature_c_eval import evaluate_projector
 from app.services.feature_c_projector import ProjectorTrainer, generate_synthetic_pairs
-from app.services.feature_c_eval import evaluate_projector, run_qualitative_panel
 from app.services.feature_e_clustering import run_full_evaluation as run_feature_e_eval
-from app.services.research_data_mgmt import verify_data_anonymization
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/evaluation", tags=["evaluation"])
+
+
+def _json_safe(obj):
+    """Recursively convert numpy types to JSON-serializable Python types."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
 
 
 @router.post("/run")
@@ -108,7 +121,8 @@ async def evaluate_feature_c(
 
     # Generate training pairs
     train_images, train_texts = generate_synthetic_pairs(
-        num_pairs=num_pairs, seed=42,
+        num_pairs=num_pairs,
+        seed=42,
     )
 
     # Train projector
@@ -117,15 +131,16 @@ async def evaluate_feature_c(
 
     # Generate held-out pairs
     held_out_images, held_out_texts = generate_synthetic_pairs(
-        num_pairs=held_out_pairs, seed=99,
+        num_pairs=held_out_pairs,
+        seed=99,
     )
 
     # Evaluate
     eval_report = evaluate_projector(W, held_out_images, held_out_texts)
 
     return {
-        "training": result,
-        "evaluation": eval_report,
+        "training": _json_safe(result),
+        "evaluation": _json_safe(eval_report),
     }
 
 
@@ -157,6 +172,7 @@ async def get_research_data(
     Never fabricates values — returns null/unavailable when infra is down.
     """
     from app.services.research_data_mgmt import get_research_data_report as _get_report
+
     return await _get_report(doctor_id=doctor.id, db=db)
 
 
@@ -171,4 +187,5 @@ async def export_langfuse(
     Never fabricates or hardcodes metric values.
     """
     from app.services.research_data_mgmt import export_langfuse_metrics as _export
+
     return await _export(doctor_id=doctor.id)

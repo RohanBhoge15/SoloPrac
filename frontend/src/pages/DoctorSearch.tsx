@@ -5,11 +5,16 @@ import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
 import { Search, Clock, Stethoscope, Loader2, AlertCircle, CheckCircle } from 'lucide-react'
+import { ResponsiveAvatar } from '@/components/ui/ResponsiveAvatar'
+
+// Indian pincode: 6 digits, first digit 1-9 (0 isn't a valid postal region).
+const PINCODE_RE = /^[1-9]\d{5}$/
 
 export function DoctorSearch() {
   const [query, setQuery] = useState('')
   const [speciality, setSpeciality] = useState('')
   const [pincode, setPincode] = useState('')
+  const [pincodeError, setPincodeError] = useState<string | null>(null)
   const [doctors, setDoctors] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -54,7 +59,27 @@ export function DoctorSearch() {
     }
   }
 
-  const handleSearch = () => loadDoctors()
+  const handlePincodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Strip non-digits so users can't type garbage.
+    const cleaned = e.target.value.replace(/\D/g, '').slice(0, 6)
+    setPincode(cleaned)
+    if (cleaned === '' || PINCODE_RE.test(cleaned)) {
+      setPincodeError(null)
+    } else if (cleaned.length === 6) {
+      setPincodeError('Invalid Indian pincode (first digit must be 1-9)')
+    } else {
+      setPincodeError('Pincode must be 6 digits')
+    }
+  }
+
+  const handleSearch = () => {
+    // Block search if pincode was typed but is invalid; empty pincode is fine.
+    if (pincode && !PINCODE_RE.test(pincode)) {
+      setPincodeError('Enter a valid 6-digit Indian pincode')
+      return
+    }
+    loadDoctors()
+  }
 
   const handleSelectDoctor = async (doc: any) => {
     setSelectedDoctor(doc)
@@ -118,14 +143,27 @@ export function DoctorSearch() {
               <option value="Pediatrics">Pediatrics</option>
               <option value="Gynecology">Gynecology</option>
             </select>
-            <Input
-              value={pincode}
-              onChange={e => setPincode(e.target.value)}
-              placeholder="PIN code"
-              maxLength={6}
-              className="w-28"
-              onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            />
+            <div className="flex flex-col">
+              <Input
+                value={pincode}
+                onChange={handlePincodeChange}
+                placeholder="PIN code"
+                inputMode="numeric"
+                maxLength={6}
+                aria-invalid={!!pincodeError}
+                aria-describedby={pincodeError ? 'pincode-error' : undefined}
+                className={cn(
+                  'w-28',
+                  pincodeError && 'border-red-500 focus:ring-red-500'
+                )}
+                onKeyDown={e => e.key === 'Enter' && handleSearch()}
+              />
+              {pincodeError && (
+                <p id="pincode-error" className="mt-1 text-[10px] text-red-600 dark:text-red-400">
+                  {pincodeError}
+                </p>
+              )}
+            </div>
             <Button onClick={handleSearch} disabled={loading}>
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Search'}
             </Button>
@@ -144,13 +182,12 @@ export function DoctorSearch() {
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
-                    {doc.photo_url ? (
-                      <img src={doc.photo_url} alt={doc.name} className="h-12 w-12 rounded-full object-cover" />
-                    ) : (
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
-                        <span className="text-lg font-bold text-primary-700">{doc.name.split(' ').map((n: string) => n[0]).join('')}</span>
-                      </div>
-                    )}
+                    <ResponsiveAvatar
+                      src={doc.photo_url}
+                      alt={doc.name}
+                      size={48}
+                      className="h-12 w-12 rounded-full object-cover"
+                    />
                     <div>
                       <p className="font-medium text-gray-900 dark:text-white">{doc.name}</p>
                       <p className="text-sm text-gray-500 flex items-center gap-1"><Stethoscope className="h-3 w-3" /> {doc.speciality}</p>
@@ -174,7 +211,12 @@ export function DoctorSearch() {
                 <CardHeader><CardTitle className="text-sm">{selectedDoctor.name}</CardTitle></CardHeader>
                 <CardContent className="text-sm space-y-1">
                   {selectedDoctor.photo_url && (
-                    <img src={selectedDoctor.photo_url} alt={selectedDoctor.name} className="h-16 w-16 rounded-full object-cover mx-auto mb-2" />
+                    <ResponsiveAvatar
+                      src={selectedDoctor.photo_url}
+                      alt={selectedDoctor.name}
+                      size={64}
+                      className="h-16 w-16 rounded-full object-cover mx-auto mb-2"
+                    />
                   )}
                   <p><span className="text-gray-500">Speciality:</span> {selectedDoctor.speciality}</p>
                   <p><span className="text-gray-500">Clinic:</span> {selectedDoctor.clinic_name || 'N/A'}</p>

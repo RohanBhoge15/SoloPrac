@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useLocation, Outlet } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
 import { Button } from '@/components/ui/Button'
@@ -32,6 +32,31 @@ export function AppLayout() {
   const [sidebarOpen] = useState(true)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const { isOpen: cmdPaletteOpen, openPalette, closePalette } = useCommandPalette()
+
+  // Global Cmd/Ctrl+K opens the palette from anywhere in the app.
+  // The palette component itself handles Cmd+K → close when it's already open,
+  // so we only fire this when the palette is closed to avoid a double-toggle race.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        // Don't hijack Cmd+K inside inputs where users might expect native behavior.
+        const target = e.target as HTMLElement | null
+        const tag = target?.tagName?.toLowerCase()
+        const editable = tag === 'input' || tag === 'textarea' || target?.isContentEditable
+        if (editable && !cmdPaletteOpen) {
+          // Still open the palette — Cmd+K in a search bar is what most apps do — but
+          // let inputs that specifically opt-out (data-no-cmdk) keep the native behavior.
+          if (target?.dataset?.noCmdk !== undefined) return
+        }
+        if (!cmdPaletteOpen) {
+          e.preventDefault()
+          openPalette()
+        }
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [cmdPaletteOpen, openPalette])
 
   const handleLogout = () => {
     logout()

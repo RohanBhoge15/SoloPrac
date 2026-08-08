@@ -1,18 +1,29 @@
 # SQLAlchemy Models — Versioned Patient Records
 
-import uuid
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
-from sqlalchemy import (
-    Column, String, Text, DateTime, ForeignKey, Integer, Float, Boolean,
-    BigInteger, Index, UniqueConstraint, event,
-)
-from sqlalchemy.dialects.postgresql import UUID, JSONB, BYTEA, INET, ARRAY as PG_ARRAY
-from sqlalchemy.orm import relationship, declared_attr
-from sqlalchemy import text
+
 from geoalchemy2 import Geography
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+)
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
+from sqlalchemy.orm import relationship
+
 from app.database import Base
 
 
@@ -27,6 +38,7 @@ class User(Base):
     multiple clinics; each visit creates a separate Patient row
     scoped to that doctor.
     """
+
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -34,7 +46,11 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     name = Column(String(255), nullable=False)
     phone = Column(String(20), nullable=False)
-    phone_hash = Column(String(64), unique=True, nullable=False, index=True)
+    # NOT unique on purpose: family members share a phone number in the real
+    # world (shared handset, elderly parent, employee). We index for fast
+    # lookup but let multiple users share the hash. Disambiguation of who
+    # owns which walk-in record is done via the /pending-matches flow.
+    phone_hash = Column(String(64), nullable=False, index=True)
     dob = Column(DateTime(timezone=True), nullable=True)
     gender = Column(String(20), nullable=True)
     address = Column(Text, nullable=True)
@@ -71,8 +87,10 @@ class Doctor(Base):
     registration_number = Column(String(100), nullable=True)
     password_hash = Column(String(255), nullable=True)
     verification_status = Column(
-        String(20), nullable=False, default="unverified",
-        comment="unverified | pending_verification | verified | rejected"
+        String(20),
+        nullable=False,
+        default="unverified",
+        comment="unverified | pending_verification | verified | rejected",
     )
     license_document_path = Column(String(500), nullable=True)
     rejection_reason = Column(Text, nullable=True)
@@ -106,6 +124,10 @@ class Patient(Base):
     phone_enc = Column(BYTEA)
     email_enc = Column(BYTEA)
     consent_for_share = Column(Boolean, default=False)
+    # Users who explicitly said "Not me" when this walk-in appeared as a
+    # phone-only candidate on their pending-matches list. We keep them here
+    # so we never re-surface the same row to the same user.
+    link_rejected_by_user_ids = Column(PG_ARRAY(UUID(as_uuid=True)), default=list, server_default="{}")
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -145,6 +167,7 @@ class PatientVersion(Base):
     via parent_version_id, forming a Git-like DAG. State is content-addressed
     via version_hash = sha256(canonical_json(state_jsonb)).
     """
+
     __tablename__ = "patient_versions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -157,7 +180,7 @@ class PatientVersion(Base):
     author = Column(String(100), nullable=False)  # 'doctor:<uuid>' | 'agent:<name>'
     edit_type = Column(String(20), nullable=False)  # manual|voice|ocr|ai_suggestion|revert
     summary = Column(Text, nullable=True)
-    tags = Column(PG_ARRAY(String), default=list)
+    tags = Column(PG_ARRAY(Text), default=list)
     clinical_significance = Column(Float, default=0.0)
     image_comparison = Column(JSONB, nullable=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, default=utc_now)
@@ -223,7 +246,7 @@ class Invoice(Base):
     patient_id = Column(UUID(as_uuid=True), ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
     doctor_id = Column(UUID(as_uuid=True), ForeignKey("doctors.id", ondelete="CASCADE"), nullable=False)
     appointment_id = Column(UUID(as_uuid=True), ForeignKey("appointments.id"), nullable=True)
-    invoice_number = Column(String(50), unique=True, nullable=False)
+    invoice_number = Column(String(50), nullable=False)
     items = Column(JSONB, nullable=False)
     subtotal = Column(Integer, nullable=False)
     tax = Column(Integer, default=0)
@@ -238,6 +261,8 @@ class Invoice(Base):
     doctor = relationship("Doctor", back_populates="invoices")
     patient = relationship("Patient", back_populates="invoices")
     appointment = relationship("Appointment", back_populates="invoice")
+
+    __table_args__ = (UniqueConstraint("doctor_id", "invoice_number", name="uq_invoices_doctor_number"),)
 
 
 class Certificate(Base):
@@ -377,9 +402,7 @@ class AuditLog(Base):
 
     doctor = relationship("Doctor", back_populates="audit_logs")
 
-    __table_args__ = (
-        Index("ix_audit_log_doctor_occurred", "doctor_id", "occurred_at"),
-    )
+    __table_args__ = (Index("ix_audit_log_doctor_occurred", "doctor_id", "occurred_at"),)
 
 
 class ReportVerification(Base):

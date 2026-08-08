@@ -18,15 +18,13 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import json
 import logging
 import uuid
-import time
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from functools import wraps
+from typing import Any, Callable, Dict, List, Optional
 
 from langfuse import Langfuse
 
@@ -74,12 +72,19 @@ class LangfuseClient:
         output_data: Optional[Dict] = None,
         metadata: Optional[Dict] = None,
         tags: Optional[List[str]] = None,
+        trace_id: Optional[str] = None,
     ) -> Optional[str]:
-        """Create a new trace and return trace_id."""
+        """Create a new trace and return trace_id.
+
+        If `trace_id` is provided, use it verbatim so callers (e.g. the agent
+        graph) can pre-mint an id and reference it in child spans. Otherwise a
+        fresh UUID is generated.
+        """
         if not self.is_enabled:
             return None
 
-        trace_id = str(uuid.uuid4())
+        if trace_id is None:
+            trace_id = str(uuid.uuid4())
         try:
             self._client.trace(
                 id=trace_id,
@@ -214,6 +219,7 @@ langfuse_client = LangfuseClient()
 
 # ─── Context Managers for Easy Tracing ───
 
+
 @asynccontextmanager
 async def trace_llm_call(
     name: str,
@@ -226,7 +232,7 @@ async def trace_llm_call(
     """Context manager to trace an LLM call.
 
     Usage:
-        async with trace_llm_call("maverick_synthesis", "nvidia/llama-4-maverick-17b", doctor_id=doc_id) as span:
+        async with trace_llm_call("maverick_synthesis", "meta/llama-3.2-1b-instruct", doctor_id=doc_id) as span:
             result = await synthesizer.synthesize(...)
             span.output = result
     """
@@ -416,6 +422,7 @@ async def trace_rag_retrieval(
 
 def trace_function(name: str):
     """Decorator to trace a function as a Langfuse span."""
+
     def decorator(func: Callable):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -510,6 +517,7 @@ def trace_function(name: str):
                 raise
 
         import asyncio
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
@@ -606,9 +614,7 @@ async def evaluate_faithfulness(
     if not context or not response:
         return 0.0
 
-    context_text = " ".join(
-        str(c.get("text", "")) for c in context if isinstance(c, dict)
-    ).strip()
+    context_text = " ".join(str(c.get("text", "")) for c in context if isinstance(c, dict)).strip()
     if not context_text:
         return 0.0
 
@@ -678,9 +684,7 @@ async def evaluate_retrieval_quality(
     if not ground_truth_versions or not retrieved:
         return {}
 
-    retrieved_versions = [
-        r.get("version_number") for r in retrieved if r.get("version_number") is not None
-    ]
+    retrieved_versions = [r.get("version_number") for r in retrieved if r.get("version_number") is not None]
     relevant = set(ground_truth_versions)
     if not relevant or not retrieved_versions:
         return {}

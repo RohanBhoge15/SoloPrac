@@ -137,6 +137,88 @@ export function Calendar() {
   const handleAppointmentClick = (appt: any) => setSelectedAppointment(appt)
   const handleCancel = (appt: any) => setConfirmCancelId(appt.id)
 
+  // ── Drag-to-reschedule ──
+  // We use plain HTML5 drag-and-drop (no extra deps). The dragged appointment's
+  // full JSON is stashed in dataTransfer so the drop handler can rebuild an
+  // updated PATCH body — start_at moved to the drop cell, end_at moved by the
+  // same delta so the appointment keeps its original duration.
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+
+  const handleDragStart = (e: React.DragEvent, appt: any) => {
+    setDraggingId(appt.id)
+    e.dataTransfer.effectAllowed = 'move'
+    try { e.dataTransfer.setData('application/json', JSON.stringify(appt)) } catch { /* Firefox is fine without */ }
+    // Fallback: also stash on window in case dataTransfer.getData is empty on drop (Safari).
+    ;(window as any).__dragAppt = appt
+  }
+
+  const handleDragEnd = () => {
+    setDraggingId(null)
+    setDropTarget(null)
+    ;(window as any).__dragAppt = null
+  }
+
+  const handleCellDragOver = (e: React.DragEvent, cellKey: string) => {
+    // Only accept if there's no appointment already in this cell.
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDropTarget(cellKey)
+  }
+
+  const handleCellDrop = async (e: React.DragEvent, day: Date, slotMinutes: number) => {
+    e.preventDefault()
+    setDropTarget(null)
+
+    let dragged: any = null
+    try {
+      const raw = e.dataTransfer.getData('application/json')
+      if (raw) dragged = JSON.parse(raw)
+    } catch { /* ignore */ }
+    if (!dragged) dragged = (window as any).__dragAppt
+    if (!dragged) return
+
+    // Compute new start / end. Preserve original duration.
+    const originalStart = new Date(dragged.start_at)
+    const originalEnd = new Date(dragged.end_at)
+    const durationMs = originalEnd.getTime() - originalStart.getTime()
+
+    const hh = Math.floor(slotMinutes / 60)
+    const mm = slotMinutes % 60
+    const newStart = new Date(day)
+    // Preserve original minute offset so a 09:15 apt dropped on the "9 AM" row stays at 09:15,
+    // but if the source cell was aligned to :00 we get :00.
+    const originalMinuteOffset = originalStart.getMinutes()
+    newStart.setHours(hh, originalMinuteOffset || mm, 0, 0)
+    const newEnd = new Date(newStart.getTime() + durationMs)
+
+    // No-op if the user dropped it on its current cell.
+    if (newStart.getTime() === originalStart.getTime()) return
+
+    // Optimistic update
+    const previousAppointments = appointments
+    setAppointments(prev => prev.map(a => a.id === dragged.id
+      ? { ...a, start_at: newStart.toISOString(), end_at: newEnd.toISOString() }
+      : a
+    ))
+
+    try {
+      await apiClient.patch(`/calendar/appointments/${dragged.id}/reschedule`, {
+        start_at: newStart.toISOString(),
+        end_at: newEnd.toISOString(),
+        reason: 'Rescheduled via drag',
+      })
+      toast.success('Appointment rescheduled')
+      // Refetch to reconcile with any server-side normalisation (e.g. buffer merges).
+      fetchAppointments()
+    } catch (err: any) {
+      // Roll back on failure.
+      setAppointments(previousAppointments)
+      const detail = err?.response?.data?.detail || 'Failed to reschedule'
+      toast.error(String(detail))
+    }
+  }
+
   const confirmCancelAppointment = async () => {
     if (!confirmCancelId) return
     try {
@@ -210,6 +292,7 @@ export function Calendar() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Calendar</h1>
           <p className="text-gray-500 dark:text-gray-400">
             {format(weekStart, 'MMM d')} - {format(weekEnd, 'MMM d, yyyy')}
+            <span className="hidden sm:inline text-xs text-gray-400 ml-2">· Drag an appointment to a new time to reschedule</span>
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -274,19 +357,32 @@ export function Calendar() {
                     <td className="w-20 p-2 text-xs text-gray-500 dark:text-gray-400 font-mono">{slot.label}</td>
                     {weekDays.map((day) => {
                       const appt = getAppointmentForSlot(format(day, 'yyyy-MM-dd'), slot.value)
+                      const cellKey = `${format(day, 'yyyy-MM-dd')}-${slot.value}`
+                      const isDropTarget = dropTarget === cellKey && !appt
                       return (
                         <td
                           key={day.toISOString()}
                           className={cn(
                             "relative h-24 p-1 border-r border-gray-100 dark:border-gray-700",
-                            !appt && "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                            !appt && "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50",
+                            isDropTarget && "bg-primary-100 dark:bg-primary-900/40 ring-2 ring-primary-400 ring-inset"
                           )}
                           onClick={() => !appt && handleEmptyCellClick(day, slot.value)}
+                          onDragOver={!appt ? (e) => handleCellDragOver(e, cellKey) : undefined}
+                          onDragLeave={!appt ? () => setDropTarget(prev => prev === cellKey ? null : prev) : undefined}
+                          onDrop={!appt ? (e) => handleCellDrop(e, day, slot.value) : undefined}
                         >
                           {appt && (
                             <div
+                              draggable
+                              onDragStart={(e) => handleDragStart(e, appt)}
+                              onDragEnd={handleDragEnd}
                               onClick={(e) => { e.stopPropagation(); handleAppointmentClick(appt) }}
-                              className="absolute inset-0 m-1 rounded bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 p-1.5 text-xs hover:bg-primary-200 dark:hover:bg-primary-900/50 cursor-pointer flex flex-col justify-between"
+                              className={cn(
+                                "absolute inset-0 m-1 rounded bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 p-1.5 text-xs hover:bg-primary-200 dark:hover:bg-primary-900/50 cursor-move flex flex-col justify-between",
+                                draggingId === appt.id && "opacity-40"
+                              )}
+                              title="Drag to reschedule · click to view"
                             >
                               <span className="truncate font-medium">{appt.patient_name || `Patient ${appt.patient_id?.slice(0, 6)}`}</span>
                               <span className="text-[10px] opacity-80">{appt.reason || 'Consultation'}</span>

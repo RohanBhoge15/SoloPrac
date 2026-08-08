@@ -2,28 +2,31 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Body, UploadFile, File, Response
-from fastapi.responses import RedirectResponse
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from slowapi import Limiter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from jose import jwt, JWTError
-from passlib.context import CryptContext
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import Doctor, AuditLog, Patient, PatientVersion, Appointment, PatientNotification
-from app.schemas import (
-    Token, TokenPayload,
-    DoctorRegister, DoctorLogin, DoctorVerificationSubmit, DoctorProfileRead,
-)
 from app.dependencies import (
     create_access_token,
     create_refresh_token,
     get_current_doctor,
+    rate_limit_key,
 )
-from app.dependencies import rate_limit_key
-from slowapi import Limiter
+from app.models import Appointment, AuditLog, Doctor, Patient, PatientNotification, PatientVersion
+from app.schemas import (
+    DoctorLogin,
+    DoctorRegister,
+    DoctorVerificationSubmit,
+    Token,
+    TokenPayload,
+)
 
 router = APIRouter()
 settings = get_settings()
@@ -44,9 +47,10 @@ import hashlib
 
 # ─── Cookie helpers ───
 
+
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
     """Set HttpOnly, Secure, SameSite=Lax cookies for access and refresh tokens.
-    
+
     Cookies are scoped to /api path so they're only sent to API endpoints.
     """
     cookie_kwargs = {
@@ -75,12 +79,15 @@ def _clear_auth_cookies(response: Response) -> None:
 
 # ─── Redis-backed token blacklist helpers ───
 
+
 async def _blacklist_token(token: str, ttl_seconds: int = 7 * 86400) -> None:
     """Add a token to the Redis blacklist with TTL matching refresh expiry.
     Uses SHA256 hash of the token's JTI (JWT ID) to avoid storing full JWTs in Redis."""
     try:
-        from app.services.redis import redis_service
         import jwt as pyjwt
+
+        from app.services.redis import redis_service
+
         # Extract JTI from token (decode without verification for blacklist key)
         # This is safe because we're just using it as a key, not trusting the payload
         try:
@@ -103,8 +110,10 @@ async def _blacklist_token(token: str, ttl_seconds: int = 7 * 86400) -> None:
 async def _is_token_blacklisted(token: str) -> bool:
     """Check if a token is in the Redis blacklist."""
     try:
-        from app.services.redis import redis_service
         import jwt as pyjwt
+
+        from app.services.redis import redis_service
+
         try:
             payload = pyjwt.decode(token, options={"verify_signature": False})
             jti = payload.get("jti") or payload.get("sub")
@@ -155,8 +164,10 @@ async def dev_login(response: Response, db: AsyncSession = Depends(get_db)):
 
     # Create session record for multi-device tracking
     try:
-        from app.models import DoctorSession
         from jose import jwt as _jwt
+
+        from app.models import DoctorSession
+
         payload = _jwt.decode(access_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         session = DoctorSession(
             doctor_id=doctor.id,
@@ -223,7 +234,13 @@ async def refresh_token(
 
     _set_auth_cookies(response, new_access, new_refresh)
 
-    return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
+    return {
+        "status": "ok",
+        "doctor": {"id": str(doctor.id), "email": doctor.email},
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+        "token_type": "bearer",
+    }
 
 
 @router.get("/sessions")
@@ -235,8 +252,8 @@ async def get_active_sessions(
 
     Returns session info including device, IP, and last active time.
     """
+
     from app.models import DoctorSession
-    from jose import jwt as _jwt
 
     result = await db.execute(
         select(DoctorSession)
@@ -272,6 +289,7 @@ async def revoke_session(
 ):
     """Revoke a specific session (log out from a device)."""
     from datetime import datetime, timezone
+
     from app.models import DoctorSession
 
     result = await db.execute(
@@ -296,6 +314,7 @@ def _doctor_location_to_latlng(doctor: Doctor) -> tuple[float | None, float | No
         return None, None
     try:
         from geoalchemy2.shape import to_shape
+
         point = to_shape(doctor.location)
         return point.y, point.x
     except Exception:
@@ -311,6 +330,7 @@ async def get_me(current_doctor: Doctor = Depends(get_current_doctor)):
     years_experience = None
     if current_doctor.year_of_registration:
         from datetime import date
+
         years_experience = date.today().year - current_doctor.year_of_registration
 
     return {
@@ -355,6 +375,7 @@ async def update_doctor_profile(
         update_data = DoctorProfileUpdate(**body)
     except Exception as exc:
         from pydantic import ValidationError
+
         if isinstance(exc, ValidationError):
             raise HTTPException(status_code=422, detail=exc.errors())
         raise
@@ -368,6 +389,7 @@ async def update_doctor_profile(
 
     if lat is not None and lng is not None:
         from sqlalchemy import func as _sf
+
         current_doctor.location = _sf.ST_SetSRID(_sf.ST_MakePoint(lng, lat), 4326)
         updated_fields.append("location")
 
@@ -465,6 +487,126 @@ async def upload_profile_photo(
     }
 
 
+# ─── Clinic branding uploads (logo + signature) ────────────────
+
+
+async def _upload_branding_asset(
+    file: UploadFile,
+    current_doctor: Doctor,
+    db: AsyncSession,
+    settings_key: str,  # "clinic_logo_url" or "signature_url"
+    key_prefix: str,  # "logos" or "signatures"
+    max_bytes: int = 2 * 1024 * 1024,
+) -> str:
+    """Shared helper for clinic-logo / signature uploads.
+
+    Stores the file in the documents bucket, writes the /file URL onto
+    doctor.settings.{settings_key}, and returns that URL. Kept in one
+    place so the two endpoints below stay tiny mirrors of each other.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.storage import storage_service
+
+    allowed = {"image/jpeg", "image/png", "image/webp"}
+    if file.content_type not in allowed:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG, WebP allowed")
+
+    content = await file.read()
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=400, detail=f"Max file size is {max_bytes // (1024 * 1024)}MB")
+
+    ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+    ext = ext_map.get(file.content_type or "", ".png")
+    s3_key = f"{key_prefix}/{current_doctor.id}{ext}"
+
+    try:
+        await storage_service.upload_file(
+            file_data=content,
+            bucket_type="documents",
+            key=s3_key,
+            content_type=file.content_type,
+        )
+    except Exception as exc:
+        logger.error("%s upload failed: %s", settings_key, exc)
+        raise HTTPException(status_code=500, detail=f"{settings_key} upload failed")
+
+    url = f"/api/v1/documents/{s3_key}/file"
+    settings = dict(current_doctor.settings or {})
+    settings[settings_key] = url
+    current_doctor.settings = settings
+    # JSONB mutations aren't tracked automatically — tell SQLAlchemy the field changed.
+    flag_modified(current_doctor, "settings")
+    await db.commit()
+    return url
+
+
+@router.post("/me/clinic-logo")
+async def upload_clinic_logo(
+    file: UploadFile = File(..., description="Clinic logo (JPG, PNG, WebP, max 2MB)"),
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a clinic logo that gets embedded in generated PDFs."""
+    url = await _upload_branding_asset(
+        file,
+        current_doctor,
+        db,
+        settings_key="clinic_logo_url",
+        key_prefix="logos",
+    )
+    return {"status": "ok", "clinic_logo_url": url}
+
+
+@router.delete("/me/clinic-logo")
+async def delete_clinic_logo(
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the clinic logo from generated PDFs."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    settings = dict(current_doctor.settings or {})
+    settings.pop("clinic_logo_url", None)
+    current_doctor.settings = settings
+    flag_modified(current_doctor, "settings")
+    await db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/me/signature")
+async def upload_signature(
+    file: UploadFile = File(..., description="Doctor signature (PNG with transparent background preferred, max 2MB)"),
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a signature image rendered on prescriptions / invoices."""
+    url = await _upload_branding_asset(
+        file,
+        current_doctor,
+        db,
+        settings_key="signature_url",
+        key_prefix="signatures",
+    )
+    return {"status": "ok", "signature_url": url}
+
+
+@router.delete("/me/signature")
+async def delete_signature(
+    current_doctor: Doctor = Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove the signature image from generated PDFs."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    settings = dict(current_doctor.settings or {})
+    settings.pop("signature_url", None)
+    current_doctor.settings = settings
+    flag_modified(current_doctor, "settings")
+    await db.commit()
+    return {"status": "ok"}
+
+
 @router.put("/me/settings")
 async def update_doctor_settings(
     body: dict,
@@ -480,6 +622,7 @@ async def update_doctor_settings(
         update_data = DoctorSettingsUpdate(**body)
     except Exception as exc:
         from pydantic import ValidationError
+
         if isinstance(exc, ValidationError):
             raise HTTPException(status_code=422, detail=exc.errors())
         raise
@@ -495,6 +638,7 @@ async def update_doctor_settings(
 
     if update_data.working_hours_json is not None:
         from app.services.calendar_service import validate_working_hours
+
         validation = validate_working_hours(update_data.working_hours_json)
         if not validation["valid"]:
             raise HTTPException(status_code=400, detail=validation["errors"])
@@ -515,6 +659,7 @@ async def update_doctor_settings(
 
     if update_data.notification_preferences is not None:
         from app.services.notification_prefs import merge_with_defaults
+
         settings["notification_preferences"] = merge_with_defaults(update_data.notification_preferences)
         updated_fields.append("notification_preferences")
 
@@ -563,6 +708,7 @@ async def update_doctor_settings(
 
 
 # ─── Email/Password Registration ────────────────────────
+
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register_doctor(
@@ -618,7 +764,12 @@ async def register_doctor(
     refresh_token = create_refresh_token(str(doctor.id))
     _set_auth_cookies(response, access_token, refresh_token)
 
-    return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "doctor": {"id": str(doctor.id), "email": doctor.email},
+    }
 
 
 @router.post("/login")
@@ -667,10 +818,17 @@ async def login_doctor(
     refresh_token = create_refresh_token(str(doctor.id))
     _set_auth_cookies(response, access_token, refresh_token)
 
-    return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
+    return {
+        "status": "ok",
+        "doctor": {"id": str(doctor.id), "email": doctor.email},
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
 
 
 # ─── Verification Upload ────────────────────────────────
+
 
 @router.post("/me/verify")
 async def submit_verification(
@@ -694,6 +852,7 @@ async def submit_verification(
 
     # Check if NMC API is configured for real verification
     from app.config import settings as _settings
+
     if _settings.NMC_API_URL and _settings.NMC_API_KEY:
         # TODO: Call real NMC API to verify registration number
         # Example: response = await httpx.get(f"{_settings.NMC_API_URL}/verify", ...)
@@ -701,7 +860,9 @@ async def submit_verification(
         current_doctor.verification_status = "pending_verification"
     else:
         # No NMC API configured — mark as verified directly (localhost/testing)
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
         current_doctor.verification_status = "verified"
         current_doctor.verified_at = _dt.now(_tz.utc)
         current_doctor.abdm_verified_at = _dt.now(_tz.utc)
@@ -750,7 +911,7 @@ async def logout(
     if refresh_token:
         await _blacklist_token(refresh_token)
     _clear_auth_cookies(response)
-    
+
     # Log logout
     try:
         audit = AuditLog(
@@ -785,7 +946,9 @@ async def export_my_data(
 
     # Version count
     version_count = (
-        await db.execute(select(func.count()).select_from(PatientVersion).where(PatientVersion.doctor_id == current_doctor.id))
+        await db.execute(
+            select(func.count()).select_from(PatientVersion).where(PatientVersion.doctor_id == current_doctor.id)
+        )
     ).scalar() or 0
 
     return {
@@ -850,11 +1013,17 @@ async def get_billing_usage(
     ).scalar() or 0
 
     appointment_count = (
-        await db.execute(select(func.count()).select_from(Appointment).where(Appointment.doctor_id == current_doctor.id))
+        await db.execute(
+            select(func.count()).select_from(Appointment).where(Appointment.doctor_id == current_doctor.id)
+        )
     ).scalar() or 0
 
     notification_count = (
-        await db.execute(select(func.count()).select_from(PatientNotification).where(PatientNotification.doctor_id == current_doctor.id))
+        await db.execute(
+            select(func.count())
+            .select_from(PatientNotification)
+            .where(PatientNotification.doctor_id == current_doctor.id)
+        )
     ).scalar() or 0
 
     return {

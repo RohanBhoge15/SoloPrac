@@ -1,7 +1,8 @@
 # Main FastAPI Application — with security middleware, rate limiting, audit log
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -9,21 +10,87 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import settings
-from app.database import init_db, close_db
+from app.database import close_db, init_db
 from app.dependencies import rate_limit_key
-from app.routers import api_router
 from app.middleware import audit_log_middleware, doctor_identity_middleware
+from app.routers import api_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    """Startup / shutdown lifecycle.
+
+    P0.8 — Preload work that would otherwise happen on the first (unlucky)
+    request:
+      * Embedding models (MedCPT + BGE-M3 + BiomedCLIP) — cold-load is
+        ~4-8s and used to hit whichever doctor queried first.
+      * The arq Redis pool used by every enqueue_* call.
+      * The Playwright persistent browser (P0.6) used by PDF generators.
+    All preloads are fire-and-forget: if any fails (e.g. Redis down at
+    startup), the app still boots and lazy-loads on demand.
+    """
+    import asyncio as _asyncio
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+
+    # Core dependencies (blocking — must succeed)
     await init_db()
     from app.routers.portal import ws_manager
+
     await ws_manager.start_subscriber()
+
+    # ── P0.8 warm-ups (best-effort, run in parallel so startup stays fast) ──
+    async def _warm_embeddings():
+        try:
+            from app.services.embeddings import embedding_service
+
+            # _load_model is the single lazy-loader; passing each name pre-warms
+            # its underlying SentenceTransformer / BGEM3FlagModel / open_clip.
+            await _asyncio.gather(
+                _asyncio.to_thread(embedding_service._load_model, "medcpt"),
+                _asyncio.to_thread(embedding_service._load_model, "bge-m3"),
+                _asyncio.to_thread(embedding_service._load_model, "biomedclip"),
+                return_exceptions=True,
+            )
+            _log.info("Embedding models preloaded (P0.8)")
+        except Exception as exc:
+            _log.warning("Embedding preload failed (will lazy-load): %s", exc)
+
+    async def _warm_arq():
+        try:
+            from app.services.background_jobs import preload_arq_pool
+
+            await preload_arq_pool()
+            _log.info("arq pool preloaded (P0.8)")
+        except Exception as exc:
+            _log.warning("arq preload failed (will lazy-init on first enqueue): %s", exc)
+
+    async def _warm_browser():
+        try:
+            from app.services.pdf_generator import PDFGenerator
+
+            await PDFGenerator._get_browser()
+            _log.info("Playwright browser preloaded (P0.6/P0.8)")
+        except Exception as exc:
+            _log.warning("Playwright preload failed (will lazy-init on first PDF): %s", exc)
+
+    # Fire in parallel so worst-case startup ≈ slowest single warm-up (~6s),
+    # not sum-of-warm-ups (~15s).
+    _asyncio.create_task(_warm_embeddings())
+    _asyncio.create_task(_warm_arq())
+    _asyncio.create_task(_warm_browser())
+
     yield
+
     # Shutdown
     await ws_manager.stop_subscriber()
+    try:
+        from app.services.pdf_generator import PDFGenerator
+
+        await PDFGenerator.shutdown()
+    except Exception:
+        pass
     await close_db()
 
 
@@ -36,6 +103,7 @@ limiter = Limiter(
 # Sentry error tracking (free tier: 5k errors/month)
 if settings.SENTRY_DSN:
     import sentry_sdk
+
     sentry_sdk.init(
         dsn=settings.SENTRY_DSN,
         traces_sample_rate=0.1,

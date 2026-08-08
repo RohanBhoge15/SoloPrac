@@ -1,20 +1,27 @@
 """Qdrant Vector Store Service — named vectors, hybrid search, payload filtering."""
 
-import os
-import json
-import uuid
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional, Literal
-from contextlib import asynccontextmanager
+import uuid
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    Distance, VectorParams, PointStruct, Filter, FieldCondition,
-    Range, MatchValue, SearchRequest, SearchParams, UpdateStatus,
-    PayloadSchemaType, SparseVectorParams, SparseVector,
-    NamedVector, ScoredPoint,
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PayloadSchemaType,
+    PointStruct,
+    Range,
+    ScoredPoint,
+    SearchParams,
+    SearchRequest,
+    SparseVector,
+    SparseVectorParams,
+    UpdateStatus,
+    VectorParams,
 )
 
 from app.config import settings
@@ -33,6 +40,7 @@ def _get_projector() -> Optional[np.ndarray]:
         return _projector_matrix
     try:
         from app.services.feature_c_projector import load_projector
+
         _projector_matrix = load_projector()
         return _projector_matrix
     except Exception:
@@ -43,9 +51,9 @@ def _get_projector() -> Optional[np.ndarray]:
 PATIENT_VERSION_COLLECTION = "patient_versions"
 
 VECTOR_CONFIG = {
-    "medical_text": {"size": 768, "distance": Distance.COSINE},    # MedCPT
-    "hybrid": {"size": 1024, "distance": Distance.COSINE},         # BGE-M3 dense
-    "image": {"size": 512, "distance": Distance.COSINE},           # BiomedCLIP
+    "medical_text": {"size": 768, "distance": Distance.COSINE},  # MedCPT
+    "hybrid": {"size": 1024, "distance": Distance.COSINE},  # BGE-M3 dense
+    "image": {"size": 512, "distance": Distance.COSINE},  # BiomedCLIP
 }
 
 SPARSE_VECTOR_NAME = "sparse"
@@ -120,26 +128,62 @@ class QdrantService:
         # Generate point ID (use version_id if available, else generate)
         point_id = str(version_data.get("version_id", uuid.uuid4()))
 
-        # Build point
-        point = PointStruct(
-            id=point_id,
-            vector={
-                "medical_text": version_data.get("medical_text_embedding", []),
-                "hybrid": version_data.get("hybrid_embedding", []),
-                "image": version_data.get("image_embedding", []),
-            },
-            sparse_vector={
+        # ── timestamp_epoch: numeric mirror of the ISO timestamp so Qdrant
+        # Range filters (numeric-only) actually work. Prior versions stored
+        # `timestamp` as an ISO string and then filtered with
+        # `Range(lte=iso_string)` — which throws pydantic float_parsing at
+        # instantiation time. We keep the ISO string for human-readable
+        # payload / audit while also indexing an epoch-seconds mirror.
+        _ts_raw = version_data.get("timestamp")
+        _ts_epoch: Optional[float] = None
+        if _ts_raw is not None:
+            try:
+                if hasattr(_ts_raw, "timestamp"):  # datetime object
+                    _ts_epoch = float(_ts_raw.timestamp())
+                elif isinstance(_ts_raw, (int, float)):
+                    _ts_epoch = float(_ts_raw)
+                elif isinstance(_ts_raw, str):
+                    from datetime import datetime as _dt
+
+                    # fromisoformat handles "...+00:00" from datetime.isoformat()
+                    _ts_epoch = _dt.fromisoformat(_ts_raw.replace("Z", "+00:00")).timestamp()
+            except Exception as _exc:
+                logger.warning("upsert_version: could not parse timestamp %r (%s)", _ts_raw, _exc)
+
+        # Build vector map — drop empty modalities so the client doesn't validate
+        # them against sized named-vector configs. If BGE-M3 sparse indices are
+        # present, embed them alongside the dense vectors (Qdrant supports mixed
+        # dense + sparse in the same `vector` argument for named-vector points).
+        _dense_vectors: Dict[str, Any] = {}
+        if version_data.get("medical_text_embedding"):
+            _dense_vectors["medical_text"] = version_data["medical_text_embedding"]
+        if version_data.get("hybrid_embedding"):
+            _dense_vectors["hybrid"] = version_data["hybrid_embedding"]
+        if version_data.get("image_embedding"):
+            _dense_vectors["image"] = version_data["image_embedding"]
+
+        # Sparse only when we have actual indices — passing an empty dict trips
+        # PointStruct's `extra_forbidden` on sparse_vector.
+        _sparse_kwarg: Dict[str, Any] = {}
+        if version_data.get("sparse_indices"):
+            _sparse_kwarg["sparse_vector"] = {
                 SPARSE_VECTOR_NAME: SparseVector(
                     indices=version_data.get("sparse_indices", []),
                     values=version_data.get("sparse_values", []),
                 )
-            } if version_data.get("sparse_indices") else {},
+            }
+
+        point = PointStruct(
+            id=point_id,
+            vector=_dense_vectors,
+            **_sparse_kwarg,
             payload={
                 "patient_id": version_data["patient_id"],
                 "doctor_id": version_data["doctor_id"],
                 "version_id": point_id,
                 "version_number": version_data.get("version_number", 1),
                 "timestamp": version_data.get("timestamp"),
+                "timestamp_epoch": _ts_epoch,  # numeric mirror for Range filters
                 "modality": version_data.get("modality", "text"),
                 "version_hash": version_data.get("version_hash"),
                 "author": version_data.get("author"),
@@ -179,9 +223,21 @@ class QdrantService:
             FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
         ]
         if timestamp_lte:
-            filter_conditions.append(
-                FieldCondition(key="timestamp", range=Range(lte=timestamp_lte))
-            )
+            # Convert to epoch seconds — Qdrant Range is numeric only.
+            _lte_epoch: Optional[float] = None
+            try:
+                if hasattr(timestamp_lte, "timestamp"):
+                    _lte_epoch = float(timestamp_lte.timestamp())
+                elif isinstance(timestamp_lte, (int, float)):
+                    _lte_epoch = float(timestamp_lte)
+                elif isinstance(timestamp_lte, str):
+                    from datetime import datetime as _dt
+
+                    _lte_epoch = _dt.fromisoformat(timestamp_lte.replace("Z", "+00:00")).timestamp()
+            except Exception as _exc:
+                logger.warning("search_versions: bad timestamp_lte %r (%s)", timestamp_lte, _exc)
+            if _lte_epoch is not None:
+                filter_conditions.append(FieldCondition(key="timestamp_epoch", range=Range(lte=_lte_epoch)))
 
         filter_obj = Filter(must=filter_conditions)
         search_params = SearchParams(hnsw_ef=128, exact=False)
@@ -262,15 +318,17 @@ class QdrantService:
         for pid in sorted_ids[:top_n]:
             pt = scored_points[pid]
             # Copy to avoid mutating shared Qdrant response objects
-            fused.append(ScoredPoint(
-                id=pt.id,
-                version=pt.version,
-                score=scores[pid],
-                payload=pt.payload,
-                vector=pt.vector,
-                shard_key=pt.shard_key,
-                order_value=pt.order_value,
-            ))
+            fused.append(
+                ScoredPoint(
+                    id=pt.id,
+                    version=pt.version,
+                    score=scores[pid],
+                    payload=pt.payload,
+                    vector=pt.vector,
+                    shard_key=pt.shard_key,
+                    order_value=pt.order_value,
+                )
+            )
         return fused
 
     async def search_image_similar(
@@ -297,6 +355,7 @@ class QdrantService:
 
         if W is not None:
             import numpy as np
+
             # Project BiomedCLIP (512) -> BGE-M3 (1024)
             img_np = np.array(image_vector, dtype=np.float32).reshape(1, -1)
             projected = img_np @ W.T  # (1, 1024)
@@ -308,10 +367,12 @@ class QdrantService:
             client.search,
             collection_name=PATIENT_VERSION_COLLECTION,
             query_vector=(vector_name, query_vec),
-            query_filter=Filter(must=[
-                FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
-                FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
-            ]),
+            query_filter=Filter(
+                must=[
+                    FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
+                    FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
+                ]
+            ),
             limit=limit,
             score_threshold=score_threshold,
             with_payload=True,
@@ -346,10 +407,12 @@ class QdrantService:
         results = await asyncio.to_thread(
             client.scroll,
             collection_name=PATIENT_VERSION_COLLECTION,
-            scroll_filter=Filter(must=[
-                FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
-                FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
-            ]),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
+                    FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
+                ]
+            ),
             limit=limit,
             with_payload=True,
             with_vectors=False,
@@ -373,10 +436,12 @@ class QdrantService:
         points, _ = await asyncio.to_thread(
             client.scroll,
             collection_name=PATIENT_VERSION_COLLECTION,
-            scroll_filter=Filter(must=[
-                FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
-                FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
-            ]),
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
+                    FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
+                ]
+            ),
             limit=limit,
             with_payload=True,
             with_vectors=[vector_name],
@@ -386,11 +451,13 @@ class QdrantService:
             vec = (p.vector or {}).get(vector_name) if isinstance(p.vector, dict) else None
             if not vec:
                 continue
-            out.append({
-                "version_number": (p.payload or {}).get("version_number", 0),
-                "timestamp": (p.payload or {}).get("timestamp"),
-                "vector": vec,
-            })
+            out.append(
+                {
+                    "version_number": (p.payload or {}).get("version_number", 0),
+                    "timestamp": (p.payload or {}).get("timestamp"),
+                    "vector": vec,
+                }
+            )
         out.sort(key=lambda r: r["version_number"])
         return out
 
@@ -399,10 +466,12 @@ class QdrantService:
         count = await asyncio.to_thread(
             client.count,
             collection_name=PATIENT_VERSION_COLLECTION,
-            count_filter=Filter(must=[
-                FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
-                FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
-            ]),
+            count_filter=Filter(
+                must=[
+                    FieldCondition(key="patient_id", match=MatchValue(value=patient_id)),
+                    FieldCondition(key="doctor_id", match=MatchValue(value=doctor_id)),
+                ]
+            ),
             exact=True,
         )
         return count.count

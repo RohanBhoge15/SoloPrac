@@ -66,7 +66,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-soloprac}:${POSTGRES_PASSWORD:-soloprac_dev_password_change_me}@postgres:5432/langfuse
       NEXTAUTH_SECRET: ${LANGFUSE_SECRET:-changeme_generate_strong_secret}
-      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_URL: http://localhost:3001
       SALT: ${LANGFUSE_SALT:-changeme_generate_strong_salt}
       HOSTNAME: 0.0.0.0
       LOG_LEVEL: info
@@ -115,6 +115,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: soloprac-backend
+    # --reload: auto-restart on code changes (backend/ is bind-mounted).
+    # Only in the dev compose override — the Dockerfile CMD stays reload-free.
+    # NOTE: --reload is incompatible with --workers>1 (uvicorn hard-fails). We
+    # keep --reload for dev DX; production Dockerfile CMD uses --workers 4
+    # --loop uvloop --http httptools for real concurrency.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--loop", "uvloop", "--http", "httptools"]
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-soloprac}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-soloprac_dev_password_change_me}
@@ -127,10 +133,14 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-changeme_generate_strong_secret}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - NIM_API_KEY=${NIM_API_KEY:-}
+      - MAVERICK_MODEL=${MAVERICK_MODEL:-meta/llama-3.2-1b-instruct}
+      - MAVERICK_STRUCTURED_OUTPUT=${MAVERICK_STRUCTURED_OUTPUT:-true}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       # MinIO S3 storage
       - MINIO_ENDPOINT=minio:9000
@@ -140,11 +150,31 @@ services:
       # Persist HuggingFace model downloads (MedCPT, BGE-M3, BiomedCLIP, etc.)
       # so they are downloaded once and reused across rebuilds/restarts.
       - HF_HOME=/hf_cache
+      - HF_TOKEN=${HF_TOKEN:-}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
     volumes:
       - ./backend:/app
-      - hf_cache:/hf_cache
+      # Scripts folder — utility scripts (embed_openi.py, download_openi.py,
+      # traffic sim) mounted read-only so we can iterate without docker cp.
+      - ./scripts:/scripts:ro
+      # HF cache on host — survives container rebuilds AND is inspectable
+      # from Windows. Same folder shared by backend and arq-worker to
+      # avoid the model-per-container duplication that used to eat ~5 GB.
+      - D:\models\hf-cache:/hf_cache
       - D:\models:/models
+    # ── GPU passthrough (RTX 3050 Laptop, 4 GB VRAM) ──
+    # Requires NVIDIA Container Toolkit (already installed — `docker info`
+    # shows the `nvidia` runtime). Without this block the container gets no
+    # /dev/nvidia*, torch.cuda.is_available() returns False, and embeddings
+    # silently run on CPU. 4 GB VRAM is enough for MedCPT + BiomedCLIP + BGE-M3
+    # in fp16; MedGemma OCR runs in its own container (llama-server below).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     ports:
       - "8000:8000"
     depends_on:
@@ -180,6 +210,7 @@ services:
       - "5173:5173"
     environment:
       - VITE_API_URL=http://localhost:8000
+      - VITE_PROXY_TARGET=http://backend:8000
     depends_on:
       - backend
     healthcheck:
@@ -191,13 +222,55 @@ services:
     networks:
       - soloprac-network
 
+  # llama.cpp server hosting MedGemma-4B GGUF (Q4_K_M + mmproj) for VLM image OCR
+  llama-server:
+    # CUDA-enabled build so we can partial-offload MedGemma to the RTX 3050.
+    # With 4 GB VRAM shared with the embedding stack, we offload 15 layers
+    # (~1.4 GB), which is enough to get a 2-3× token/sec bump without OOM.
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: soloprac-llama-server
+    command:
+      - "--model"
+      - "/models/medgemma-gguf/medgemma-4b-it_Q4_K_M.gguf"
+      - "--mmproj"
+      - "/models/medgemma-gguf/mmproj-medgemma-4b-it-F16.gguf"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--ctx-size"
+      - "4096"
+      - "--n-gpu-layers"
+      - "15"
+    mem_limit: 5g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - D:\models:/models
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - soloprac-network
+
   # Arq Background Worker
   arq-worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: soloprac-arq-worker
-    command: ["python", "worker.py"]
+    command: ["arq", "app.services.email_queue.WorkerSettings", "--watch", "/app"]
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-soloprac}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-soloprac_dev_password_change_me}
@@ -210,6 +283,8 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - LANGFUSE_HOST=http://langfuse:3000
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-changeme_generate_strong_secret}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
@@ -218,10 +293,23 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       # Share the same HuggingFace cache as the backend (see backend service).
       - HF_HOME=/hf_cache
+      - HF_TOKEN=${HF_TOKEN:-}
     volumes:
       - ./backend:/app
-      - hf_cache:/hf_cache
+      # Share the same host HF cache as the backend — one copy on D:, not two.
+      - D:\models\hf-cache:/hf_cache
       - D:\models:/models
+    # ── GPU passthrough — arq-worker runs the heavy embed / index jobs
+    # (P1.9 index_version_job, the Open-i batch embed). Same 4 GB card
+    # shared with the backend, but only one process pushes tensors at a
+    # time in practice.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy
@@ -261,7 +349,9 @@ volumes:
   langfuse_data:
   caddy_data:
   caddy_config:
-  hf_cache:
+  # hf_cache: removed — HF downloads now bind-mounted to D:\models\hf-cache
+  # (see backend + arq-worker volumes) so they survive rebuilds and don't
+  # duplicate across containers.
   minio_data:
 
 networks:

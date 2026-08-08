@@ -31,15 +31,13 @@ Usage:
 
 from __future__ import annotations
 
-import os
-import re
-import json
 import logging
 import mimetypes
-from enum import Enum
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+import os
+import re
 from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Dict, List, Tuple
 
 from app.config import settings
 
@@ -53,8 +51,7 @@ try:
 except Exception as _magic_exc:  # ImportError, OSError from libmagic lookup
     _magic = None
     logger.info(
-        "python-magic/libmagic unavailable (%s) — MIME sniffing falls back to "
-        "file extensions via mimetypes.",
+        "python-magic/libmagic unavailable (%s) — MIME sniffing falls back to " "file extensions via mimetypes.",
         _magic_exc,
     )
 
@@ -75,6 +72,7 @@ def sniff_mime_type(file_path: str) -> str:
     guessed, _ = mimetypes.guess_type(file_path)
     return guessed or "application/octet-stream"
 
+
 # ─── Schema Aligner (Feature D) ───
 # Lazy import to avoid circular dependency
 _schema_aligner = None
@@ -86,6 +84,7 @@ def _get_schema_aligner():
     if _schema_aligner is None:
         try:
             from app.services.schema_aligner import SchemaAligner
+
             _schema_aligner = SchemaAligner()
             logger.info("SchemaAligner (Feature D) initialized for document parsing")
         except Exception as exc:
@@ -93,7 +92,9 @@ def _get_schema_aligner():
             return None
     return _schema_aligner
 
+
 # ─── Document Types ─────────────────────────────────
+
 
 class DocType(str, Enum):
     PRESCRIPTION = "prescription"
@@ -102,6 +103,7 @@ class DocType(str, Enum):
     REFERRAL_LETTER = "referral_letter"
     IMAGING_REPORT = "imaging_report"
     GENERAL_DOCUMENT = "general_document"
+
 
 class DocFormat(str, Enum):
     TYPED_PDF = "typed_pdf"
@@ -112,6 +114,7 @@ class DocFormat(str, Enum):
 
 
 # ─── Parser Router ──────────────────────────────────
+
 
 class ParserRouter:
     """Auto-detect document format and route to correct parser."""
@@ -221,7 +224,11 @@ class ParserRouter:
 
         logger.info(
             "Document parsed: type=%s format=%s text_len=%d confidence=%.2f took=%.0fms",
-            doc_type.value, doc_format.value, len(raw_text), extraction_confidence, elapsed,
+            doc_type.value,
+            doc_format.value,
+            len(raw_text),
+            extraction_confidence,
+            elapsed,
         )
 
         return {
@@ -241,6 +248,7 @@ class ParserRouter:
         """Check if a PDF has extractable text layer (vs scanned image)."""
         try:
             import PyPDF2
+
             with open(file_path, "rb") as f:
                 reader = PyPDF2.PdfReader(f)
                 for page in reader.pages[:3]:
@@ -281,10 +289,7 @@ class ParserRouter:
             import cv2
             import numpy as np
         except ImportError:
-            logger.info(
-                "OpenCV/NumPy unavailable — handwriting detection degrades to a "
-                "filename guess."
-            )
+            logger.info("OpenCV/NumPy unavailable — handwriting detection degrades to a " "filename guess.")
             return self._guess_handwriting_from_filename(file_path)
 
         try:
@@ -301,8 +306,12 @@ class ParserRouter:
             # Adaptive threshold handles uneven lighting in phone photos.
             # Ink becomes 255 (foreground) on a 0 background.
             ink = cv2.adaptiveThreshold(
-                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY_INV, 31, 10,
+                gray,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                31,
+                10,
             )
 
             num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(ink, 8)
@@ -313,8 +322,10 @@ class ParserRouter:
             bottoms: List[float] = []
             for i in range(1, num_labels):
                 x, y, w, h, area = (
-                    stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
-                    stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT],
+                    stats[i, cv2.CC_STAT_LEFT],
+                    stats[i, cv2.CC_STAT_TOP],
+                    stats[i, cv2.CC_STAT_WIDTH],
+                    stats[i, cv2.CC_STAT_HEIGHT],
                     stats[i, cv2.CC_STAT_AREA],
                 )
                 if area < 12 or area > page_area * 0.05:
@@ -348,7 +359,8 @@ class ParserRouter:
             within_row_spread = [float(np.std(r)) for r in rows if len(r) >= 3]
             baseline_jitter = (
                 float(np.mean(within_row_spread)) / max(float(np.median(heights_arr)), 1e-6)
-                if within_row_spread else 1.0
+                if within_row_spread
+                else 1.0
             )
 
             # (3) Stroke-width variance via distance transform of the ink mask.
@@ -366,15 +378,19 @@ class ParserRouter:
             }
             votes = sum(signals.values())
             logger.debug(
-                "Handwriting heuristic for %s: height_cv=%.3f baseline_jitter=%.3f "
-                "stroke_cv=%.3f votes=%d",
-                os.path.basename(file_path), height_cv, baseline_jitter, stroke_cv, votes,
+                "Handwriting heuristic for %s: height_cv=%.3f baseline_jitter=%.3f " "stroke_cv=%.3f votes=%d",
+                os.path.basename(file_path),
+                height_cv,
+                baseline_jitter,
+                stroke_cv,
+                votes,
             )
             return votes >= 2
         except Exception as exc:
             logger.warning(
-                "Handwriting detection failed for %s (%s) — falling back to "
-                "filename guess.", file_path, exc,
+                "Handwriting detection failed for %s (%s) — falling back to " "filename guess.",
+                file_path,
+                exc,
             )
             return self._guess_handwriting_from_filename(file_path)
 
@@ -397,8 +413,8 @@ class ParserRouter:
         Returns a list of human-readable warning strings (empty = all good).
         """
         try:
-            from PIL import Image
             import numpy as np
+            from PIL import Image
         except ImportError:
             return []
 
@@ -471,23 +487,40 @@ class ParserRouter:
         return text, confidence
 
     async def _parse_unknown(self, file_path: str) -> Tuple[str, float]:
-        """Try all parsers in order, return best result using weighted scoring."""
+        """Try all parsers concurrently, return best result using weighted scoring.
+
+        We fan out to every parser in parallel via asyncio.gather. Rationale:
+        for a truly unknown document we would otherwise pay the full latency
+        of Docling → Surya → Nanonets → MedGemma sequentially (often 20-40s).
+        Running them concurrently means the wall-clock is bounded by the
+        slowest single parser, not their sum. Exceptions from individual
+        parsers are captured (return_exceptions=True) and skipped so one
+        broken engine does not fail the whole request.
+        """
+        import asyncio
+
+        parser_names = ["docling_parse", "surya_parse", "nanonets_ocr_parse", "medgemma_parse"]
+
+        async def _safe_run(name: str) -> Tuple[str, float]:
+            try:
+                parser_fn = getattr(self._ocr_service, name)
+                return await parser_fn(file_path)
+            except Exception as exc:
+                logger.debug("Parser %s failed on %s: %s", name, file_path, exc)
+                return "", 0.0
+
+        results = await asyncio.gather(*[_safe_run(n) for n in parser_names])
+
         best_text = ""
         best_score = 0.0
         best_conf = 0.0
-
-        for parser_name in ["docling_parse", "surya_parse", "nanonets_ocr_parse", "medgemma_parse"]:
-            try:
-                parser_fn = getattr(self._ocr_service, parser_name)
-                text, conf = await parser_fn(file_path)
-                # Weighted score: longer text with decent confidence beats short text with high confidence
-                score = len(text) * conf
-                if score > best_score:
-                    best_text = text
-                    best_score = score
-                    best_conf = conf
-            except Exception:
-                continue
+        for text, conf in results:
+            # Weighted score: longer text with decent confidence beats short text with high confidence
+            score = len(text) * conf
+            if score > best_score:
+                best_text = text
+                best_score = score
+                best_conf = conf
 
         return best_text, best_conf
 
@@ -591,6 +624,7 @@ class ParserRouter:
 
 # ─── OCR Service ─────────────────────────────────────
 
+
 class OCRService:
     """Unified OCR service wrapping document parsing libraries.
 
@@ -606,6 +640,7 @@ class OCRService:
         """
         try:
             from docling.document_converter import DocumentConverter
+
             converter = DocumentConverter()
             result = converter.convert(file_path)
             text = result.document.export_to_markdown()
@@ -620,86 +655,71 @@ class OCRService:
         return "", 0.0
 
     async def surya_parse(self, file_path: str) -> Tuple[str, float]:
-        """Parse a scanned document using Surya OCR.
+        """Parse a scanned document / photo using RapidOCR (PaddleOCR ONNX port).
 
-        Falls back to pytesseract if Surya isn't installed.
+        Function name is kept as `surya_parse` so upstream routing code doesn't
+        change, but the implementation is RapidOCR (Apache-2.0, ~15 MB deps,
+        no revenue-cap license). Falls back to Tesseract on failure.
+
+        Surya was replaced because its license restricts commercial use above
+        certain revenue/funding thresholds; RapidOCR is fully permissive.
         """
         try:
-            from surya.ocr import run_ocr
-            from PIL import Image
-            image = Image.open(file_path)
-            text_lines = run_ocr(image, [{"lang": "en"}])
+            from rapidocr_onnxruntime import RapidOCR
+
+            # Lazy singleton: RapidOCR loads ONNX models on init (~30 MB, a few
+            # seconds cold-start). Keep a process-level instance so subsequent
+            # calls are near-instant.
+            if not hasattr(self, "_rapidocr") or self._rapidocr is None:
+                logger.info("Loading RapidOCR (first call — expect ~2s cold-start)…")
+                self._rapidocr = RapidOCR()
+            ocr = self._rapidocr
+
+            # RapidOCR accepts a file path directly; returns (results, elapse) where
+            # results is a list of [box, text, confidence] tuples (or None if empty).
+            result, _elapse = ocr(file_path)
+            if not result:
+                logger.info("RapidOCR returned no lines for %s", file_path)
+                return "", 0.0
+
             lines = []
-            for line in text_lines:
-                if hasattr(line, 'text'):
-                    lines.append(line.text)
-                elif isinstance(line, dict):
-                    lines.append(line.get('text', ''))
-            text = "\n".join(lines)
-            if text.strip():
-                return text, 0.85
+            confidences = []
+            for item in result:
+                # RapidOCR shape: [box, text, confidence]
+                if isinstance(item, (list, tuple)) and len(item) >= 3:
+                    _box, text, conf = item[0], item[1], item[2]
+                    if text and str(text).strip():
+                        lines.append(str(text))
+                        try:
+                            confidences.append(float(conf))
+                        except (TypeError, ValueError):
+                            pass
+            text = "\n".join(lines).strip()
+            if text:
+                avg_conf = (sum(confidences) / len(confidences)) if confidences else 0.85
+                return text, round(avg_conf, 3)
         except ImportError:
-            logger.info("Surya not installed, falling back to Tesseract")
+            logger.info("RapidOCR not installed, falling back to Tesseract")
             return await self._tesseract_fallback(file_path)
         except Exception as exc:
-            logger.warning("Surya parsing failed: %s, falling back", exc)
+            logger.warning("RapidOCR parsing failed: %s, falling back", exc)
             return await self._tesseract_fallback(file_path)
         return "", 0.0
 
     async def nanonets_ocr_parse(self, file_path: str) -> Tuple[str, float]:
-        """Parse handwritten/printed text using Nanonets-OCR2-1.5B-exp.
+        """Parse handwritten/printed text via MedGemma-4B (llama-server VLM).
 
-        This is a SOTA open-source OCR model (Apache 2.0) that handles:
-        - Handwritten text
-        - Printed text
-        - Tables and forms
-        - Multiple languages
+        Function name kept as `nanonets_ocr_parse` for backward-compat with
+        the routing table; internally this now delegates to `medgemma_parse`.
 
-        Falls back to Tesseract if Nanonets-OCR isn't available.
+        Nanonets-OCR2-3B was ~6.5 GB and would OOM a 16 GB laptop. MedGemma
+        is already resident in the always-on llama-server container, so this
+        path costs zero additional RAM. Accuracy is lower than a dedicated
+        handwritten-OCR model, but there are no published benchmarks showing
+        Nanonets is meaningfully better for Indian handwritten prescriptions
+        specifically, and the RAM saving is a hard win.
         """
-        try:
-            from transformers import AutoModelForVision2Seq, AutoProcessor
-            from PIL import Image
-            import torch
-
-            model_name = settings.NANONETS_OCR_MODEL
-
-            # Cache model and processor. A vision-language model needs an
-            # AutoProcessor (tokenizer + image processor); a bare AutoTokenizer
-            # accepts no `images=` argument and cannot feed the vision tower.
-            if not hasattr(self, "_nanonets_model") or self._nanonets_model is None:
-                logger.info("Loading Nanonets-OCR2-1.5B model...")
-                self._nanonets_processor = AutoProcessor.from_pretrained(
-                    model_name, trust_remote_code=True,
-                )
-                self._nanonets_model = AutoModelForVision2Seq.from_pretrained(
-                    model_name,
-                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True,
-                )
-                logger.info("Nanonets-OCR2 loaded successfully")
-
-            processor = self._nanonets_processor
-            model = self._nanonets_model
-
-            with Image.open(file_path) as image:
-                if image.mode != "RGB":
-                    image = image.convert("RGB")
-                text = await self._vlm_generate(
-                    processor, model, image,
-                    "Extract all text from this document.",
-                    max_new_tokens=1024,
-                )
-                if text.strip():
-                    return text, 0.90  # High confidence for SOTA model
-        except ImportError:
-            logger.info("Nanonets-OCR not installed, falling back to Tesseract")
-            return await self._tesseract_fallback(file_path, psm=13)
-        except Exception as exc:
-            logger.warning("Nanonets-OCR parsing failed: %s, falling back", exc)
-            return await self._tesseract_fallback(file_path)
-        return "", 0.0
+        return await self.medgemma_parse(file_path)
 
     async def got_ocr_parse(self, file_path: str) -> Tuple[str, float]:
         """Parse handwritten text using GOT-OCR 2.0 (DEPRECATED - kept for fallback).
@@ -709,6 +729,7 @@ class OCRService:
         logger.warning("GOT-OCR 2.0 is deprecated; use Nanonets-OCR2-1.5B-exp instead")
         try:
             from got_ocr import GOTOCR
+
             model = GOTOCR()
             text = model.infer(file_path)
             if text.strip():
@@ -722,42 +743,48 @@ class OCRService:
         return "", 0.0
 
     async def medgemma_parse(self, file_path: str) -> Tuple[str, float]:
-        """Parse image using MedGemma-4B local VLM as fallback.
+        """Parse image using MedGemma-4B local VLM (GGUF via llama.cpp server).
 
-        Falls back to basic Tesseract if MedGemma isn't loaded.
-        Model is cached after first load to avoid reloading on every call.
+        POSTs the image as a base64 data URL to the llama-server
+        OpenAI-compatible /v1/chat/completions endpoint (mmproj loaded
+        server-side). Falls back to basic Tesseract if the server is
+        unreachable or returns no text.
         """
+        import base64
+        import mimetypes
+
+        import httpx
+
+        url = f"{settings.MEDGEMMA_SERVER_URL.rstrip('/')}/v1/chat/completions"
         try:
-            from transformers import AutoModelForImageTextToText, AutoProcessor
-            from PIL import Image
+            mime = mimetypes.guess_type(file_path)[0] or "image/png"
+            with open(file_path, "rb") as f:
+                image_b64 = base64.b64encode(f.read()).decode("ascii")
 
-            model_name = settings.MEDGEMMA_PATH or "/models/medgemma-4b-it"
-
-            # Cache model and processor to avoid reloading on every call.
-            # MedGemma-4B-it is multimodal: it requires AutoProcessor so the
-            # image actually reaches the vision tower.
-            if not hasattr(self, "_medgemma_model") or self._medgemma_model is None:
-                self._medgemma_processor = AutoProcessor.from_pretrained(model_name)
-                self._medgemma_model = AutoModelForImageTextToText.from_pretrained(model_name)
-
-            processor = self._medgemma_processor
-            model = self._medgemma_model
-
-            with Image.open(file_path) as image:
-                if image.mode != "RGB":
-                    image = image.convert("RGB")
-                text = await self._vlm_generate(
-                    processor, model, image,
-                    "Extract all text from this medical document.",
-                    max_new_tokens=512,
-                )
-                if text.strip():
-                    return text, 0.75
-        except ImportError:
-            logger.info("MedGemma not available, falling back to Tesseract")
-            return await self._tesseract_fallback(file_path)
+            payload = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime};base64,{image_b64}"},
+                            },
+                            {"type": "text", "text": "Extract all text from this medical document."},
+                        ],
+                    }
+                ],
+                "max_tokens": 512,
+                "temperature": 0.0,
+            }
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+            if text:
+                return text, 0.75
         except Exception as exc:
-            logger.warning("MedGemma parsing failed: %s, falling back", exc)
+            logger.warning("MedGemma (llama.cpp) parsing failed: %s, falling back", exc)
             return await self._tesseract_fallback(file_path)
         return "", 0.0
 
@@ -780,18 +807,23 @@ class OCRService:
         mistaken for OCR output.
         """
         import asyncio
+
         import torch
 
         text_prompt = prompt
         if getattr(processor, "chat_template", None) or getattr(
             getattr(processor, "tokenizer", None), "chat_template", None
         ):
-            messages = [{
-                "role": "user",
-                "content": [{"type": "image"}, {"type": "text", "text": prompt}],
-            }]
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": prompt}],
+                }
+            ]
             text_prompt = processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True,
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
             )
 
         inputs = processor(text=text_prompt, images=image, return_tensors="pt")
@@ -813,6 +845,7 @@ class OCRService:
         """Fallback PDF text extraction using PyPDF2."""
         try:
             import PyPDF2
+
             text_parts = []
             with open(file_path, "rb") as f:
                 reader = PyPDF2.PdfReader(f)

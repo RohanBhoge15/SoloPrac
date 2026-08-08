@@ -8,24 +8,24 @@ Endpoints:
 
 from __future__ import annotations
 
-import uuid
-import os
 import logging
-from datetime import datetime, timezone
+import os
+import uuid
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_doctor
-from uuid import UUID
-from app.models import Doctor, Patient, PatientVersion, AuditLog
-from app.services.document_parser import parser_router, DocType
-from app.services.notification_generator import generate_and_dispatch as _dispatch_notification
-from app.services.storage import storage_service
+from app.models import AuditLog, Patient, PatientVersion
 from app.routers.patients import _mint_version
 from app.services.batch_import import batch_import_prescription_pdf
+from app.services.document_parser import parser_router
+from app.services.notification_generator import generate_and_dispatch as _dispatch_notification
+from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,21 +35,18 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def _background_index_version(version_id: str, patient_id: str, doctor_id: str):
     """Background task: index a PatientVersion into Qdrant after response is sent."""
     try:
-        from app.services.indexer import index_version
-        from app.database import async_session_maker
         import uuid as _uuid
 
+        from app.database import async_session_maker
+        from app.services.indexer import index_version
+
         async with async_session_maker() as db:
-            result = await db.execute(
-                select(PatientVersion).where(PatientVersion.id == _uuid.UUID(version_id))
-            )
+            result = await db.execute(select(PatientVersion).where(PatientVersion.id == _uuid.UUID(version_id)))
             version = result.scalar_one_or_none()
             if not version:
                 return
 
-            result = await db.execute(
-                select(Patient).where(Patient.id == _uuid.UUID(patient_id))
-            )
+            result = await db.execute(select(Patient).where(Patient.id == _uuid.UUID(patient_id)))
             patient = result.scalar_one_or_none()
             if not patient:
                 return
@@ -58,6 +55,7 @@ async def _background_index_version(version_id: str, patient_id: str, doctor_id:
             logger.info("Background indexing complete for version %s", version_id)
     except Exception as exc:
         logger.warning("Background indexing failed for version %s: %s", version_id, exc)
+
 
 ALLOWED_MIME_TYPES = {
     "application/pdf": ".pdf",
@@ -75,6 +73,7 @@ async def _check_upload_rate_limit(doctor_id: str) -> bool:
     """Check if doctor has exceeded upload rate limit (10/min) using Redis."""
     try:
         from app.services.redis import redis_service
+
         client = await redis_service.connect()
         key = f"rate_limit:upload:{doctor_id}"
         current = await client.incr(key)
@@ -91,6 +90,7 @@ async def _record_upload(doctor_id: str):
     """Record upload in Redis for rate limiting."""
     try:
         from app.services.redis import redis_service
+
         client = await redis_service.connect()
         key = f"rate_limit:upload:{doctor_id}"
         current = await client.incr(key)
@@ -104,15 +104,19 @@ async def _record_upload(doctor_id: str):
 async def parse_document(
     file: UploadFile = File(..., description="Document to parse (PDF, JPG, PNG, WebP)"),
     patient_id: Optional[str] = Form(None, description="Optional patient ID to associate"),
+    sync: bool = False,
     doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
     background_tasks: BackgroundTasks = None,
 ):
     """Upload and parse a medical document through the OCR pipeline.
 
-    Auto-detects document format (typed PDF, scanned PDF, handwritten, photo)
-    and routes to the correct parser (Docling, Surya, Nanonets-OCR2, MedGemma).
-    Also classifies document type (prescription, lab report, etc.).
+    Default path (P0.7): validates + uploads to S3, then returns HTTP 202
+    with a `job_id` — the OCR runs in the arq worker via
+    `parse_document_job`. Frontend polls `GET /api/v1/jobs/{job_id}`.
+
+    Set `sync=true` to keep the legacy synchronous behaviour (blocks until
+    OCR finishes). Only used for scripts + tests; the UI always polls.
     """
     doctor_id_str = str(doctor.id)
 
@@ -150,7 +154,7 @@ async def parse_document(
     doc_id = uuid.uuid4()
     ext = ALLOWED_MIME_TYPES.get(file.content_type or "", ".bin")
     s3_key = f"documents/{doctor_id_str}/{doc_id}{ext}"
-    
+
     try:
         await storage_service.upload_file(
             file_data=content,
@@ -164,12 +168,43 @@ async def parse_document(
 
     _record_upload(doctor_id_str)
 
+    # ─── P0.7: async path (default) ─────────────────────────────────────
+    # Enqueue the OCR job and return 202. The arq worker downloads from S3,
+    # runs the parser, and (if patient_id was supplied) mints a version +
+    # enqueues indexing + dispatches a notification.
+    if not sync:
+        from app.services.background_jobs import enqueue_parse_document
+
+        job_id = await enqueue_parse_document(
+            doc_id=str(doc_id),
+            s3_key=s3_key,
+            content_type=file.content_type or "application/octet-stream",
+            doctor_id=doctor_id_str,
+            patient_id=patient_id,
+            filename=file.filename or "document",
+            size_bytes=len(content),
+        )
+        if job_id is None:
+            # arq unreachable — fall through to sync path rather than 503.
+            logger.warning("arq unavailable, falling back to inline OCR for doc %s", doc_id)
+        else:
+            return {
+                "status": "accepted",
+                "job_id": job_id,
+                "doc_id": str(doc_id),
+                "filename": file.filename,
+                "size": len(content),
+                "poll_url": f"/api/v1/jobs/{job_id}",
+            }
+
+    # ─── Legacy sync path (sync=true, or arq fallback) ──────────────────
     # Parse document — download from S3 to temp file for parser
     import tempfile
+
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
-    
+
     try:
         result = await parser_router.parse(tmp_path, file.content_type or "application/octet-stream")
     except Exception as exc:
@@ -183,9 +218,7 @@ async def parse_document(
     if patient_id:
         try:
             pid = uuid.UUID(patient_id)
-            pat_result = await db.execute(
-                select(Patient).where(Patient.id == pid, Patient.doctor_id == doctor.id)
-            )
+            pat_result = await db.execute(select(Patient).where(Patient.id == pid, Patient.doctor_id == doctor.id))
             patient = pat_result.scalar_one_or_none()
             if not patient:
                 raise HTTPException(status_code=404, detail="Patient not found")
@@ -221,22 +254,31 @@ async def parse_document(
             )
             logger.info("Created PatientVersion %s for document %s", version.id, doc_id)
 
-            # Index in background (non-blocking)
-            if background_tasks:
-                background_tasks.add_task(
-                    _background_index_version,
-                    str(version.id),
-                    str(patient.id),
-                    str(doctor.id),
+            # Index in background — P1.9: use arq, not BackgroundTasks
+            # (BackgroundTasks runs inside the API worker and dies with it).
+            try:
+                from app.services.background_jobs import enqueue_index_version
+
+                await enqueue_index_version(
+                    version_id=str(version.id),
+                    patient_id=str(patient.id),
+                    doctor_id=str(doctor.id),
                 )
+            except Exception as exc:
+                logger.warning("arq enqueue for indexer failed, falling back: %s", exc)
+                if background_tasks:
+                    background_tasks.add_task(
+                        _background_index_version,
+                        str(version.id),
+                        str(patient.id),
+                        str(doctor.id),
+                    )
 
             # ── Dispatch "report_available" notification ──
             try:
                 patient_name = "Patient"
                 if patient.head_version and patient.head_version.state_jsonb:
-                    patient_name = patient.head_version.state_jsonb.get(
-                        "demographics", {}
-                    ).get("name", "Patient")
+                    patient_name = patient.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
                 await _dispatch_notification(
                     db,
                     event_type="report_available",
@@ -304,9 +346,7 @@ async def save_document_to_patient(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid patient_id")
 
-    pat_result = await db.execute(
-        select(Patient).where(Patient.id == pid, Patient.doctor_id == doctor.id)
-    )
+    pat_result = await db.execute(select(Patient).where(Patient.id == pid, Patient.doctor_id == doctor.id))
     patient = pat_result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -368,9 +408,7 @@ async def save_document_to_patient(
     try:
         patient_name = "Patient"
         if patient.head_version and patient.head_version.state_jsonb:
-            patient_name = patient.head_version.state_jsonb.get(
-                "demographics", {}
-            ).get("name", "Patient")
+            patient_name = patient.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
         await _dispatch_notification(
             db,
             event_type="report_available",
@@ -399,7 +437,11 @@ async def list_document_types():
             {"id": "prescription", "name": "Prescription", "formats": ["typed_pdf", "scanned_pdf", "handwritten"]},
             {"id": "lab_report", "name": "Lab Report", "formats": ["typed_pdf", "scanned_pdf"]},
             {"id": "discharge_summary", "name": "Discharge Summary", "formats": ["typed_pdf", "scanned_pdf"]},
-            {"id": "referral_letter", "name": "Referral Letter", "formats": ["typed_pdf", "scanned_pdf", "handwritten"]},
+            {
+                "id": "referral_letter",
+                "name": "Referral Letter",
+                "formats": ["typed_pdf", "scanned_pdf", "handwritten"],
+            },
             {"id": "imaging_report", "name": "Imaging Report", "formats": ["typed_pdf", "scanned_pdf"]},
             {"id": "general_document", "name": "General Document", "formats": ["typed_pdf", "scanned_pdf", "photo"]},
         ],
@@ -431,6 +473,7 @@ async def get_document_file(
         raise HTTPException(status_code=500, detail="Failed to generate URL")
 
     from fastapi.responses import RedirectResponse
+
     return RedirectResponse(url=presigned_url)
 
 
@@ -444,6 +487,7 @@ async def get_doctor_avatar(
     """
     try:
         import uuid as _uuid
+
         _uuid.UUID(doctor_id)  # validate
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid doctor ID")
@@ -466,6 +510,7 @@ async def get_doctor_avatar(
 # ════════════════════════════════════════════════════════════
 # Batch Import — multi-page prescription PDF → version chain
 # ════════════════════════════════════════════════════════════
+
 
 @router.post("/batch-import", status_code=status.HTTP_201_CREATED)
 async def batch_import_prescriptions(
@@ -516,9 +561,7 @@ async def batch_import_prescriptions(
         raise HTTPException(status_code=400, detail="Invalid patient_id format")
 
     # Verify patient ownership
-    pat_result = await db.execute(
-        select(Patient).where(Patient.id == pid, Patient.doctor_id == doctor.id)
-    )
+    pat_result = await db.execute(select(Patient).where(Patient.id == pid, Patient.doctor_id == doctor.id))
     patient = pat_result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -545,9 +588,9 @@ async def batch_import_prescriptions(
 
 MAGIC_BYTE_MAP = {
     b"\x25\x50\x44\x46": "application/pdf",  # %PDF
-    b"\xff\xd8\xff": "image/jpeg",            # JPEG
-    b"\x89\x50\x4e\x47": "image/png",         # PNG
-    b"\x52\x49\x46\x46": "image/webp",        # RIFF (WebP)
+    b"\xff\xd8\xff": "image/jpeg",  # JPEG
+    b"\x89\x50\x4e\x47": "image/png",  # PNG
+    b"\x52\x49\x46\x46": "image/webp",  # RIFF (WebP)
 }
 
 
@@ -557,5 +600,3 @@ def _check_magic_bytes(content: bytes, declared_mime: str) -> bool:
         if content.startswith(magic):
             return mime == declared_mime
     return False
-
-

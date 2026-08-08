@@ -1,7 +1,30 @@
 # SoloPrac Backend Routers
 
 from fastapi import APIRouter
-from app.routers import health, auth, patients, agent, images, evaluation, documents, security, prescriptions, certificates, invoices, calendar, portal, weekly_report, risk_alerts, admin, dpdp, backup, voice, patient_documents
+
+from app.routers import (
+    admin,
+    agent,
+    auth,
+    backup,
+    calendar,
+    certificates,
+    documents,
+    dpdp,
+    evaluation,
+    health,
+    images,
+    invoices,
+    jobs,
+    patient_documents,
+    patients,
+    portal,
+    prescriptions,
+    risk_alerts,
+    security,
+    voice,
+    weekly_report,
+)
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health.router, tags=["health"])
@@ -28,3 +51,4 @@ api_router.include_router(dpdp.router, tags=["dpdp-consent"])
 api_router.include_router(backup.router, tags=["admin-backup"])
 api_router.include_router(voice.router, tags=["voice"])
 api_router.include_router(patient_documents.router, tags=["patient-documents"])
+api_router.include_router(jobs.router, tags=["jobs"])

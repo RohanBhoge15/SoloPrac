@@ -21,38 +21,47 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
-// Response interceptor - handle 401 for patient routes
+// Helpers so URL prefix matching is precise:
+//   - '/patient/me/…', '/patient/appointments' → patient portal
+//   - '/patients/…' (plural, doctor side) → NOT patient portal
+//   - '/public/…' → patient-portal / marketing endpoints, no doctor cookie
+const isPatientPortalUrl = (url: string) => {
+  return /^\/(patient|public)(\/|$)/.test(url) && !/^\/patients\//.test(url)
+}
+
+// Response interceptor - handle 401 with a targeted refresh/redirect policy.
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config
+    const rawUrl: string = originalRequest?.url ?? ''
+    // Normalise: axios stores request URL without the baseURL prefix
+    const url = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`
 
-    // Don't retry auth endpoints
-    if (originalRequest.url?.includes('/auth/') || originalRequest.url?.includes('/public/auth/')) {
+    // Never retry / redirect on auth-flow endpoints — those pages handle it.
+    if (url.includes('/auth/') || url.includes('/public/auth/')) {
       return Promise.reject(error)
     }
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Probe endpoints used by route guards: DO NOT hard-redirect on 401,
+    // let the caller's .catch() decide. Redirect-on-401 for a probe creates
+    // an infinite loop when a doctor-logged-in session hits a patient guard.
+    const isSessionProbe =
+      url === '/patient/me/profile' || url === '/auth/me'
+
+    if (error.response?.status === 401 && !originalRequest._retry && !isSessionProbe) {
       originalRequest._retry = true
 
       try {
-        // Try to refresh doctor token (uses refresh_token cookie automatically)
-        const isPatientRoute = originalRequest.url?.includes('/patient/') || 
-                               originalRequest.url?.includes('/public/')
-        
-        if (isPatientRoute) {
-          // Patient routes use patient_token cookie, no refresh endpoint
-          // Just redirect to login
+        if (isPatientPortalUrl(url)) {
+          // Patient portal: no refresh endpoint. Redirect to portal login.
           window.location.href = '/patient/login'
           return Promise.reject(error)
-        } else {
-          // Doctor route - try refresh
-          await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true })
-          // Retry original request with new cookies
-          return apiClient(originalRequest)
         }
+        // Doctor route — try silent refresh, then retry.
+        await axios.post(`${API_BASE_URL}/auth/refresh`, {}, { withCredentials: true })
+        return apiClient(originalRequest)
       } catch (refreshError) {
-        // Refresh failed - clear cookies via logout endpoint and redirect
         try {
           await axios.post(`${API_BASE_URL}/auth/logout`, {}, { withCredentials: true })
         } catch {}

@@ -1,5 +1,5 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { createContext, useContext, ReactNode } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '@/services/api'
 
 interface User {
@@ -23,26 +23,34 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
 
-  const { data: userData, refetch } = useQuery({
+  const { data, isPending, isFetching, refetch } = useQuery<User | null>({
     queryKey: ['auth', 'me'],
     queryFn: async () => {
-      const res = await apiClient.get('/auth/me')
-      return res.data
+      try {
+        const res = await apiClient.get('/auth/me')
+        return res.data as User
+      } catch (err: any) {
+        // 401 = anonymous. Return null so the query is "successful" with no user
+        // and TanStack Query stops distinguishing between "not fetched" and
+        // "fetched, not authenticated". Any other error rethrows.
+        if (err?.response?.status === 401) return null
+        throw err
+      }
     },
-    // enabled when we have cookies (no localStorage check needed)
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
 
-  useEffect(() => {
-    if (userData) {
-      setUser(userData)
-    }
-    setLoading(false)
-  }, [userData])
+  // Derive `user` directly from the query result — this avoids the intermediate
+  // React render where `isPending=false` (query done) but a separate useState
+  // for `user` was still `null` (effect hadn't run yet). That single render is
+  // what caused ProtectedRoute to bounce to /login on hard navigations.
+  const user: User | null = data ?? null
+
+  // Truly loading = initial fetch OR a manual refetch is running.
+  const loading = isPending || isFetching
 
   const login = async (email: string, password: string) => {
     const res = await apiClient.post('/auth/login', { email, password })
@@ -59,8 +67,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Ignore errors
     }
-    // No localStorage to clear - cookies are cleared by backend
-    setUser(null)
+    // Clear the cached query result so subsequent navigation doesn't see the
+    // old identity. `user` is derived from this cache, so this is sufficient.
+    queryClient.setQueryData(['auth', 'me'], null)
   }
 
   const devLogin = async () => {
@@ -72,12 +81,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const initializeAuth = async () => {
+    // Kept for backward-compat with AppRoutes; the query runs automatically
+    // on mount so this is effectively a manual refresh.
     try {
       await refetch()
     } catch {
-      // Not authenticated
+      // Not authenticated — the useQuery already handled it.
     }
-    setLoading(false)
   }
 
   return (

@@ -66,11 +66,14 @@ repos:
         exclude: ^(.env\.example|Caddyfile)$
 
   # ─── Security-Focused Checks ───
+  # Gitleaks flag note: older versions accepted `--no-git`, newer ones use
+  # `--staged` on `gitleaks protect`. We pass `--staged` which is the correct
+  # flag for gitleaks v8.18+.
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.4
     hooks:
       - id: gitleaks
-        args: [--no-git]
+        args: [--staged]
         exclude: ^(.env\.example|backend/pyproject\.toml|docs/)$
 
   # ─── PII Privacy Guard ───

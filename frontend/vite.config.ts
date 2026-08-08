@@ -51,16 +51,43 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // P2.19 — Manual chunks so vendor libs end up in their own long-lived
+  // vendor chunks that survive app-code redeploys — great for repeat visitors.
+  // Only libs that are actually in package.json belong here; naming a package
+  // that isn't installed makes rollup treat it as a missing entry module and
+  // aborts the build.
+  build: {
+    target: 'es2022',
+    sourcemap: false,
+    cssCodeSplit: true,
+    chunkSizeWarningLimit: 800,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'tanstack': ['@tanstack/react-query'],
+          'motion': ['framer-motion'],
+          'icons': ['lucide-react'],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
+    host: '0.0.0.0',
+    // Vite 5 rejects requests with a Host header not in this allowlist.
+    // In docker the browser (or another container) reaches us as `frontend:5173`;
+    // from the host machine it's `localhost` / `127.0.0.1`. `true` disables the check
+    // — safe for a dev-only server that is never exposed publicly.
+    allowedHosts: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000',
         changeOrigin: true,
         ws: true,
       },
       '/ws': {
-        target: 'http://localhost:8000',
+        target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000',
         ws: true,
       },
     },

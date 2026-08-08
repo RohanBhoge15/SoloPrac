@@ -6,6 +6,8 @@ import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
 import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File, Search, ChevronRight, ChevronLeft, Camera, AlertTriangle } from 'lucide-react'
+import { CameraCaptureModal } from '@/components/CameraCaptureModal'
+import { PrescriptionHighlighter } from '@/components/PrescriptionHighlighter'
 
 interface ParsedDocument {
   doc_id: string
@@ -69,6 +71,7 @@ export function Scratchpad() {
   const [editedText, setEditedText] = useState('')
   const [doctorNotes, setDoctorNotes] = useState('')
   const [editingResult, setEditingResult] = useState<ParsedDocument | null>(null)
+  const [cameraOpen, setCameraOpen] = useState(false)
 
   // Fetch real patients on mount
   useEffect(() => {
@@ -289,11 +292,12 @@ export function Scratchpad() {
         />
       </div>
 
-      {/* Mobile Camera Button — visible only on small screens */}
+      {/* Take Photo — live camera on all devices with getUserMedia; falls back to the
+          native file input (which triggers the OS camera on mobile) if the modal can't start. */}
       <Button
         variant="outline"
-        className="w-full sm:hidden"
-        onClick={() => document.getElementById('camera-input')?.click()}
+        className="w-full sm:w-auto"
+        onClick={() => setCameraOpen(true)}
       >
         <Camera className="h-4 w-4 mr-2" />
         Take Photo
@@ -306,6 +310,21 @@ export function Scratchpad() {
         capture="environment"
         multiple
         onChange={handleFileInput}
+      />
+
+      {/* Live camera capture modal */}
+      <CameraCaptureModal
+        open={cameraOpen}
+        onClose={() => setCameraOpen(false)}
+        onCapture={(file) => {
+          setCameraOpen(false)
+          handleDrop([file])
+        }}
+        onFallback={() => {
+          // Camera unavailable — punt to native file picker (mobile browsers
+          // will still surface the camera as one of the input options).
+          document.getElementById('camera-input')?.click()
+        }}
       />
 
       {/* Files List */}
@@ -456,9 +475,16 @@ export function Scratchpad() {
                 </Button>
               </CardHeader>
               <CardContent>
-                <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 min-h-[100px] max-h-[300px] overflow-y-auto text-gray-900 dark:text-white text-sm whitespace-pre-wrap font-mono">
-                  {file.result?.raw_text || 'No text extracted.'}
-                </div>
+                {/* Prescriptions get the entity-highlighted view; other doc types
+                    stay on the plain-text panel because the keyword patterns
+                    are prescription-specific. */}
+                {file.result?.doc_type === 'prescription' && file.result?.raw_text ? (
+                  <PrescriptionHighlighter text={file.result.raw_text} />
+                ) : (
+                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 min-h-[100px] max-h-[300px] overflow-y-auto text-gray-900 dark:text-white text-sm whitespace-pre-wrap font-mono">
+                    {file.result?.raw_text || 'No text extracted.'}
+                  </div>
+                )}
 
                 {/* Structured data preview */}
                 {file.result?.structured && Object.keys(file.result.structured).length > 0 && (

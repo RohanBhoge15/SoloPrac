@@ -38,6 +38,17 @@ dependencies = [
     "reportlab>=4.0.0",
     "sentence-transformers>=2.3.0",
     "torch>=2.4.0",
+    "open-clip-torch>=2.24.0",
+    "faster-whisper>=1.1.0",
+    "parler-tts>=0.2.0",
+    "soundfile>=0.12.0",
+    "onnxruntime>=1.28.0",
+    "misaki>=0.9.4",
+    "phonemizer>=3.3.0",
+    "espeakng-loader>=0.1.2",
+    "num2words>=0.5.12",
+    "spacy>=3.8.0",
+    "torchaudio>=2.4.0",
     "boto3>=1.34.0",
     # Langfuse SDK v2: code uses the v2 tracing API (create_span, score(trace_id=...))
     # and docker-compose pins the langfuse server to 2.40.0. Do NOT bump to 3.x/4.x

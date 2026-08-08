@@ -28,37 +28,7 @@ export function Settings() {
       </TabsContent>
 
       <TabsContent value="notifications" className="space-y-6 mt-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Bell className="h-5 w-5" />Notification Preferences</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {[
-              { key: 'appointment_reminder', label: 'Appointment Reminders', defaultHours: 2, channels: ['in_app', 'email'] },
-              { key: 'new_report', label: 'New Report Available', defaultHours: 0, channels: ['in_app', 'email'] },
-              { key: 'invoice_generated', label: 'Invoice Generated', defaultHours: 0, channels: ['in_app'] },
-              { key: 'booking_confirmation', label: 'Booking Confirmations', defaultHours: 0, channels: ['in_app', 'email'] },
-              { key: 'reschedule_notification', label: 'Reschedule Notifications', defaultHours: 0, channels: ['in_app', 'email'] },
-              { key: 'certificate_issued', label: 'Certificate Issued', defaultHours: 0, channels: ['in_app'] },
-            ].map((n) => (
-              <div key={n.key} className="p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium text-gray-900 dark:text-white">{n.label}</p>
-                    <p className="text-sm text-gray-500">
-                      {n.defaultHours > 0 ? (n.defaultHours + "h before") : "immediately"}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {n.channels.includes('in_app') && <Badge variant="default">In-App</Badge>}
-                    {n.channels.includes('email') && <Badge variant="secondary">Email</Badge>}
-                  </div>
-                </div>
-              </div>
-            ))}
-            <p className="text-sm text-gray-500 italic">Notifications are delivered via in-app WebSocket (free) and email (PDF reports only). SMS is not used.</p>
-          </CardContent>
-        </Card>
+        <NotificationsTab />
       </TabsContent>
 
       <TabsContent value="schedule" className="space-y-6 mt-6">
@@ -97,6 +67,11 @@ function ProfileTab() {
   const [showCropModal, setShowCropModal] = useState(false)
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
   const [yearsExperience, setYearsExperience] = useState<number | null>(null)
+  // Clinic branding
+  const [clinicLogoUrl, setClinicLogoUrl] = useState<string | null>(null)
+  const [signatureUrl, setSignatureUrl] = useState<string | null>(null)
+  const [uploadingLogo, setUploadingLogo] = useState(false)
+  const [uploadingSignature, setUploadingSignature] = useState(false)
 
   useEffect(() => {
     apiClient.get('/auth/me')
@@ -117,6 +92,8 @@ function ProfileTab() {
         setPhotoUrl(d.photo_url || null)
         setVerificationStatus(d.verification_status || 'unverified')
         setYearsExperience(d.years_experience ?? null)
+        setClinicLogoUrl(d.settings?.clinic_logo_url || null)
+        setSignatureUrl(d.settings?.signature_url || null)
       })
       .catch(() => setError('Failed to load profile'))
       .finally(() => setLoading(false))
@@ -169,6 +146,70 @@ function ProfileTab() {
       setError(err.response?.data?.detail || 'Failed to upload photo')
     } finally {
       setUploadingPhoto(false)
+    }
+  }
+
+  // ── Clinic logo + signature upload handlers ──
+  // Both use the same POST-file / DELETE-file dance against
+  // /auth/me/clinic-logo and /auth/me/signature.
+  const uploadBrandingAsset = async (
+    file: File,
+    endpoint: '/auth/me/clinic-logo' | '/auth/me/signature',
+    responseKey: 'clinic_logo_url' | 'signature_url',
+    setUrl: (u: string | null) => void,
+    setUploading: (b: boolean) => void,
+  ) => {
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose an image file (JPG, PNG, or WebP)')
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('File must be under 2MB')
+      return
+    }
+    setUploading(true)
+    setError(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await apiClient.post(endpoint, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setUrl(res.data[responseKey])
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file) void uploadBrandingAsset(file, '/auth/me/clinic-logo', 'clinic_logo_url', setClinicLogoUrl, setUploadingLogo)
+  }
+
+  const handleSignatureUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file) void uploadBrandingAsset(file, '/auth/me/signature', 'signature_url', setSignatureUrl, setUploadingSignature)
+  }
+
+  const handleLogoDelete = async () => {
+    try {
+      await apiClient.delete('/auth/me/clinic-logo')
+      setClinicLogoUrl(null)
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to remove logo')
+    }
+  }
+
+  const handleSignatureDelete = async () => {
+    try {
+      await apiClient.delete('/auth/me/signature')
+      setSignatureUrl(null)
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to remove signature')
     }
   }
 
@@ -259,6 +300,96 @@ function ProfileTab() {
             {photoUrl ? 'Change Photo' : 'Add Photo'}
           </Button>
         </div>
+
+        {/* ── Clinic Branding — Logo + Signature ── */}
+        <div className="p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 space-y-4">
+          <div>
+            <p className="text-sm font-medium text-gray-900 dark:text-white">Clinic Branding</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Your logo appears at the top of every prescription, invoice and certificate.
+              Your signature appears above your name in the sign-off area.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Clinic logo */}
+            <div className="space-y-2">
+              <Label className="text-xs uppercase tracking-wide text-gray-500">Clinic Logo</Label>
+              <div className="flex items-center gap-3">
+                <div className="h-16 w-24 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center overflow-hidden shrink-0">
+                  {clinicLogoUrl ? (
+                    <img src={clinicLogoUrl} alt="Clinic logo" className="max-h-full max-w-full object-contain" />
+                  ) : (
+                    <span className="text-[10px] text-gray-400">No logo</span>
+                  )}
+                </div>
+                <div className="flex-1 flex flex-col gap-1.5">
+                  <input
+                    id="clinic-logo-input"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={handleLogoUpload}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => document.getElementById('clinic-logo-input')?.click()}
+                    disabled={uploadingLogo}
+                  >
+                    {uploadingLogo ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+                    {clinicLogoUrl ? 'Replace' : 'Upload'}
+                  </Button>
+                  {clinicLogoUrl && (
+                    <Button variant="ghost" size="sm" className="text-xs text-red-600 hover:text-red-700" onClick={handleLogoDelete}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-400">JPG, PNG or WebP · max 2MB · shown ≤200×56px on PDFs</p>
+            </div>
+
+            {/* Signature */}
+            <div className="space-y-2">
+              <Label className="text-xs uppercase tracking-wide text-gray-500">Signature</Label>
+              <div className="flex items-center gap-3">
+                <div className="h-16 w-24 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center overflow-hidden shrink-0">
+                  {signatureUrl ? (
+                    <img src={signatureUrl} alt="Signature" className="max-h-full max-w-full object-contain" />
+                  ) : (
+                    <span className="text-[10px] text-gray-400">No signature</span>
+                  )}
+                </div>
+                <div className="flex-1 flex flex-col gap-1.5">
+                  <input
+                    id="signature-input"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={handleSignatureUpload}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => document.getElementById('signature-input')?.click()}
+                    disabled={uploadingSignature}
+                  >
+                    {uploadingSignature ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+                    {signatureUrl ? 'Replace' : 'Upload'}
+                  </Button>
+                  {signatureUrl && (
+                    <Button variant="ghost" size="sm" className="text-xs text-red-600 hover:text-red-700" onClick={handleSignatureDelete}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-400">PNG with transparent background works best · max 2MB</p>
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <Label htmlFor="name">Full Name</Label>
@@ -324,6 +455,188 @@ function ProfileTab() {
   )
 }
 
+// ─── Notifications Tab ─────────────────────────────────────────
+// Editable preferences per event type. Backend validates via
+// notification_prefs.py; we mirror its DEFAULT_PREFERENCES shape.
+
+type NotifChannel = 'in_app' | 'email'
+type NotifPref = { enabled: boolean; hours_before?: number; channels: NotifChannel[] }
+
+const NOTIF_EVENTS: { key: string; label: string; supportsHoursBefore?: boolean }[] = [
+  { key: 'appointment_reminder', label: 'Appointment Reminders', supportsHoursBefore: true },
+  { key: 'new_report', label: 'New Report Available' },
+  { key: 'invoice_generated', label: 'Invoice Generated' },
+  { key: 'booking_confirmation', label: 'Booking Confirmations' },
+  { key: 'reschedule_notification', label: 'Reschedule Notifications' },
+  { key: 'certificate_issued', label: 'Certificate Issued' },
+]
+
+const DEFAULT_NOTIF_PREFS: Record<string, NotifPref> = {
+  appointment_reminder: { enabled: true, hours_before: 2, channels: ['in_app'] },
+  new_report: { enabled: true, channels: ['in_app', 'email'] },
+  invoice_generated: { enabled: true, channels: ['in_app'] },
+  booking_confirmation: { enabled: true, channels: ['in_app'] },
+  reschedule_notification: { enabled: true, channels: ['in_app'] },
+  certificate_issued: { enabled: true, channels: ['in_app'] },
+}
+
+function NotificationsTab() {
+  const [prefs, setPrefs] = useState<Record<string, NotifPref>>(DEFAULT_NOTIF_PREFS)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    apiClient.get('/auth/me')
+      .then(r => {
+        const stored = r.data?.settings?.notification_preferences
+        if (stored && typeof stored === 'object') {
+          setPrefs({ ...DEFAULT_NOTIF_PREFS, ...stored })
+        }
+      })
+      .catch(() => setError('Failed to load notification preferences'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const updatePref = (key: string, patch: Partial<NotifPref>) => {
+    setPrefs(prev => ({ ...prev, [key]: { ...prev[key], ...patch } }))
+  }
+
+  const toggleChannel = (key: string, channel: NotifChannel) => {
+    setPrefs(prev => {
+      const current = prev[key]
+      const has = current.channels.includes(channel)
+      const next = has
+        ? current.channels.filter(c => c !== channel)
+        : [...current.channels, channel]
+      return { ...prev, [key]: { ...current, channels: next } }
+    })
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      await apiClient.put('/auth/me/settings', { notification_preferences: prefs })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2500)
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Failed to save preferences')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-8 text-center text-gray-400">
+          <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
+          Loading preferences...
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><Bell className="h-5 w-5" />Notification Preferences</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {error && (
+          <div className="p-3 rounded-lg bg-red-50 text-sm text-red-700 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" />{error}
+          </div>
+        )}
+
+        {NOTIF_EVENTS.map(evt => {
+          const p = prefs[evt.key] || DEFAULT_NOTIF_PREFS[evt.key]
+          return (
+            <div key={evt.key} className="p-4 rounded-lg border border-gray-200 dark:border-gray-700 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-gray-900 dark:text-white">{evt.label}</p>
+                  <p className="text-xs text-gray-500">
+                    {p.enabled ? 'Enabled' : 'Disabled'}
+                    {evt.supportsHoursBefore && p.enabled && p.hours_before ? ` · ${p.hours_before}h before` : ''}
+                  </p>
+                </div>
+                {/* Enable / disable toggle */}
+                <label className="inline-flex items-center cursor-pointer" aria-label={`Enable ${evt.label}`}>
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={p.enabled}
+                    onChange={e => updatePref(evt.key, { enabled: e.target.checked })}
+                  />
+                  <span className="relative w-11 h-6 bg-gray-300 dark:bg-gray-700 rounded-full peer-checked:bg-primary-500 transition-colors">
+                    <span className={`absolute left-0.5 top-0.5 h-5 w-5 bg-white rounded-full shadow transition-transform ${p.enabled ? 'translate-x-5' : ''}`} />
+                  </span>
+                </label>
+              </div>
+
+              {p.enabled && (
+                <div className="flex items-center gap-3 pl-1">
+                  {/* Channel checkboxes */}
+                  <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={p.channels.includes('in_app')}
+                      onChange={() => toggleChannel(evt.key, 'in_app')}
+                      className="accent-primary-600"
+                    />
+                    <Badge variant={p.channels.includes('in_app') ? 'default' : 'outline'}>In-App</Badge>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={p.channels.includes('email')}
+                      onChange={() => toggleChannel(evt.key, 'email')}
+                      className="accent-primary-600"
+                    />
+                    <Badge variant={p.channels.includes('email') ? 'secondary' : 'outline'}>Email</Badge>
+                  </label>
+
+                  {evt.supportsHoursBefore && (
+                    <div className="ml-auto flex items-center gap-2">
+                      <Label htmlFor={`hours-${evt.key}`} className="text-xs">Hours before:</Label>
+                      <Input
+                        id={`hours-${evt.key}`}
+                        type="number"
+                        min={0}
+                        max={720}
+                        value={p.hours_before ?? 0}
+                        onChange={e => updatePref(evt.key, { hours_before: Math.max(0, Math.min(720, Number(e.target.value) || 0)) })}
+                        className="w-20 text-sm"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        <Button onClick={handleSave} disabled={saving}>
+          {saving ? (
+            <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving...</>
+          ) : saved ? (
+            <><CheckCircle className="mr-2 h-4 w-4 text-green-500" />Saved!</>
+          ) : (
+            'Save Preferences'
+          )}
+        </Button>
+
+        <p className="text-xs text-gray-500 italic pt-2 border-t border-gray-200 dark:border-gray-700">
+          Notifications are delivered via in-app WebSocket (free) and email (PDF reports only). SMS is not used.
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
 function ScheduleTab() {
   const [buffer, setBuffer] = useState(5)
   const [duration, setDuration] = useState(20)
@@ -381,7 +694,7 @@ function ScheduleTab() {
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
-    } catch { setError('Failed to save. Check console.'); setSaved(false); }
+    } catch (err) { console.warn('[Settings] Failed to save schedule:', err); setSaved(false); }
     finally { setSaving(false) }
   }
 

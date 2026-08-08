@@ -54,7 +54,7 @@ export const usePatientStore = create<PatientStore>((set, get) => ({
   fetchPatients: async () => {
     set({ loading: true, error: null })
     try {
-      const res = await apiClient.get('/patients', { params: { limit: 500 } })
+      const res = await apiClient.get('/patients', { params: { limit: 1000 } })
       set({ patients: res.data ?? [], loading: false })
     } catch (e: any) {
       set({ loading: false, error: e?.response?.data?.detail || 'Failed to load patients' })
@@ -105,16 +105,52 @@ export const usePatientStore = create<PatientStore>((set, get) => ({
   },
 
   patchFields: async (patientId, fields, expectedVersion) => {
+    // P2.18 — Optimistic update: apply the demographic/clinical patch to the
+    // in-memory head immediately so the UI stops "waiting for network" — the
+    // form clears and shows the new values before the round-trip finishes.
+    // On failure we restore the snapshot; on success we merge server truth.
+    const prevHead = get().activeHead
+    if (prevHead) {
+      const state = (prevHead.state_jsonb as any) ?? {}
+      const nextState = { ...state }
+      // Field keys in `fields` are dot paths like "demographics.name". Apply each.
+      for (const [path, value] of Object.entries(fields)) {
+        const parts = path.split('.')
+        let cursor: any = nextState
+        for (let i = 0; i < parts.length - 1; i++) {
+          const k = parts[i]
+          cursor[k] = { ...(cursor[k] ?? {}) }
+          cursor = cursor[k]
+        }
+        cursor[parts[parts.length - 1]] = value
+      }
+      set({
+        activeHead: {
+          ...prevHead,
+          state_jsonb: nextState,
+          // Optimistically bump the version so the next edit's expected_version
+          // is right if the user chains edits without waiting for a refetch.
+          version_number: (prevHead.version_number ?? expectedVersion) + 1,
+        } as PatientVersion,
+      })
+    }
+
     try {
       const res = await apiClient.patch(`/patients/${patientId}/fields`, fields, {
         params: { expected_version: expectedVersion },
       })
-      // refresh head after patch
-      get().fetchHead(patientId)
-      get().fetchTimeline(patientId)
+      // Refresh head + timeline in parallel so the store converges to server
+      // truth quickly. Fire-and-forget — the optimistic state is good enough
+      // to keep the UI responsive.
+      Promise.all([
+        get().fetchHead(patientId),
+        get().fetchTimeline(patientId),
+      ]).catch(() => {})
       return res.data
     } catch (e: any) {
       console.error('patchFields error:', e)
+      // Roll back the optimistic mutation.
+      if (prevHead) set({ activeHead: prevHead })
       return null
     }
   },
@@ -122,8 +158,11 @@ export const usePatientStore = create<PatientStore>((set, get) => ({
   revertToVersion: async (patientId, versionNumber) => {
     try {
       const res = await apiClient.post(`/patients/${patientId}/revert/${versionNumber}`)
-      get().fetchHead(patientId)
-      get().fetchTimeline(patientId)
+      // P2.18 — parallelize the two follow-up fetches.
+      Promise.all([
+        get().fetchHead(patientId),
+        get().fetchTimeline(patientId),
+      ]).catch(() => {})
       return res.data
     } catch (e: any) {
       console.error('revertToVersion error:', e)

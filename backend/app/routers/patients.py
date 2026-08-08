@@ -1,23 +1,27 @@
 # Patients Router — Version-Controlled Patient Records
 # Each write mints an immutable version; the chain is content-addressed via SHA256.
 
-import uuid
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, func, desc
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.database import get_db
-from app.models import Patient, PatientVersion, EDIT_TYPE_CHOICES
-from app.schemas import (
-    PatientCreate, PatientRead, PatientVersionCreate, PatientVersionRead,
-    PatientVersionTimeline, PatientVersionDiff,
-    PatientFieldUpdate, DemographicsPatch,
-)
 from app.dependencies import get_current_doctor
-from app.models import AuditLog
+from app.models import AuditLog, Patient, PatientVersion
+from app.schemas import (
+    DemographicsPatch,
+    PatientFieldUpdate,
+    PatientRead,
+    PatientVersionCreate,
+    PatientVersionDiff,
+    PatientVersionRead,
+    PatientVersionTimeline,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,7 @@ def _build_version_number(db_version) -> PatientVersionRead:
 # Version Minting (Internal helper)
 # ────────────────────────────────────────────
 
+
 async def _mint_version(
     db: AsyncSession,
     patient: Patient,
@@ -57,15 +62,12 @@ async def _mint_version(
     """
     # Lock the patient row to prevent concurrent version creation
     # Use SELECT ... FOR UPDATE on Patient row (real locking, not a no-op write)
-    await db.execute(
-        select(Patient).where(Patient.id == patient.id).with_for_update()
-    )
+    await db.execute(select(Patient).where(Patient.id == patient.id).with_for_update())
     await db.flush()
 
     # Compute next version number atomically (now safe under row lock)
     result = await db.execute(
-        select(func.coalesce(func.max(PatientVersion.version_number), 0))
-        .where(PatientVersion.patient_id == patient.id)
+        select(func.coalesce(func.max(PatientVersion.version_number), 0)).where(PatientVersion.patient_id == patient.id)
     )
     next_ver = result.scalar() + 1
 
@@ -111,9 +113,8 @@ async def _mint_version(
         await db.flush()
     except Exception as exc:
         import logging
-        logging.getLogger(__name__).warning(
-            "Version audit log write failed (non-blocking): %s", exc
-        )
+
+        logging.getLogger(__name__).warning("Version audit log write failed (non-blocking): %s", exc)
 
     return version
 
@@ -122,20 +123,20 @@ async def _mint_version(
 # Patient CRUD
 # ────────────────────────────────────────────
 
+
 @router.get("/search", response_model=List[dict])
 async def search_patients(
     q: str = Query(..., min_length=1, description="Search query"),
     limit: int = Query(20, ge=1, le=100),
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Search patients by name, phone, email, etc. across versions.
-    
+
     Uses pg_trgm index on patient_versions.name for fast ILIKE search.
     """
-    from sqlalchemy import text
     q_safe = q.lower()
-    
+
     # Search via ILIKE on head version demographics (uses pg_trgm index)
     join_query = (
         select(Patient)
@@ -143,21 +144,13 @@ async def search_patients(
         .where(Patient.doctor_id == doctor.id)
         .limit(limit)
     )
-    
-    # Use ILIKE with wildcards - this will use the pg_trgm GIN index
-    name_condition = func.coalesce(
-        PatientVersion.state_jsonb["demographics"]["name"].astext, ''
-    ).ilike(f"%{q_safe}%")
-    phone_condition = func.coalesce(
-        PatientVersion.state_jsonb["demographics"]["phone"].astext, ''
-    ).ilike(f"%{q_safe}%")
-    email_condition = func.coalesce(
-        PatientVersion.state_jsonb["demographics"]["email"].astext, ''
-    ).ilike(f"%{q_safe}%")
 
-    result = await db.execute(
-        join_query.where(name_condition | phone_condition | email_condition)
-    )
+    # Use ILIKE with wildcards - this will use the pg_trgm GIN index
+    name_condition = func.coalesce(PatientVersion.state_jsonb["demographics"]["name"].astext, "").ilike(f"%{q_safe}%")
+    phone_condition = func.coalesce(PatientVersion.state_jsonb["demographics"]["phone"].astext, "").ilike(f"%{q_safe}%")
+    email_condition = func.coalesce(PatientVersion.state_jsonb["demographics"]["email"].astext, "").ilike(f"%{q_safe}%")
+
+    result = await db.execute(join_query.where(name_condition | phone_condition | email_condition))
     all_patients = result.scalars().all()
 
     output = []
@@ -184,25 +177,29 @@ async def search_patients(
         if dob_str:
             try:
                 from datetime import date as _date
+
                 dob = _date.fromisoformat(dob_str)
                 today = _date.today()
                 age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
             except (ValueError, TypeError):
                 pass
 
-        output.append({
-            "id": str(p.id),
-            "name": name,
-            "initials": initials,
-            "age": age,
-            "gender": gender,
-            "phone": phone,
-            "head_version_id": str(p.head_version_id) if p.head_version_id else None,
-            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-        })
+        output.append(
+            {
+                "id": str(p.id),
+                "name": name,
+                "initials": initials,
+                "age": age,
+                "gender": gender,
+                "phone": phone,
+                "head_version_id": str(p.head_version_id) if p.head_version_id else None,
+                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+            }
+        )
     return output
 
 
+@router.get("", response_model=List[dict])
 @router.get("/", response_model=List[dict])
 async def list_patients(
     limit: int = Query(100, ge=1, le=1000),
@@ -212,6 +209,7 @@ async def list_patients(
 ):
     """List all patients for the current doctor, newest first."""
     from sqlalchemy.orm import selectinload
+
     result = await db.execute(
         select(Patient)
         .options(selectinload(Patient.head_version))
@@ -233,23 +231,26 @@ async def list_patients(
                 "summary": p.head_version.summary,
                 "timestamp": p.head_version.timestamp.isoformat() if p.head_version.timestamp else None,
             }
-        output.append({
-            "id": str(p.id),
-            "doctor_id": str(p.doctor_id),
-            "user_id": str(p.user_id) if p.user_id else None,
-            "head_version_id": str(p.head_version_id) if p.head_version_id else None,
-            "consent_for_share": p.consent_for_share,
-            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
-            "head_version": head,
-        })
+        output.append(
+            {
+                "id": str(p.id),
+                "doctor_id": str(p.doctor_id),
+                "user_id": str(p.user_id) if p.user_id else None,
+                "head_version_id": str(p.head_version_id) if p.head_version_id else None,
+                "consent_for_share": p.consent_for_share,
+                "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "head_version": head,
+            }
+        )
     return output
 
 
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=PatientVersionRead)
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=PatientVersionRead)
 async def create_patient(
     payload: PatientVersionCreate,
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new patient with an initial version (v1).
@@ -261,8 +262,9 @@ async def create_patient(
     existing_user_id = None
     phone = (payload.state_jsonb or {}).get("demographics", {}).get("phone", "")
     if phone:
-        from app.utils.phone import normalize_phone
         from app.models import User
+        from app.utils.phone import normalize_phone
+
         normalized = normalize_phone(phone)
         if len(normalized) == 10:
             # Search users by phone (iterate — no index on plaintext phone)
@@ -270,6 +272,7 @@ async def create_patient(
             for u in user_result.scalars().all():
                 if u.phone:
                     from app.utils.phone import phones_match
+
                     if phones_match(u.phone, phone):
                         existing_user_id = u.id
                         logger.info(
@@ -287,7 +290,9 @@ async def create_patient(
     await db.flush()
 
     version = await _mint_version(
-        db, patient, doctor.id,
+        db,
+        patient,
+        doctor.id,
         state=payload.state_jsonb,
         edit_type=payload.edit_type,
         author=f"doctor:{doctor.id}",
@@ -302,13 +307,11 @@ async def create_patient(
 @router.get("/{patient_id}", response_model=PatientRead)
 async def get_patient(
     patient_id: uuid.UUID,
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Get patient metadata (head pointer, timestamps)."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -318,22 +321,18 @@ async def get_patient(
 @router.get("/{patient_id}/head", response_model=PatientVersionRead)
 async def get_patient_head(
     patient_id: uuid.UUID,
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Get current (head) version — the latest patient state."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     _check_patient_ownership(patient, doctor.id)
 
     if not patient.head_version_id:
         raise HTTPException(status_code=404, detail="Patient has no versions")
 
-    v_result = await db.execute(
-        select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-    )
+    v_result = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
     version = v_result.scalar_one_or_none()
     if not version:
         raise HTTPException(status_code=500, detail="Head version pointer broken — contact support")
@@ -350,7 +349,7 @@ async def get_patient_timeline(
     patient_id: uuid.UUID,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Ordered version history (newest first) — lightweight, no full state."""
@@ -364,17 +363,14 @@ async def get_patient_timeline(
         .limit(limit)
         .offset(offset)
     )
-    return [
-        PatientVersionTimeline.model_validate(v)
-        for v in versions.scalars().all()
-    ]
+    return [PatientVersionTimeline.model_validate(v) for v in versions.scalars().all()]
 
 
 @router.get("/{patient_id}/at_version/{version_number}", response_model=PatientVersionRead)
 async def get_patient_at_version(
     patient_id: uuid.UUID,
     version_number: int,
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Reconstruct patient state at a specific historical version."""
@@ -396,7 +392,7 @@ async def diff_patient_versions(
     patient_id: uuid.UUID,
     v1: int = Query(..., ge=1, description="First version"),
     v2: int = Query(..., ge=1, description="Second version"),
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Field-level diff between two versions — identifies added/removed/modified keys."""
@@ -432,13 +428,11 @@ async def diff_patient_versions(
 async def revert_patient_to_version(
     patient_id: uuid.UUID,
     version_number: int,
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Mint a new version whose state matches an older version (Git revert semantics)."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     _check_patient_ownership(patient, doctor.id)
 
@@ -453,7 +447,9 @@ async def revert_patient_to_version(
         raise HTTPException(status_code=404, detail=f"Version {version_number} not found")
 
     new_version = await _mint_version(
-        db, patient, doctor.id,
+        db,
+        patient,
+        doctor.id,
         state=target_version.state_jsonb,
         edit_type="revert",
         author=f"doctor:{doctor.id}",
@@ -468,27 +464,36 @@ async def revert_patient_to_version(
 @router.patch("/{patient_id}/fields", response_model=PatientVersionRead)
 async def patch_patient_fields(
     patient_id: uuid.UUID,
-    field_updates: PatientFieldUpdate,
+    payload: dict,
     expected_version: int = Query(..., ge=1, description="Optimistic lock — expected current version"),
-    doctor = Depends(get_current_doctor),
+    doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
     """Inline field edit with optimistic locking on version_number (conflict → 409).
-    
-    Only allows updating known demographic fields via PatientFieldUpdate schema.
+
+    Accepts either:
+      { "demographics": { "name": "...", "phone": "..." } }  (structured)
+      OR
+      { "name": "...", "phone": "..." }                       (flat — legacy UI)
+    Only whitelisted demographic fields (see DemographicsPatch) are persisted;
+    unknown keys are ignored.
     """
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    # Coerce flat payloads into the demographics wrapper so validation is uniform.
+    if "demographics" not in payload and any(k in payload for k in DemographicsPatch.model_fields.keys()):
+        payload = {"demographics": {k: v for k, v in payload.items() if k in DemographicsPatch.model_fields}}
+
+    try:
+        field_updates = PatientFieldUpdate.model_validate(payload)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid payload: {e}")
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     _check_patient_ownership(patient, doctor.id)
 
     if not patient.head_version_id:
         raise HTTPException(status_code=400, detail="Patient has no base version yet")
 
-    head_result = await db.execute(
-        select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-    )
+    head_result = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
     head = head_result.scalar_one_or_none()
 
     if head.version_number != expected_version:
@@ -499,14 +504,14 @@ async def patch_patient_fields(
         )
 
     new_state = dict(head.state_jsonb or {})
-    
+
     # Apply validated updates
     updated_fields = []
     if field_updates.demographics is not None:
         demo = field_updates.demographics.model_dump(exclude_none=True)
         if not demo:
             raise HTTPException(status_code=400, detail="No demographic fields to update")
-        
+
         if "demographics" not in new_state:
             new_state["demographics"] = {}
         new_state["demographics"].update(demo)
@@ -516,7 +521,9 @@ async def patch_patient_fields(
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
     new_version = await _mint_version(
-        db, patient, doctor.id,
+        db,
+        patient,
+        doctor.id,
         state=new_state,
         edit_type="manual",
         author=f"doctor:{doctor.id}",
@@ -544,13 +551,21 @@ async def create_patient_manual(
     """Manually create a patient record under the current doctor.
 
     Used for walk-in patients who don't use the patient portal.
-    Body: { name, phone (optional), email (optional) }
+    Body: { name, phone (optional), email (optional), dob (optional YYYY-MM-DD),
+            gender (optional), address (optional) }
     The patient is created with a v1 version and owned by this doctor.
-    No User record is created — the patient exists only in this clinic's scope.
+
+    If a User already exists whose phone matches, we auto-link ONLY when the
+    match is strong (phone + dob or phone + fuzzy-name). Weak matches are
+    left unlinked and appear on the User's /pending-matches list so they can
+    claim/reject themselves — the doctor never has to disambiguate.
     """
     name = body.get("name", "").strip()
     phone = body.get("phone", "").strip()
     email = body.get("email", "").strip()
+    dob = (body.get("dob") or "").strip()
+    gender = (body.get("gender") or "").strip()
+    address = (body.get("address") or "").strip()
 
     if not name:
         raise HTTPException(status_code=400, detail="Patient name is required")
@@ -569,9 +584,41 @@ async def create_patient_manual(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to encrypt email: {exc}")
 
+    # Build demographics up front so the reverse-matcher can compare dob/name.
+    demographics = {
+        "name": name,
+        "phone": phone or None,
+        "email": email or None,
+    }
+    if dob:
+        demographics["dob"] = dob
+    if gender:
+        demographics["gender"] = gender
+    if address:
+        demographics["address"] = address
+
+    # Auto-link ONLY on strong matches. Weak matches (phone-only, different
+    # dob/name) go on the User's pending list where they can self-claim.
+    linked_user_id = None
+    if phone:
+        from app.services.linking import find_user_for_walkin
+
+        candidate_user, is_strong = await find_user_for_walkin(db, phone, demographics)
+        if candidate_user and is_strong:
+            linked_user_id = candidate_user.id
+            logger.info(
+                "Manual walk-in strong-linked to existing user %s",
+                candidate_user.id,
+            )
+        elif candidate_user:
+            logger.info(
+                "Manual walk-in weakly matches user %s — will surface as pending",
+                candidate_user.id,
+            )
+
     patient = Patient(
         doctor_id=doctor.id,
-        user_id=None,  # not an app user
+        user_id=linked_user_id,
         phone_enc=phone_enc,
         email_enc=email_enc,
     )
@@ -580,11 +627,7 @@ async def create_patient_manual(
 
     # Mint v1 version
     initial_state = {
-        "demographics": {
-            "name": name,
-            "phone": phone or None,
-            "email": email or None,
-        },
+        "demographics": demographics,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     version = _PV(

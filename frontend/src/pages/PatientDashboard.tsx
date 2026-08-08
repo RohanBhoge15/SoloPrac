@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
 import { CalendarDays, Bell, FileText, Loader2 } from 'lucide-react'
 import { usePatientWebSocket } from '@/hooks/useWebSocket'
+import { PendingMatchesBanner } from '@/components/PendingMatchesBanner'
 
 function cn(...classes: any[]) { return classes.filter(Boolean).join(' ') }
 
@@ -15,31 +16,32 @@ export function PatientDashboard() {
   const [patientId, setPatientId] = useState<string>('')
   const { isConnected: wsConnected, lastEvent } = usePatientWebSocket(patientId)
 
-  // Fetch patient ID from profile endpoint (uses HttpOnly cookie)
+  // P2.17 — Fire all three /patient/me/* requests in parallel on mount.
+  //
+  // Old flow: profile → (appointments, inbox). The chain existed only because
+  // patientId gated the second useEffect, but the appointments/inbox endpoints
+  // authenticate via the HttpOnly cookie — they don't need patientId either.
+  // Combining them into one Promise.all cuts dashboard TTFB by ~one RTT.
   useEffect(() => {
-    apiClient.get('/patient/me/profile')
-      .then(res => {
-        if (res.data?.user_id) {
-          setPatientId(res.data.user_id)
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
+    let cancelled = false
+    setLoading(true)
 
-  // Fetch data when patientId is available
-  useEffect(() => {
-    if (!patientId) { setLoading(false); return }
     Promise.all([
-      apiClient.get('/patient/me/appointments'),
-      apiClient.get('/patient/me/inbox', { params: { limit: 5 } }),
-    ]).then(([aptRes, notifRes]) => {
-      setAppointments(aptRes.data || [])
-      setNotifications(notifRes.data || [])
-    }).catch((err) => {
-      console.warn('[PatientDashboard] Failed to fetch data:', err)
-    }).finally(() => setLoading(false))
-  }, [patientId])
+      apiClient.get('/patient/me/profile').catch(() => null),
+      apiClient.get('/patient/me/appointments').catch(() => null),
+      apiClient.get('/patient/me/inbox', { params: { limit: 5 } }).catch(() => null),
+    ]).then(([profileRes, aptRes, notifRes]) => {
+      if (cancelled) return
+      const uid = profileRes?.data?.id ?? profileRes?.data?.user_id
+      if (uid) setPatientId(uid)
+      setAppointments(aptRes?.data || [])
+      setNotifications(notifRes?.data || [])
+    }).finally(() => {
+      if (!cancelled) setLoading(false)
+    })
+
+    return () => { cancelled = true }
+  }, [])
 
   // Handle real-time notifications from WebSocket
   useEffect(() => {
@@ -69,6 +71,9 @@ export function PatientDashboard() {
           </span>
         </div>
       </div>
+
+      {/* Walk-in disambiguation prompt — hidden when count is 0 */}
+      <PendingMatchesBanner />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
