@@ -12,10 +12,9 @@ Real patient emails are decrypted from Patient.email_enc using pgcrypto.
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, Dict, Optional
 from datetime import datetime, timezone
+from typing import Optional
 
 from app.config import settings
 
@@ -39,7 +38,8 @@ class EmailQueueService:
         """Lazy-init an arq connection pool for enqueuing jobs."""
         if self._arq_pool is None:
             try:
-                from arq.connections import ArqRedis, create_pool, RedisSettings
+                from arq.connections import RedisSettings, create_pool
+
                 self._arq_pool = await create_pool(
                     RedisSettings(
                         host=settings.REDIS_HOST,
@@ -86,14 +86,15 @@ email_queue = EmailQueueService()
 
 # ─── Arq Worker Function ───────────────────────────
 
+
 async def send_email(ctx, email_type: str, **kwargs):
     """Arq worker function to actually send email via SMTP.
 
     Decrypts patient email from DB using pgcrypto before sending.
     """
     import smtplib
-    from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
 
     patient_id = kwargs.get("patient_id", "")
     doctor_id = kwargs.get("doctor_id", "")
@@ -162,15 +163,14 @@ async def _resolve_patient_email(ctx, patient_id: str) -> Optional[str]:
     try:
         # The arq worker ctx has a 'db' connection pool
         # We'll use the standard async_session_maker pattern
+        from sqlalchemy import select
+
         from app.database import async_session_maker
         from app.models import Patient
-        from sqlalchemy import select
         from app.services.encryption import decrypt_value
 
         async with async_session_maker() as session:
-            result = await session.execute(
-                select(Patient).where(Patient.id == patient_id)
-            )
+            result = await session.execute(select(Patient).where(Patient.id == patient_id))
             patient = result.scalar_one_or_none()
             if not patient:
                 logger.warning("Patient %s not found for email lookup", patient_id)
@@ -193,6 +193,7 @@ async def _resolve_patient_email(ctx, patient_id: str) -> Optional[str]:
 # Appointment Reminder Cron  (appointment_reminder)
 # ════════════════════════════════════════════════════════════
 
+
 async def run_appointment_reminders(ctx):
     """Arq scheduled job — scans for appointments tomorrow and sends reminders.
 
@@ -205,10 +206,12 @@ async def run_appointment_reminders(ctx):
     Doctor-level hours_before is respected: appointments within that window
     get reminded (the cron runs at 06:00 and 18:00, covering an 18h window).
     """
-    from datetime import timedelta, date
-    from sqlalchemy import select, and_
+    from datetime import date, timedelta
+
+    from sqlalchemy import select
+
     from app.database import async_session_maker
-    from app.models import Doctor, Appointment, Patient
+    from app.models import Appointment, Doctor, Patient
     from app.services.notification_generator import generate_and_dispatch
 
     logger.info("Appointment reminder cron started")
@@ -222,9 +225,7 @@ async def run_appointment_reminders(ctx):
 
     async with async_session_maker() as db:
         # Get all verified doctors
-        doc_result = await db.execute(
-            select(Doctor).where(Doctor.verification_status == "verified")
-        )
+        doc_result = await db.execute(select(Doctor).where(Doctor.verification_status == "verified"))
         doctors = doc_result.scalars().all()
 
         for doctor in doctors:
@@ -256,18 +257,14 @@ async def run_appointment_reminders(ctx):
             for apt in appointments:
                 try:
                     # Get patient name from head version
-                    pat_result = await db.execute(
-                        select(Patient).where(Patient.id == apt.patient_id)
-                    )
+                    pat_result = await db.execute(select(Patient).where(Patient.id == apt.patient_id))
                     patient = pat_result.scalar_one_or_none()
                     if not patient:
                         continue
 
                     patient_name = "Patient"
                     if patient.head_version and patient.head_version.state_jsonb:
-                        patient_name = patient.head_version.state_jsonb.get(
-                            "demographics", {}
-                        ).get("name", "Patient")
+                        patient_name = patient.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
 
                     # Create in-app notification + enqueue email
                     await generate_and_dispatch(
@@ -287,14 +284,18 @@ async def run_appointment_reminders(ctx):
 
                     logger.info(
                         "Reminder sent for appointment %s (patient=%s, doctor=%s, time=%s)",
-                        apt.id, patient_name, doc_id, apt.start_at,
+                        apt.id,
+                        patient_name,
+                        doc_id,
+                        apt.start_at,
                     )
                     processed += 1
 
                 except Exception as exc:
                     logger.error(
                         "Failed to send reminder for appointment %s: %s",
-                        apt.id, exc,
+                        apt.id,
+                        exc,
                     )
                     errors += 1
 
@@ -302,7 +303,8 @@ async def run_appointment_reminders(ctx):
 
     logger.info(
         "Appointment reminder cron finished: %d processed, %d errors",
-        processed, errors,
+        processed,
+        errors,
     )
     return {"processed": processed, "errors": errors}
 
@@ -311,6 +313,7 @@ async def run_appointment_reminders(ctx):
 # Risk Scan Cron  (Feature E)
 # ════════════════════════════════════════════════════════════
 
+
 async def run_risk_scan(ctx):
     """Arq scheduled job — Feature E live risk scan across all doctors.
 
@@ -318,6 +321,7 @@ async def run_risk_scan(ctx):
     (numpy/clustering) into the API process at import time.
     """
     from app.services.risk_scan import scan_all_doctors
+
     return await scan_all_doctors()
 
 
@@ -325,9 +329,11 @@ async def run_risk_scan(ctx):
 # Worker Configuration
 # ════════════════════════════════════════════════════════════
 
+
 def _redis_settings():
     """Build arq RedisSettings from app config."""
     from arq.connections import RedisSettings
+
     return RedisSettings(
         host=settings.REDIS_HOST,
         port=settings.REDIS_PORT,
@@ -339,20 +345,34 @@ def _redis_settings():
 def _cron_jobs():
     """Cron schedule — all scheduled background jobs."""
     from arq import cron
+
+    from app.services.background_jobs import flush_audit_log_job
+
     return [
         # Feature E: risk scan every 30 min
         cron(run_risk_scan, minute={0, 30}, run_at_startup=False),
         # Appointment reminders: run at 06:00 and 18:00 daily
         cron(run_appointment_reminders, hour={6, 18}, minute={0}, run_at_startup=False),
+        # P2.27: drain the Redis-buffered audit-log queue every minute.
+        # (arq cron's smallest granularity is a minute; each tick pops up to
+        # 500 entries so bursts drain within a few ticks.)
+        cron(flush_audit_log_job, minute=set(range(60)), run_at_startup=False),
     ]
+
+
+# Import background job functions so the arq worker registers them. Imported
+# here (not at module top) so this only loads inside the worker process.
+from app.services.background_jobs import ALL_JOB_FUNCTIONS as _BG_JOBS  # noqa: E402
 
 
 class WorkerSettings:
     """Arq worker configuration for all scheduled + queued jobs."""
+
     functions = [
         send_email,
         run_risk_scan,
         run_appointment_reminders,
+        *_BG_JOBS,
     ]
     cron_jobs = _cron_jobs()
     redis_settings = _redis_settings()

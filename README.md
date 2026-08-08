@@ -12,6 +12,7 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 - **Tiered doctor verification** — Self-register instantly, verify for public trust
 - **Cross-clinic patient identity** — One person can visit multiple doctors without duplicate accounts
 - **Zero-cost deployment** — Runs entirely on free tiers (Oracle Cloud, NVIDIA NIM, Groq)
+- **100% free, permissively-licensed local stack** — Docling (MIT), RapidOCR (Apache-2.0), MedGemma-4B, MedCPT, BGE-M3, BiomedCLIP, faster-whisper — no commercial-restrictive dependencies
 
 ---
 
@@ -28,7 +29,8 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │  LangGraph Agent                                         │  │
 │  │  ├─ Router (Llama-3.1-8B)  ├─ Synthesizer (Maverick)    │  │
-│  │  ├─ Vision (90B-V / MedGemma) ├─ Doc Processor           │  │
+│  │  ├─ Vision (90B-V / MedGemma-4B local via llama-server) │  │
+│  │  ├─ OCR Router: Docling → RapidOCR → MedGemma            │  │
 │  │  ├─ Image Registration (ORB)    ├─ Voice Scheduling      │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └──┬─────────┬─────────┬─────────┬───────────────────────────────┘
@@ -65,7 +67,7 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 ### Document & Image Processing
 | Feature | Description |
 |---------|-------------|
-| **Smart Document Engine** | Auto-routes: Docling (typed PDF) → Surya (scanned) → Nanonets-OCR2 (handwritten) → MedGemma fallback |
+| **Smart Document Engine** | Auto-routes: Docling (typed PDF, MIT) → RapidOCR (scanned/photo, Apache-2.0) → MedGemma-4B via llama-server (handwritten fallback). Surya removed for license reasons; Nanonets skipped for RAM cost. See `THIRD_PARTY_LICENSES.md`. |
 | **OCR Quality Alerts** | Detects blur, low contrast, bad brightness, low resolution — warns doctor before processing |
 | **Wound/Skin Comparison** | ORB feature matching + homography overlay + AI clinical summary |
 | **Scratchpad** | Drag-drop any PDF/image → extract → "Save to Patient" |
@@ -89,6 +91,8 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 | **AI Notifications** | Maverick generates contextual messages per event type via WebSocket |
 | **Patient Profile** | Auto-populated demographics from registration — fills booking form automatically |
 | **Consent Management** | DPDP-compliant consent tracking + data erasure (anonymize PII, preserve clinical records) |
+| **Walk-in → User Auto-Linking** | Two-tier matching: **strong** (phone + DOB, or phone + fuzzy-name via token-prefix compare) auto-attaches walk-in records on signup; **weak** (phone-only, ambiguous) surfaces a review UI. Handles families sharing a phone without paid OTP. |
+| **Pending Matches Review** | Amber banner (`PendingMatchesBanner`) + `/patient/pending-matches` page with per-record Claim / Not-me buttons. Rejections persist per user (`link_rejected_by_user_ids UUID[]` on patients). |
 
 ### Billing & Documents
 | Feature | Description |
@@ -127,8 +131,44 @@ Every solo GP in India deserves clinical intelligence that matches hospital syst
 | **Hindi UI** | react-i18next with full translation files — language switcher in user menu |
 | **Sentry DSN** | Environment-variable-driven error tracking |
 | **Backup System** | pg_dump to MinIO with restore capability |
+| **HF Cache Bind-Mount** | HuggingFace weights live at `D:\models\hf-cache` and are shared by backend + arq-worker — one copy on host, survives rebuilds, inspectable from Windows |
+| **Local GGUF Models** | `D:\models\medgemma-gguf\*.gguf` served by an in-compose `llama-server` (llama.cpp) for MedGemma-4B chat + vision OCR fallback |
+| **torch.compile Ready** | `g++` installed in the backend image so `torch._inductor` can JIT CPU kernels — Docling first-parse confidence rose 0.70 → 0.95 and time 195s → 86s |
+| **E2E Test Suite** | 112 tests across 6 suites (14 walk-in link + 27 disambiguation + 8 UI pending-matches + 43 API flows + 9 AI flows + 3 PII tripwire + 8 OCR pipeline) run inside the backend container against real Postgres/Qdrant/Redis/MinIO |
+| **THIRD_PARTY_LICENSES.md** | Full attribution for every third-party model and library; documents why Surya (commercial-restrictive) and Nanonets-OCR2 (RAM budget) were removed |
 
 ---
+
+## OCR Pipeline (License-Clean)
+
+All three OCR paths are permissively licensed and run locally:
+
+| Path | Model | License | Trigger |
+|------|-------|---------|---------|
+| Typed PDF | **Docling** | MIT | `application/pdf` with an embedded text layer |
+| Scanned / photo | **RapidOCR** (ONNX + PaddleOCR models) | Apache-2.0 | Image mime types, or PDF that rasterises |
+| Handwritten fallback | **MedGemma-4B-it** GGUF Q4_K_M via `llama-server` | Gemma license (research/commercial permissible) | Low RapidOCR confidence, or explicit `doc_type=handwritten` |
+
+Router lives in `backend/app/services/document_parser.py`. The `surya_parse` and `nanonets_ocr_parse` method names are kept for API stability — internally they now dispatch to RapidOCR and MedGemma-via-llama-server respectively. Pre-parse `_check_image_quality()` flags blur, contrast, brightness, and resolution problems as amber alerts before spending compute.
+
+## Walk-in → User Linking (No-OTP Family-Safe)
+
+When a doctor manually books a walk-in (patient not yet a user) and that person later signs up — or the reverse — we link the two records automatically, without paid SMS OTP and without asking either side to disambiguate manually.
+
+**Two-tier matching** (`backend/app/services/linking.py`):
+
+- **Strong match** → auto-attach on signup. Either:
+  - phone + DOB match, or
+  - phone + name-token-prefix compatible (every token in the shorter name prefixes some token in the longer — handles `"Priya S."` ↔ `"Priya Sharma"` without misfiring on `"Priya Sharma"` vs `"Rajesh Sharma"`)
+- **Weak match** → phone-only, ambiguous → held for user review
+
+**Pending-matches review UX:**
+- `GET /patient/me/pending-matches` — list of candidate walk-in records with clinic + doctor + demographics
+- `POST /patient/me/claim/{patient_id}` — re-verifies eligibility then sets `user_id`
+- `POST /patient/me/reject/{patient_id}` — appends `user.id` to `patients.link_rejected_by_user_ids UUID[]` so the record never resurfaces for that user
+- `PendingMatchesBanner` polls every 60s; `PatientPendingMatches` page renders the review cards
+
+**Schema note:** the `UNIQUE` constraint on `users.phone_hash` was intentionally dropped so families sharing a handset can each hold an account. DOB / name-token disambiguation covers the ambiguity that the constraint was masking.
 
 ## Quick Start
 
@@ -156,7 +196,25 @@ cd backend && alembic upgrade head
 
 # Frontend dev server (separate terminal)
 cd frontend && npm run dev
+
+# Run the full e2e suite (inside the backend container, against real deps)
+docker exec soloprac-backend python testing/e2e/link_walkin.py
+docker exec soloprac-backend python testing/e2e/link_disambiguation.py
+docker exec soloprac-backend python testing/e2e/ui_pending_matches.py
+docker exec soloprac-backend python testing/e2e/full_flows.py
+docker exec soloprac-backend python testing/e2e/ai_flows.py
+docker exec soloprac-backend python testing/e2e/ocr_pipeline.py
 ```
+
+### Local models on disk
+
+Weights live on the host so they survive rebuilds and dedup across `backend` + `arq-worker`:
+
+| Path (host) | Path (container) | Contents |
+|-------------|------------------|----------|
+| `D:\models\hf-cache` | `/hf_cache` (`HF_HOME`) | MedCPT, BGE-M3, BiomedCLIP, faster-whisper large-v3 |
+| `D:\models\medgemma-gguf` | `/models/medgemma-gguf` | `medgemma-4b-it_Q4_K_M.gguf` + `mmproj-medgemma-4b-it-F16.gguf` (served by the `llama-server` service on port 8080) |
+| `D:\models\test_ocr.png` | `/models/test_ocr.png` | Shared OCR test fixture |
 
 ### Services
 | Service | URL |
@@ -208,7 +266,11 @@ SoloPrac/
 ├── backend/                    # FastAPI application
 │   ├── app/
 │   │   ├── routers/            # API route handlers
+│   │   │   ├── portal.py             # Patient portal + pending-matches endpoints
+│   │   │   └── patients.py           # /patients/manual — walk-in create with linking
 │   │   ├── services/           # Business logic + research features
+│   │   │   ├── linking.py            # Walk-in ↔ user two-tier matcher
+│   │   │   └── document_parser.py    # Docling / RapidOCR / MedGemma router
 │   │   ├── agents/             # LangGraph agent (planner, router, tools)
 │   │   ├── middleware/         # Audit log, RLS identity middleware
 │   │   ├── utils/              # Phone normalization, helpers
@@ -227,19 +289,21 @@ SoloPrac/
 ├── frontend/                   # React 19 + Vite
 │   ├── src/
 │   │   ├── components/        # shadcn/ui components
-│   │   │   ├── ImageCropModal.tsx   # Profile photo crop
-│   │   │   ├── MapPicker.tsx        # OpenStreetMap location picker
-│   │   │   ├── PrescriptionBox.tsx  # Rx with voice mic
-│   │   │   └── ChatUI.tsx          # Chat with voice mic
+│   │   │   ├── ImageCropModal.tsx       # Profile photo crop
+│   │   │   ├── MapPicker.tsx            # OpenStreetMap location picker
+│   │   │   ├── PrescriptionBox.tsx      # Rx with voice mic
+│   │   │   ├── PendingMatchesBanner.tsx # Amber banner on patient dashboard
+│   │   │   └── ChatUI.tsx               # Chat with voice mic
 │   │   ├── pages/             # Page components
-│   │   │   ├── Landing.tsx          # Professional landing page
-│   │   │   ├── Register.tsx         # Doctor registration
-│   │   │   ├── Login.tsx           # Login page
-│   │   │   ├── Calendar.tsx        # Calendar with booking dialog
-│   │   │   ├── Settings.tsx        # Profile photo, verification banner
-│   │   │   ├── DoctorSearch.tsx    # Patient doctor search
-│   │   │   ├── Scratchpad.tsx      # OCR with quality alerts
-│   │   │   └── PatientDetail.tsx   # Document timeline
+│   │   │   ├── Landing.tsx                # Professional landing page
+│   │   │   ├── Register.tsx               # Doctor registration
+│   │   │   ├── Login.tsx                  # Login page
+│   │   │   ├── Calendar.tsx               # Calendar with booking dialog
+│   │   │   ├── Settings.tsx               # Profile photo, verification banner
+│   │   │   ├── DoctorSearch.tsx           # Patient doctor search
+│   │   │   ├── Scratchpad.tsx             # OCR with quality alerts
+│   │   │   ├── PatientPendingMatches.tsx  # Claim / Not-me review page
+│   │   │   └── PatientDetail.tsx          # Document timeline
 │   │   ├── hooks/             # Custom React hooks
 │   │   ├── services/          # API clients
 │   │   ├── store/             # Zustand stores
@@ -256,9 +320,19 @@ SoloPrac/
 │   ├── research/              # Lit survey, gap analysis, market research
 │   ├── planning/              # Proposal, feasibility, Gantt, requirements
 │   └── demo-flow.md
+├── testing/
+│   └── e2e/                    # Container-side end-to-end suites (112 tests)
+│       ├── link_walkin.py            # 14 walk-in ↔ user link tests
+│       ├── link_disambiguation.py    # 27 family-phone / claim / reject tests
+│       ├── ui_pending_matches.py     # 8 Playwright UI tests
+│       ├── full_flows.py             # 43 API flow tests
+│       ├── ai_flows.py               # 9 agent / RAG tests
+│       ├── pii_tripwire.py           # 3 PII de-identification tests
+│       └── ocr_pipeline.py           # 8 Docling / RapidOCR / MedGemma tests
 ├── docker-compose.yml
 ├── Caddyfile
 ├── init-schema.sql
+├── THIRD_PARTY_LICENSES.md
 ├── UpdatedIdea.MD
 └── README.md
 ```
@@ -273,9 +347,9 @@ SoloPrac/
 | **Backend** | FastAPI, Pydantic v2, SQLAlchemy 2.0, arq, LangGraph, Alembic |
 | **Database** | PostgreSQL 16 + PostGIS, Qdrant, Redis |
 | **Object Storage** | MinIO S3 (avatars, documents, PDFs) |
-| **LLMs** | Llama-4 Maverick (NIM), Llama-3.1-8B (NIM), MedGemma-4B (local) |
-| **AI/ML** | MedCPT, BGE-M3, BiomedCLIP, faster-whisper, IndicWhisper, OpenCV ORB |
-| **Document** | Docling, Surya, Nanonets-OCR2-1.5B-exp |
+| **LLMs** | Llama-4 Maverick (NIM), Llama-3.1-8B (NIM), MedGemma-4B GGUF Q4_K_M (local, served by llama.cpp in-compose) |
+| **AI/ML** | MedCPT (768d text), BGE-M3 (1024d dense + sparse via FlagEmbedding), BiomedCLIP (512d image, via open_clip_torch), faster-whisper large-v3, IndicWhisper, OpenCV ORB |
+| **Document / OCR** | Docling (MIT — typed PDFs) + RapidOCR (Apache-2.0 — scanned/photo) + MedGemma-4B (handwritten fallback via llama-server). Surya and Nanonets-OCR2 removed — see `THIRD_PARTY_LICENSES.md`. |
 | **PDF** | Jinja2, Playwright, ECharts |
 | **Observability** | Langfuse (self-hosted), Sentry (opt-in) |
 | **Infrastructure** | Docker Compose, Caddy, Oracle Cloud Free Tier |
@@ -315,12 +389,21 @@ SoloPrac/
 
 - **NVIDIA NIM** for free-tier Llama 4 Maverick access
 - **Groq** for free-tier Llama 3.2 90B Vision
-- **Google** for MedGemma (academic license)
+- **Google** for MedGemma (Gemma license)
+- **IBM / Docling contributors** for the MIT-licensed Docling document parser
+- **RapidAI / PaddleOCR** for Apache-2.0 licensed ONNX OCR
+- **NCBI** for MedCPT
+- **BAAI** for BGE-M3 (dense + sparse)
+- **Microsoft** for BiomedCLIP (via `open_clip_torch`)
+- **Systran** for faster-whisper
+- **ggml-org** for llama.cpp / `llama-server`
 - **AI4Bharat** for IndicWhisper and Indic-Parler-TTS
 - **Oracle Cloud** for Forever Free Tier infrastructure
 - **Langfuse** for self-hosted observability
 - **OpenStreetMap** for free map tiles
 - **Sentry** for error tracking
+
+Full attribution and license text in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
 ---
 

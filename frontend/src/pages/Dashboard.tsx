@@ -7,6 +7,7 @@ import { useDoctorWebSocket } from '@/hooks/useWebSocket'
 import { useAuth } from '@/contexts/AuthContext'
 import { useRiskStore, usePatientStore, useNotificationStore } from '@/store'
 import type { RiskAlert } from '@/types'
+import { usePrefetchPatient } from '@/hooks/usePrefetchPatient'
 
 interface StatCard {
   label: string
@@ -22,6 +23,7 @@ export function Dashboard() {
   const { patients, fetchPatients } = usePatientStore()
   const { fetchAppointments, appointments } = useNotificationStore()
   const { lastEvent } = useDoctorWebSocket(user?.id ?? null)
+  const prefetchPatient = usePrefetchPatient()
 
   const [stats, setStats] = useState<StatCard[]>([
     { label: 'Total Patients', value: 0, change: '', icon: Users, color: 'text-blue-600 bg-blue-100' },
@@ -178,6 +180,7 @@ export function Dashboard() {
                       key={patient.id}
                       className="flex items-center justify-between p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer"
                       onClick={() => window.location.href = `/patients/${patient.id}`}
+                      {...prefetchPatient(patient.id)}
                     >
                       <div className="flex items-center gap-3">
                         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">

@@ -10,20 +10,18 @@ Endpoints:
 
 from __future__ import annotations
 
-import uuid
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
 
 from app.database import get_db
 from app.dependencies import get_current_doctor
-from app.models import Doctor, Patient, PatientVersion, PrescriptionBox, AuditLog
-from app.services.pdf_generator import pdf_generator
+from app.models import AuditLog, Patient, PatientVersion, PrescriptionBox
 from app.services.notification_generator import generate_and_dispatch
+from app.services.pdf_generator import pdf_generator
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -31,6 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/patients/{patient_id}/prescriptions", tags=["prescriptions"])
 
 
+@router.post("", status_code=status.HTTP_201_CREATED)
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_prescription(
     patient_id: uuid.UUID,
@@ -39,9 +38,7 @@ async def create_prescription(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new prescription box and generate PDF."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -92,9 +89,12 @@ async def create_prescription(
     # Audit log
     try:
         audit = AuditLog(
-            doctor_id=doctor.id, patient_id=patient.id,
-            actor=f"doctor:{doctor.id}", action="write",
-            resource_type="prescription", resource_id=rx.id,
+            doctor_id=doctor.id,
+            patient_id=patient.id,
+            actor=f"doctor:{doctor.id}",
+            action="write",
+            resource_type="prescription",
+            resource_id=rx.id,
             payload_jsonb={"diagnosis": diagnosis, "med_count": len(meds)},
         )
         db.add(audit)
@@ -173,9 +173,7 @@ async def approve_prescription(
     # Get current head version state (if exists)
     current_state = {}
     if patient.head_version_id:
-        head_result = await db.execute(
-            select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-        )
+        head_result = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
         head = head_result.scalar_one_or_none()
         if head and head.state_jsonb:
             current_state = dict(head.state_jsonb)
@@ -230,7 +228,8 @@ async def approve_prescription(
         author=f"doctor:{doctor.id}",
         parent_version_id=patient.head_version_id,
         summary=f"Prescription: {diagnosis}" if diagnosis else "Prescription approved",
-        tags=["prescription"] + (["new_diagnosis"] if diagnosis and diagnosis not in clinical.get("diagnoses", [])[:-1] else []),
+        tags=["prescription"]
+        + (["new_diagnosis"] if diagnosis and diagnosis not in clinical.get("diagnoses", [])[:-1] else []),
         clinical_significance=0.7 if diagnosis else 0.3,
     )
 
@@ -263,6 +262,7 @@ async def approve_prescription(
     }
 
 
+@router.get("")
 @router.get("/")
 async def list_prescriptions(
     patient_id: uuid.UUID,
@@ -278,14 +278,17 @@ async def list_prescriptions(
         .limit(limit)
     )
     rxs = result.scalars().all()
-    return [
-        {
-            "id": str(rx.id),
-            "created_at": rx.created_at.isoformat() if rx.created_at else None,
-            "has_pdf": bool(rx.pdf_path),
-        }
-        for rx in rxs
-    ]
+    return {
+        "prescriptions": [
+            {
+                "id": str(rx.id),
+                "created_at": rx.created_at.isoformat() if rx.created_at else None,
+                "has_pdf": bool(rx.pdf_path),
+            }
+            for rx in rxs
+        ],
+        "count": len(rxs),
+    }
 
 
 @router.get("/{prescription_id}")
@@ -330,17 +333,29 @@ async def download_prescription_pdf(
     rx = result.scalar_one_or_none()
     if not rx or not rx.pdf_path:
         raise HTTPException(status_code=404, detail="PDF not found")
-    
-    # Generate presigned URL for S3 access
-    presigned_url = await storage_service.get_presigned_url("pdfs", rx.pdf_path)
-    if presigned_url:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=presigned_url)
-    
+
+    # Serve the PDF bytes directly so clients (browser/portal) can download it
+    from fastapi.responses import Response
+
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", rx.pdf_path)
+    except Exception as exc:
+        logger.warning("Failed to fetch prescription PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="prescription_{prescription_id}.pdf"'},
+        )
+
     # Fallback: serve from local filesystem if S3 is unavailable
     import os
+
     if os.path.isabs(rx.pdf_path) and os.path.exists(rx.pdf_path):
         from fastapi.responses import FileResponse
+
         return FileResponse(rx.pdf_path, media_type="application/pdf", filename=f"prescription_{prescription_id}.pdf")
-    
+
     raise HTTPException(status_code=404, detail="PDF file not found on storage")

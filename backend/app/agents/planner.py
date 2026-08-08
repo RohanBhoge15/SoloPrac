@@ -21,11 +21,9 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from app.agents.state import AgentIntent
 from app.agents.synthesizer import MaverickSynthesizer
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +112,54 @@ class SelfPlanner:
         self.synthesizer = MaverickSynthesizer()
         self._max_plan_attempts = 3
 
+    def _static_plan_shortcut(
+        self,
+        query: str,
+        intent: AgentIntent,
+        patient_id: Optional[str],
+        doctor_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """P3.29 — Static fast-path for the intents that always take the same
+        shape. Skips the ~10-30s Maverick round-trip when the plan is trivial.
+
+        We keep the LLM-planner for genuinely novel queries where step ordering
+        matters (multi-step reasoning, re-plan after errors); for the 80% of
+        queries that map cleanly to one of these templates we short-circuit.
+        Returning None here means "no shortcut; call the LLM planner".
+        """
+        # Only shortcut fresh plans (never re-plans — those need LLM to react
+        # to the error surface).
+        # Callers pass previous_plan=None for the first attempt.
+        static_steps: Optional[List[Dict[str, Any]]] = None
+        goal = ""
+
+        if intent == AgentIntent.PATIENT_QA and patient_id:
+            static_steps = [
+                {
+                    "id": 1,
+                    "tool": "retrieve_patient_context",
+                    "args": {"patient_id": patient_id, "query": query, "top_k": 5},
+                    "depends_on": [],
+                },
+                {"id": 2, "tool": "synthesize_response", "args": {"query": query}, "depends_on": [1]},
+            ]
+            goal = "Answer the question about the patient using the record."
+        elif intent == AgentIntent.GENERAL_CHAT:
+            static_steps = [
+                {"id": 1, "tool": "synthesize_response", "args": {"query": query}, "depends_on": []},
+            ]
+            goal = "Reply conversationally."
+
+        if not static_steps:
+            return None
+
+        return {
+            "goal": goal,
+            "steps": static_steps,
+            "budget_tokens": 4000,
+            "reasoning": "static-plan-shortcut (P3.29)",
+        }
+
     async def generate_plan(
         self,
         query: str,
@@ -136,6 +182,15 @@ class SelfPlanner:
         Returns:
             Plan dict with goal, steps, budget_tokens, reasoning.
         """
+        # P3.29 — first, try the static shortcut. Only fall back to the LLM
+        # planner when this is a re-plan (previous_plan present) or the intent
+        # isn't in the shortcut table.
+        if previous_plan is None and not previous_errors:
+            shortcut = self._static_plan_shortcut(query, intent, patient_id, doctor_id)
+            if shortcut is not None:
+                logger.info("Planner: static shortcut for intent=%s (%d steps)", intent.value, len(shortcut["steps"]))
+                return shortcut
+
         # Build context for the planner
         context = {
             "intent": intent.value,
@@ -172,7 +227,8 @@ class SelfPlanner:
                 if plan:
                     logger.info(
                         "Plan generated: %s (%d steps)",
-                        plan["goal"][:80], len(plan["steps"]),
+                        plan["goal"][:80],
+                        len(plan["steps"]),
                     )
                     return plan
 
@@ -202,12 +258,14 @@ class SelfPlanner:
             tool = s.get("tool")
             if not sid or not tool:
                 continue
-            validated_steps.append({
-                "id": int(sid),
-                "tool": str(tool),
-                "args": s.get("args", {}),
-                "depends_on": [int(d) for d in s.get("depends_on", []) if isinstance(d, (int, float))],
-            })
+            validated_steps.append(
+                {
+                    "id": int(sid),
+                    "tool": str(tool),
+                    "args": s.get("args", {}),
+                    "depends_on": [int(d) for d in s.get("depends_on", []) if isinstance(d, (int, float))],
+                }
+            )
 
         if not validated_steps:
             return None
@@ -219,28 +277,45 @@ class SelfPlanner:
             "reasoning": str(raw.get("reasoning", ""))[:500],
         }
 
-    def _fallback_plan(self, query: str, intent: AgentIntent, patient_id: Optional[str], doctor_id: Optional[str] = None) -> Dict:
+    def _fallback_plan(
+        self, query: str, intent: AgentIntent, patient_id: Optional[str], doctor_id: Optional[str] = None
+    ) -> Dict:
         """Fallback static plan when Maverick isn't available."""
         steps = []
         if intent == AgentIntent.PATIENT_QA and patient_id:
             steps = [
-                {"id": 1, "tool": "retrieve_patient_context", "args": {
-                    "patient_id": patient_id,
-                    "query": query,
-                    "doctor_id": doctor_id or "",
-                    "k": 8,
-                }, "depends_on": []},
-                {"id": 2, "tool": "synthesize_response", "args": {
-                    "context": None,
-                    "query": query,
-                }, "depends_on": [1]},
+                {
+                    "id": 1,
+                    "tool": "retrieve_patient_context",
+                    "args": {
+                        "patient_id": patient_id,
+                        "query": query,
+                        "doctor_id": doctor_id or "",
+                        "k": 8,
+                    },
+                    "depends_on": [],
+                },
+                {
+                    "id": 2,
+                    "tool": "synthesize_response",
+                    "args": {
+                        "context": None,
+                        "query": query,
+                    },
+                    "depends_on": [1],
+                },
             ]
         else:
             steps = [
-                {"id": 1, "tool": "synthesize_response", "args": {
-                    "context": {"intent": intent.value},
-                    "query": query,
-                }, "depends_on": []},
+                {
+                    "id": 1,
+                    "tool": "synthesize_response",
+                    "args": {
+                        "context": {"intent": intent.value},
+                        "query": query,
+                    },
+                    "depends_on": [],
+                },
             ]
 
         return {
@@ -322,11 +397,14 @@ class PlanCritic:
         critic_context = {
             "original_goal": plan.get("goal", ""),
             "steps_planned": len(plan.get("steps", [])),
-            "tool_results": [{
-                "tool": tc.get("tool_name"),
-                "success": tc.get("error") is None,
-                "result_preview": str(tc.get("result", ""))[:300],
-            } for tc in results],
+            "tool_results": [
+                {
+                    "tool": tc.get("tool_name"),
+                    "success": tc.get("error") is None,
+                    "result_preview": str(tc.get("result", ""))[:300],
+                }
+                for tc in results
+            ],
             "errors": errors,
         }
 

@@ -8,13 +8,14 @@ Endpoints:
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+
+from fastapi import APIRouter, Depends, File, UploadFile
+
 from app.dependencies import get_current_doctor
-from app.models import Doctor
-from app.services.sanitizer import sanitize_ocr_text, detect_injection, sanitize_for_doc_type
+from app.services.sanitizer import detect_injection, sanitize_for_doc_type
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +31,9 @@ ALLOWED_MIME_TYPES = {
 
 MAGIC_BYTE_MAP = {
     b"\x25\x50\x44\x46": "application/pdf",  # %PDF
-    b"\xff\xd8\xff": "image/jpeg",            # JPEG
-    b"\x89\x50\x4e\x47": "image/png",         # PNG
-    b"\x52\x49\x46\x46": "image/webp",        # RIFF (WebP)
+    b"\xff\xd8\xff": "image/jpeg",  # JPEG
+    b"\x89\x50\x4e\x47": "image/png",  # PNG
+    b"\x52\x49\x46\x46": "image/webp",  # RIFF (WebP)
 }
 
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
@@ -59,7 +60,13 @@ async def upload_security_status(
             "injection_pattern_count": 11,
             "high_risk_pattern_count": 4,
             "doc_type_sanitization": True,
-            "supported_doc_types": ["prescription", "lab_report", "discharge_summary", "referral_letter", "imaging_report"],
+            "supported_doc_types": [
+                "prescription",
+                "lab_report",
+                "discharge_summary",
+                "referral_letter",
+                "imaging_report",
+            ],
         },
         "status": "active",
         "verified_at": datetime.now(timezone.utc).isoformat(),
@@ -74,6 +81,7 @@ async def rate_limit_status(
     """Get current upload rate limit usage for the authenticated doctor."""
     try:
         from app.services.redis import redis_service
+
         client = await redis_service.connect()
         key = f"rate_limit:upload:{doctor.id}"
         current = await client.get(key)
@@ -197,6 +205,7 @@ async def verify_upload(
     return result
 
 
+@router.get("/simulate-sanitize")
 @router.post("/simulate-sanitize")
 async def simulate_sanitization(
     text: str,

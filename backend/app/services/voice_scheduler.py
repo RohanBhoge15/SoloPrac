@@ -16,18 +16,17 @@ Usage:
 
 from __future__ import annotations
 
-import json
-import re
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, Optional
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # ─── ASR Service ───────────────────────────────────
+
 
 class ASRService:
     """Speech-to-text using faster-whisper with IndicWhisper fallback."""
@@ -42,13 +41,14 @@ class ASRService:
         if self._whisper_model is None:
             try:
                 from faster_whisper import WhisperModel
+
                 model_path = settings.WHISPER_PATH or "large-v3"
                 # Check if custom path exists on disk
                 import os
+
                 if os.path.isabs(model_path) and not os.path.exists(model_path):
                     raise FileNotFoundError(
-                        f"Whisper model not found at {model_path}. "
-                        "Set WHISPER_PATH in .env or install the model."
+                        f"Whisper model not found at {model_path}. " "Set WHISPER_PATH in .env or install the model."
                     )
                 self._whisper_model = WhisperModel(model_path, device="cpu", compute_type="int8")
                 logger.info("Loaded faster-whisper model: %s", model_path)
@@ -64,8 +64,10 @@ class ASRService:
         if self._indic_model is None:
             try:
                 from faster_whisper import WhisperModel
+
                 model_path = settings.INDIC_WHISPER_PATH or "ai4bharat/indic-whisper-medium"
                 import os
+
                 if os.path.isabs(model_path) and not os.path.exists(model_path):
                     raise FileNotFoundError(
                         f"IndicWhisper model not found at {model_path}. "
@@ -96,6 +98,7 @@ class ASRService:
 
         try:
             import tempfile
+
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 f.write(audio_bytes)
                 temp_path = f.name
@@ -114,11 +117,13 @@ class ASRService:
             all_segments = []
             for seg in segments:
                 text_parts.append(seg.text)
-                all_segments.append({
-                    "start": seg.start,
-                    "end": seg.end,
-                    "text": seg.text,
-                })
+                all_segments.append(
+                    {
+                        "start": seg.start,
+                        "end": seg.end,
+                        "text": seg.text,
+                    }
+                )
 
             text = " ".join(text_parts).strip()
 
@@ -133,6 +138,7 @@ class ASRService:
                         detected_lang = "hi"
 
             import os
+
             os.unlink(temp_path)
 
             return {
@@ -151,7 +157,7 @@ class ASRService:
 
     def _stub_transcribe(self) -> Dict[str, Any]:
         """Return stub result when no ASR model is available.
-        
+
         In DEBUG mode, returns a mock transcription for testing without the ML model.
         In production, raises RuntimeError to inform the user to install faster-whisper.
         """
@@ -162,13 +168,11 @@ class ASRService:
                 "confidence": 0.95,
                 "segments": [],
             }
-        raise RuntimeError(
-            "ASR model not loaded. Install faster-whisper or configure WHISPER_PATH/INDIC_WHISPER_PATH."
-        )
+        raise RuntimeError("ASR model not loaded. Install faster-whisper or configure WHISPER_PATH/INDIC_WHISPER_PATH.")
 
     async def detect_language(self, audio_bytes: bytes) -> str:
         """Detect language from audio."""
-        result = await self.transcribe(audio_bytes[:16000 * 3])  # First 3 seconds
+        result = await self.transcribe(audio_bytes[: 16000 * 3])  # First 3 seconds
         return result.get("language", "en")
 
 
@@ -200,10 +204,17 @@ SCHEDULING_INTENT_PATTERNS = {
 }
 
 DATE_KEYWORDS = {
-    "today": "today", "tomorrow": "tomorrow",
-    "monday": "monday", "tuesday": "tuesday", "wednesday": "wednesday",
-    "thursday": "thursday", "friday": "friday", "saturday": "saturday", "sunday": "sunday",
-    "next week": "next_week", "this week": "this_week",
+    "today": "today",
+    "tomorrow": "tomorrow",
+    "monday": "monday",
+    "tuesday": "tuesday",
+    "wednesday": "wednesday",
+    "thursday": "thursday",
+    "friday": "friday",
+    "saturday": "saturday",
+    "sunday": "sunday",
+    "next week": "next_week",
+    "this week": "this_week",
 }
 
 PATIENT_NAME_MARKERS = [
@@ -283,7 +294,7 @@ class VoiceIntentClassifier:
         for marker in reason_markers:
             idx = text.lower().find(marker)
             if idx >= 0:
-                after = text[idx + len(marker):].strip().rstrip(".,")
+                after = text[idx + len(marker) :].strip().rstrip(".,")
                 # Remove trailing patient name if captured
                 if "patient" in params:
                     after = after.replace(params.get("patient_name", ""), "").strip()
@@ -295,6 +306,7 @@ class VoiceIntentClassifier:
 
 
 # ─── Voice Scheduler (Main Service) ─────────────────
+
 
 class VoiceScheduler:
     """Complete voice scheduling service — ASR + intent classification + preference learning."""
@@ -327,7 +339,10 @@ class VoiceScheduler:
         # Step 3: Log for preference learning
         logger.info(
             "Voice command: lang=%s text=%s intent=%s conf=%.2f",
-            lang, text[:80], classification["intent"], classification["confidence"],
+            lang,
+            text[:80],
+            classification["intent"],
+            classification["confidence"],
         )
 
         return {
@@ -346,6 +361,7 @@ voice_scheduler = VoiceScheduler()
 
 # ─── Maverick Intent Classification (Week 11) ───────
 
+
 class MaverickIntentClassifier:
     """Uses Maverick (Llama-4) via NIM for scheduling intent classification.
 
@@ -363,6 +379,7 @@ class MaverickIntentClassifier:
     async def classify(self, text: str) -> Dict[str, Any]:
         """Classify voice command using Maverick LLM."""
         from app.agents.synthesizer import MaverickSynthesizer
+
         if self._synthesizer is None:
             self._synthesizer = MaverickSynthesizer()
 
@@ -390,6 +407,7 @@ class MaverickIntentClassifier:
             )
 
             import json as _json
+
             raw = response.get("response", "")
             parsed = _json.loads(raw) if raw else {}
             return {
@@ -407,84 +425,158 @@ class MaverickIntentClassifier:
 
 # ─── TTS Service (Week 11) ──────────────────────────
 
-class ParlerTTSService:
-    """Text-to-Speech using Indic-Parler-TTS for English and Hindi."""
+
+class FastTTSService:
+    """Text-to-Speech using Kokoro-82M (ONNX, English) + facebook/mms-tts-hin (Hindi).
+
+    Both models run on CPU and are loaded lazily. Falls back to espeak-ng
+    (present in the container) when a neural model is unavailable.
+    """
 
     def __init__(self):
-        self._model = None
+        self._kokoro = None
+        self._mms = None
+        self._kokoro_fail = False
+        self._mms_fail = False
 
-    async def _load_model(self):
-        if self._model is None:
-            try:
-                from parler_tts import ParlerTTSForConditionalGeneration
-                from transformers import AutoTokenizer
-                import torch
+    async def _load_kokoro(self):
+        if self._kokoro is not None or self._kokoro_fail:
+            return
+        try:
+            import json
+            import os
 
-                model_path = settings.PARLER_TTS_PATH or "ai4bharat/indic-parler-tts"
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+            import numpy as np
+            from misaki import en, espeak
+            from onnxruntime import InferenceSession
 
-                self._model = ParlerTTSForConditionalGeneration.from_pretrained(model_path).to(device)
-                self._tokenizer = AutoTokenizer.from_pretrained(model_path)
-                logger.info("Loaded Parler-TTS model: %s (%s)", model_path, device)
-            except ImportError:
-                logger.warning("parler_tts not installed. Using notification-only TTS.")
-                self._model = "stub"
+            path = settings.KOKORO_TTS_PATH
+            voice = settings.KOKORO_TTS_VOICE
+            session = InferenceSession(
+                os.path.join(path, "onnx", "model_uint8f16.onnx"),
+                providers=["CPUExecutionProvider"],
+            )
+            voices = np.fromfile(os.path.join(path, "voices", f"{voice}.bin"), dtype=np.float32).reshape(-1, 1, 256)
+            with open(os.path.join(path, "tokenizer.json")) as f:
+                vocab = json.load(f)["model"]["vocab"]
+            g2p = en.G2P(fallback=espeak.EspeakFallback(british=False))
+            self._kokoro = {"session": session, "voices": voices, "vocab": vocab, "g2p": g2p}
+            logger.info("Loaded Kokoro TTS: %s (voice=%s)", path, voice)
+        except Exception as exc:
+            logger.warning("Kokoro TTS unavailable: %s", exc)
+            self._kokoro_fail = True
+
+    async def _load_mms(self):
+        if self._mms is not None or self._mms_fail:
+            return
+        try:
+            from transformers import AutoTokenizer, VitsModel
+
+            path = settings.MMS_TTS_PATH
+            model = VitsModel.from_pretrained(path)
+            tokenizer = AutoTokenizer.from_pretrained(path)
+            self._mms = {"model": model, "tokenizer": tokenizer}
+            logger.info("Loaded MMS TTS: %s", path)
+        except Exception as exc:
+            logger.warning("MMS TTS unavailable: %s", exc)
+            self._mms_fail = True
+
+    @staticmethod
+    def _write_wav(audio, sample_rate: int, tag: str) -> str:
+        import tempfile
+
+        import soundfile as sf
+
+        tmp = tempfile.NamedTemporaryFile(suffix=f".{tag}.wav", delete=False)
+        sf.write(tmp.name, audio, sample_rate)
+        return tmp.name
+
+    def _kokoro_synth(self, text: str):
+        import numpy as np
+
+        kokoro = self._kokoro
+        phonemes, _ = kokoro["g2p"](text)
+        tokens = [kokoro["vocab"].get(ch, 0) for ch in " ".join(phonemes)][:510]
+        style = kokoro["voices"][len(tokens)]
+        wave = kokoro["session"].run(
+            None,
+            {
+                "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
+                "style": style.astype(np.float32),
+                "speed": np.ones(1, dtype=np.float32),
+            },
+        )[0][0]
+        return wave, 24000
+
+    def _mms_synth(self, text: str):
+        import torch
+
+        model = self._mms["model"]
+        inputs = self._mms["tokenizer"](text, return_tensors="pt")
+        with torch.no_grad():
+            out = model(**inputs)
+        wave = out.waveform.squeeze().cpu().numpy()
+        return wave, int(model.config.sampling_rate)
+
+    def _espeak_synth(self, text: str, language: str):
+        import subprocess
+        import tempfile
+
+        import numpy as np
+        import soundfile as sf
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        try:
+            subprocess.run(
+                ["espeak-ng", "-v", language, "-s", "175", "-w", tmp.name, text],
+                check=True,
+                capture_output=True,
+            )
+        except Exception as exc:
+            logger.warning("espeak-ng failed (%s): %s", language, exc)
+            return None
+        audio, sr = sf.read(tmp.name, dtype="float32")
+        return np.asarray(audio, dtype=np.float32), int(sr)
 
     async def synthesize(self, text: str, language: str = "en") -> Dict[str, Any]:
         """Synthesize speech from text.
 
         Args:
             text: Text to speak.
-            language: 'en' for English, 'hi' for Hindi.
+            language: 'en' for English, 'hi' for Hindi (other langs fall back to en).
 
         Returns:
-            {"audio_path": str, "duration_seconds": float, "text": str, "language": str}
+            {"audio_path": str, "duration_seconds": float, "text": str, "language": str,
+             "sample_rate": int}
         """
-        await self._load_model()
+        import asyncio as _asyncio
 
-        if self._model == "stub" or self._model is None:
-            return {
-                "audio_path": "",
-                "duration_seconds": 0,
-                "text": text[:100],
-                "language": language,
-                "note": "TTS model not loaded. Parler-TTS requires installation.",
-            }
-
+        audio = None
+        sample_rate = 0
+        engine = ""
         try:
-            import torch
-            import tempfile
-            import soundfile as sf
-
-            description = (
-                "A female doctor speaks clearly in a clinical setting."
-                if language == "en"
-                else "Ek mahila doctor spill bol rahi hain."
-            )
-
-            inputs = self._tokenizer(description, return_tensors="pt")
-            prompt = self._tokenizer(text, return_tensors="pt")
-
-            with torch.no_grad():
-                output = self._model.generate(
-                    input_ids=inputs.input_ids,
-                    prompt_input_ids=prompt.input_ids,
-                    max_length=512,
-                )
-
-            audio = output.cpu().numpy().squeeze()
-
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            sf.write(tmp.name, audio, samplerate=16000)
-
-            duration = len(audio) / 16000
-
-            return {
-                "audio_path": tmp.name,
-                "duration_seconds": round(duration, 1),
-                "text": text[:100],
-                "language": language,
-            }
+            # P2.26 — every synth path here is CPU-bound synchronous work
+            # (subprocess wait for espeak, torch inference for MMS, ONNX
+            # runtime for Kokoro). Running them directly on the event loop
+            # freezes uvicorn for ~1–4s per call and blocks all other
+            # requests. asyncio.to_thread hands each off to the default
+            # ThreadPoolExecutor so other agents / requests continue.
+            if language == "hi":
+                await self._load_mms()
+                if self._mms is not None:
+                    audio, sample_rate = await _asyncio.to_thread(self._mms_synth, text)
+                    engine = "mms-tts-hin"
+            if audio is None:
+                await self._load_kokoro()
+                if self._kokoro is not None:
+                    audio, sample_rate = await _asyncio.to_thread(self._kokoro_synth, text)
+                    engine = "kokoro"
+            if audio is None:
+                espeak_lang = "hi" if language == "hi" else "en-us"
+                result = await _asyncio.to_thread(self._espeak_synth, text, espeak_lang)
+                if result is not None:
+                    audio, sample_rate = result
+                    engine = "espeak-ng"
         except Exception as exc:
             logger.error("TTS synthesis failed: %s", exc)
             return {
@@ -494,6 +586,25 @@ class ParlerTTSService:
                 "language": language,
                 "error": str(exc)[:100],
             }
+
+        if audio is None:
+            return {
+                "audio_path": "",
+                "duration_seconds": 0,
+                "text": text[:100],
+                "language": language,
+                "note": "No TTS engine available (Kokoro, mms-tts-hin, espeak-ng).",
+            }
+
+        path = self._write_wav(audio, sample_rate, engine)
+        return {
+            "audio_path": path,
+            "duration_seconds": round(len(audio) / sample_rate, 1),
+            "text": text[:100],
+            "language": language,
+            "sample_rate": sample_rate,
+            "engine": engine,
+        }
 
     async def synthesize_booking_confirmation(
         self, patient_name: str, date: str, time: str, language: str = "en"
@@ -505,14 +616,17 @@ class ParlerTTSService:
             text = f"Appointment booked for {patient_name} on {date} at {time}."
         return await self.synthesize(text, language)
 
-    async def synthesize_cancellation(
-        self, patient_name: str, language: str = "en"
-    ) -> Dict[str, Any]:
-        text = f"{patient_name} ka appointment cancel kar diya gaya hai." if language == "hi" else f"The appointment for {patient_name} has been cancelled."
+    async def synthesize_cancellation(self, patient_name: str, language: str = "en") -> Dict[str, Any]:
+        text = (
+            f"{patient_name} ka appointment cancel kar diya gaya hai."
+            if language == "hi"
+            else f"The appointment for {patient_name} has been cancelled."
+        )
         return await self.synthesize(text, language)
 
 
 # ─── Voice Subgraph (End-to-End) ───────────────────
+
 
 class VoiceSubgraph:
     """Full voice scheduling flow: mic -> ASR -> intent -> tools -> TTS.
@@ -524,7 +638,7 @@ class VoiceSubgraph:
     def __init__(self):
         self.asr = ASRService()
         self.intent_classifier = MaverickIntentClassifier()
-        self.tts = ParlerTTSService()
+        self.tts = FastTTSService()
 
     async def process_command(
         self,
@@ -605,6 +719,7 @@ class VoiceSubgraph:
 
 
 # ─── Feature C: Training Pair Collection (Week 11) ──
+
 
 def collect_training_pair(
     voice_text: str,

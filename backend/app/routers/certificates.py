@@ -10,20 +10,19 @@ Endpoints:
 
 from __future__ import annotations
 
-import uuid
 import logging
 import secrets
-from datetime import datetime, timezone
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
 
 from app.database import get_db
 from app.dependencies import get_current_doctor
-from app.models import Doctor, Patient, Certificate, AuditLog
-from app.services.pdf_generator import pdf_generator
+from app.models import AuditLog, Certificate, Doctor, Patient
 from app.services.notification_generator import generate_and_dispatch
+from app.services.pdf_generator import pdf_generator
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -39,6 +38,7 @@ def _generate_verification_code() -> str:
     return "SPC-" + secrets.token_hex(4).upper() + "-" + secrets.token_hex(2).upper()
 
 
+@router.post("", status_code=status.HTTP_201_CREATED)
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_certificate(
     patient_id: uuid.UUID,
@@ -47,9 +47,7 @@ async def create_certificate(
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a medical certificate with PDF."""
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -90,9 +88,12 @@ async def create_certificate(
     # Audit
     try:
         audit = AuditLog(
-            doctor_id=doctor.id, patient_id=patient.id,
-            actor=f"doctor:{doctor.id}", action="write",
-            resource_type="certificate", resource_id=cert.id,
+            doctor_id=doctor.id,
+            patient_id=patient.id,
+            actor=f"doctor:{doctor.id}",
+            action="write",
+            resource_type="certificate",
+            resource_id=cert.id,
             payload_jsonb={"cert_type": cert_type, "has_pdf": bool(pdf_path)},
         )
         db.add(audit)
@@ -127,6 +128,7 @@ async def create_certificate(
     }
 
 
+@router.get("")
 @router.get("/")
 async def list_certificates(
     patient_id: uuid.UUID,
@@ -140,16 +142,19 @@ async def list_certificates(
         .order_by(desc(Certificate.issued_at))
     )
     certs = result.scalars().all()
-    return [
-        {
-            "id": str(c.id),
-            "cert_type": c.cert_type,
-            "verification_code": c.verification_code,
-            "has_pdf": bool(c.pdf_path),
-            "issued_at": c.issued_at.isoformat() if c.issued_at else None,
-        }
-        for c in certs
-    ]
+    return {
+        "certificates": [
+            {
+                "id": str(c.id),
+                "cert_type": c.cert_type,
+                "verification_code": c.verification_code,
+                "has_pdf": bool(c.pdf_path),
+                "issued_at": c.issued_at.isoformat() if c.issued_at else None,
+            }
+            for c in certs
+        ],
+        "count": len(certs),
+    }
 
 
 @router.get("/{certificate_id}")
@@ -190,23 +195,36 @@ async def download_certificate_pdf(
     cert = result.scalar_one_or_none()
     if not cert or not cert.pdf_path:
         raise HTTPException(status_code=404, detail="PDF not found")
-    
-    # Generate presigned URL for S3 access
-    presigned_url = await storage_service.get_presigned_url("pdfs", cert.pdf_path)
-    if presigned_url:
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=presigned_url)
-    
+
+    # Serve the PDF bytes directly so clients (browser/portal) can download it
+    from fastapi.responses import Response
+
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", cert.pdf_path)
+    except Exception as exc:
+        logger.warning("Failed to fetch certificate PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="certificate_{certificate_id}.pdf"'},
+        )
+
     # Fallback: serve from local filesystem if S3 is unavailable
     import os
+
     if os.path.isabs(cert.pdf_path) and os.path.exists(cert.pdf_path):
         from fastapi.responses import FileResponse
+
         return FileResponse(cert.pdf_path, media_type="application/pdf", filename=f"certificate_{certificate_id}.pdf")
-    
+
     raise HTTPException(status_code=404, detail="PDF file not found on storage")
 
 
 # ─── Public Verification (no auth required) ───
+
 
 @verify_router.get("/verify/{verification_code}")
 async def verify_certificate(
@@ -214,11 +232,8 @@ async def verify_certificate(
     db: AsyncSession = Depends(get_db),
 ):
     """Public endpoint to verify a certificate via QR code."""
-    from app.models import Doctor
 
-    result = await db.execute(
-        select(Certificate).where(Certificate.verification_code == verification_code)
-    )
+    result = await db.execute(select(Certificate).where(Certificate.verification_code == verification_code))
     cert = result.scalar_one_or_none()
     if not cert:
         raise HTTPException(status_code=404, detail="Invalid verification code")
@@ -244,5 +259,3 @@ async def verify_certificate(
             else "Certificate verified — issued via SoloPrac AI (Practice Account)"
         ),
     }
-
-

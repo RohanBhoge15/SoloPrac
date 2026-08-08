@@ -1,8 +1,18 @@
 # SoloPrac AI — Comprehensive Product + Research Specification
 
-> **Revision date:** 2026-07-28
-> **Revision notes:** All core features built and tested. Auth simplified to email+password (Google OAuth removed). Patient portal uses email+password (not OTP). Added: profile photos, voice-to-text, OCR quality alerts, document timeline, patient PDF downloads, state-specific prescriptions, PIN code search, telemedicine consent, DPDP consent management, NMC verification, Hindi UI, offline PWA, Sentry error tracking, backup system, multi-device sessions. Lab alerts removed (intentionally skipped — hardcoded reference ranges are useless for solo doctors). Research section intentionally skipped compared with RAG-Based CDSS project.
-> **Companion file:** `finalised_techstack.md` (stack reference unchanged)
+> **Revision date:** 2026-08-07
+> **Revision notes:** All core features built and tested. Auth simplified to email+password (Google OAuth removed). Patient portal uses email+password (not OTP). Added: profile photos, voice-to-text, OCR quality alerts, document timeline, patient PDF downloads, state-specific prescriptions, PIN code search, telemedicine consent, DPDP consent management, NMC verification, Hindi UI, offline PWA, Sentry error tracking, backup system, multi-device sessions.
+>
+> **OCR pipeline swap (2026-08-07):** Surya (commercial-restrictive license) and Nanonets-OCR2 (6.5 GB RAM cost) both removed. Replaced with **RapidOCR** (Apache-2.0) for scanned/photo and **MedGemma-4B via llama-server** for the handwritten fallback — every OCR path is now permissively licensed and small enough to run alongside the rest of the stack. Docling additionally benefits from `g++` in the image so `torch._inductor` can JIT CPU kernels (first-parse confidence 0.70 → 0.95, time 195s → 86s).
+>
+> **Walk-in ↔ user auto-linking (2026-08-07):** New `services/linking.py` module + `/patient/me/pending-matches` review flow. Two-tier matcher: strong (phone + DOB, or phone + name-token-prefix compare) auto-attaches on signup; weak (phone-only) surfaces a UI banner with Claim / Not-me buttons. Handles families sharing a phone without paid SMS OTP. `UNIQUE` constraint on `users.phone_hash` dropped for family co-existence; `patients.link_rejected_by_user_ids UUID[]` added so rejections stick per user.
+>
+> **Local model verification:** All 6 local models exercised end-to-end (MedGemma via llama-server, faster-whisper large-v3, MedCPT, BGE-M3 with sparse indices via FlagEmbedding, BiomedCLIP via open_clip_torch, Docling). HuggingFace cache bind-mounted to `D:\models\hf-cache` — one copy on host, shared by `backend` and `arq-worker`, survives rebuilds.
+>
+> **Test tally: 112 e2e tests across 6 suites** (14 walk-in link + 27 disambiguation + 8 UI pending-matches + 43 API flows + 9 AI flows + 3 PII tripwire + 8 OCR pipeline) — all passing inside the backend container against real Postgres / Qdrant / Redis / MinIO.
+>
+> Lab alerts removed (intentionally skipped — hardcoded reference ranges are useless for solo doctors). Research section intentionally skipped compared with RAG-Based CDSS project.
+> **Companion files:** `finalised_techstack.md` (stack reference), `THIRD_PARTY_LICENSES.md` (attribution + rejected-model rationale).
 
 ---
 
@@ -34,8 +44,10 @@ The differentiating bet: *patient data is a versioned, immutable, time-travelabl
                 │  │   ├─ Router (Llama-3.1-8B / NIM)                   │   │
                 │  │   ├─ Synth (Llama-4-Maverick / NIM)                │   │
                 │  │   ├─ Vision (Llama-3.2-90B / Groq)                 │   │
-                │  │   ├─ Local VLM (MedGemma-4B / local)               │   │
+                │  │   ├─ Local VLM (MedGemma-4B GGUF / llama-server)   │   │
+                │  │   ├─ OCR Router (Docling → RapidOCR → MedGemma)    │   │
                 │  │   ├─ Image Reg (ORB + overlay subgraph)             │   │
+                │  │   ├─ Walk-in Linker (services/linking.py)           │   │
                 │  │   ├─ Voice-Scheduling subgraph                      │   │
                 │  │   └─ Voice-to-Text (faster-whisper + IndicWhisper)  │   │
                 │  └──────────────────────────────────────────────────────┘   │
@@ -117,7 +129,7 @@ intent_router (Llama-3.1-8B)
     ├── synthesize_response          → Maverick (NIM)
     ├── analyze_image                → MedGemma-4B local (primary) / Groq fallback
     ├── compare_images               → ORB feature matching subgraph
-    ├── parse_document               → Docling / Surya / Nanonets-OCR2
+    ├── parse_document               → Docling (typed) / RapidOCR (scanned) / MedGemma (handwritten)
     ├── generate_prescription_box    → Maverick + JSON schema
     ├── schedule_subgraph            → voice scheduling tools
     ├── generate_invoice             → Maverick + Jinja2 + Playwright
@@ -167,14 +179,17 @@ Summary saved as a versioned entry on the patient record
 
 ### Module 5 — Document Engine
 
-Drop a file → automatically routed:
+Drop a file → automatically routed. **All three paths are permissively licensed and run locally.**
 
-| Input | Pipeline |
-|-------|---------|
-| Typed PDF | Docling |
-| Scanned PDF | Surya layout + Docling structure |
-| Handwritten Rx | Nanonets-OCR2 → MedGemma fallback |
-| Photo (jpg/png) | Surya + MedGemma re-check |
+| Input | Pipeline | License |
+|-------|---------|---------|
+| Typed PDF | Docling | MIT |
+| Scanned PDF / photo (jpg/png) | RapidOCR (ONNX + PaddleOCR models) — kept under the `surya_parse` method name for API stability | Apache-2.0 |
+| Handwritten Rx (or low-confidence RapidOCR) | MedGemma-4B GGUF Q4_K_M served by `llama-server` — kept under the `nanonets_ocr_parse` method name | Gemma license |
+
+**Why not Surya / Nanonets any more?**
+- **Surya** ships an Apache-2.0 code header but adds a commercial-use clause in its terms — not viable for a project pitched as license-clean. RapidOCR gave equivalent accuracy on our fixture at zero license risk.
+- **Nanonets-OCR2** is 6.5 GB in weights and dominated RAM. MedGemma-4B is already in the stack for chat/vision, so reusing it as the handwritten fallback cost 0 additional MB.
 
 **OCR Quality Alerts** — Before processing, `_check_image_quality()` on `ParserRouter` detects:
 - **Blur** (Laplacian variance < 100 severe / < 300 moderate)
@@ -183,6 +198,8 @@ Drop a file → automatically routed:
 - **Low resolution** (< 500×500 px)
 
 Quality warnings shown as amber alerts in the Scratchpad file list and review dialog.
+
+**Compile toolchain:** the backend image ships `g++` alongside `gcc` so `torch._inductor` can JIT CPU kernels for Docling — first-parse confidence 0.70 → 0.95, time 195s → 86s.
 
 After parsing, content is converted to a **versioned patient record draft** (or scratchpad) and shown for doctor approval.
 
@@ -367,6 +384,49 @@ Patients access via `/patient/*` routes in the same React app. Email+password lo
 
 ---
 
+### Module 12 — Walk-in ↔ User Auto-Linking (Free-Tier, Family-Safe)
+
+Solo practitioners frequently add a walk-in patient by phone alone (`user_id = NULL`) before that person has ever signed up. Later — days or months on — the patient signs up as a user. Without linking, the record stays orphaned and every doctor the patient visits creates a fresh chart. Paid SMS OTP would solve it; we don't have a budget for that, and asking doctors to disambiguate slows every consult.
+
+**Design:** every phone-based lookup runs through `backend/app/services/linking.py`, which classifies candidates into **strong** (auto-link on the spot) and **weak** (surface for user review).
+
+**Matcher (`_names_compatible`)** — token-prefix, *not* character-ratio:
+- Split each name on non-letters, lowercase.
+- Every token in the shorter list must prefix some token in the longer list (one-to-one greedy).
+- Handles `"Priya S."` ↔ `"Priya Sharma"` (compatible) while rejecting `"Priya Sharma"` vs `"Rajesh Sharma"` — the pathological case where `SequenceMatcher` scored 0.72 and misfired.
+
+**Two-tier decision:**
+
+| Signal set | Tier | Action |
+|------------|------|--------|
+| phone + DOB match | strong | auto-attach walk-in `user_id` on signup / walk-in-create |
+| phone + name-token-prefix compatible | strong | auto-attach |
+| phone only, no DOB, ambiguous name | weak | leave `user_id = NULL`, expose via pending-matches |
+| phone but user has previously rejected | — | permanently hidden (see below) |
+
+**API surface (`app/routers/portal.py`):**
+| Verb | Path | Purpose |
+|------|------|---------|
+| `GET`  | `/patient/me/pending-matches` | List candidate walk-in records with clinic + doctor + demographics |
+| `POST` | `/patient/me/claim/{patient_id}` | Re-verifies eligibility server-side, then sets `patients.user_id = current_user.id` |
+| `POST` | `/patient/me/reject/{patient_id}` | Appends `current_user.id` to `patients.link_rejected_by_user_ids UUID[]` |
+| `GET`  | `/patient/me/profile` | Now returns `pending_matches_count` so the banner can show/hide |
+
+**Frontend:**
+- `PendingMatchesBanner` — amber card on the patient dashboard; TanStack Query polls `/patient/me/profile` every 60s and hides itself when `pending_matches_count == 0`.
+- `PatientPendingMatches` (`/patient/pending-matches`) — full review page; each card shows clinic name, doctor name, DOB, gender, address, and Claim / Not-me buttons wired through TanStack mutations.
+
+**Schema changes:**
+- `patients.link_rejected_by_user_ids UUID[] DEFAULT '{}'` — persists rejections across logins, so a wrongly-suggested record never resurfaces for the same user.
+- `patients.phone_hash` remains indexed but no longer unique.
+- `users.phone_hash` — **UNIQUE constraint dropped** so families sharing a handset can each hold an account. DOB + name-token-compat now carry the disambiguation load the constraint used to mask. `database.py` runs the ALTER TABLE at startup via a `pg_constraint` sweep; `init-schema.sql` matches for fresh boots.
+
+**Doctor-side change (`routers/patients.py::create_patient_manual`):** now accepts optional `dob`, `gender`, and `address`; delegates to `find_user_for_walkin` so a match on manual creation either strong-links (user shows up in patient list immediately) or routes to pending-matches (user sees the banner next login) — no doctor input needed either way.
+
+**Test coverage:** 14 walk-in-link tests + 27 disambiguation tests + 8 Playwright UI tests = 49 tests dedicated to this feature alone (see §7).
+
+---
+
 ## 4. Research Features (A–F) — Paper Contributions
 
 Six features mapped to IEEE paper sections. Feature **A is primary**; B and C are co-equal; D, E, F are supporting.
@@ -471,6 +531,13 @@ See `init-schema.sql` and `alembic/versions/001_baseline.py` for the full schema
 - `doctor_sessions` — multi-device session tracking
 - `audit_log` — append-only audit trail
 
+**Recent schema changes (2026-08-07):**
+- `patients.link_rejected_by_user_ids UUID[] DEFAULT '{}'::UUID[]` — added for the walk-in linker's persistent rejections.
+- `users.phone_hash` — `UNIQUE` constraint dropped so families sharing a handset can each own an account.
+- `patients.phone_hash` — indexed but not unique (walk-in records for family members share phones).
+
+Both changes ship as runtime `ALTER TABLE IF EXISTS` migrations in `app/database.py` and are also reflected in `init-schema.sql` for fresh Postgres containers.
+
 **Row-Level Security** enabled on all patient-bearing tables with `doctor_id` isolation.
 
 ---
@@ -486,7 +553,8 @@ See `init-schema.sql` and `alembic/versions/001_baseline.py` for the full schema
 | **Hindi UI** | react-i18next with `en.json` + `hi.json`; language switcher in UserMenu |
 | **Doctor profile photo** | Upload + oval crop with drag/zoom; served via MinIO presigned URL |
 | **Years experience** | Computed from `year_of_registration` — zero maintenance |
-| **Walk-in patient linking** | Auto-links existing walk-in patients (user_id=NULL) to users by phone |
+| **Walk-in patient linking** | Two-tier matcher (`services/linking.py`) with strong (phone+DOB or phone+name-token) auto-link + weak (phone-only) review flow — see Module 12 |
+| **Family-shared phones** | `users.phone_hash` UNIQUE constraint dropped; multiple accounts on one handset disambiguated by DOB / name-tokens |
 | **Phone normalization** | `normalize_phone()` strips formatting, takes last 10 digits |
 | **Booking race condition** | `SELECT FOR UPDATE` on doctor row prevents double-booking |
 | **Offline PWA** | vite-plugin-pwa with Workbox caching (NetworkFirst for API routes) |
@@ -507,7 +575,13 @@ See `init-schema.sql` and `alembic/versions/001_baseline.py` for the full schema
 | Schema Alignment (Feature D) | **Done** | Requires manual evaluation |
 | Trajectory Clustering (Feature E) | **Done** | HDBSCAN + Mahalanobis + WebSocket alerts |
 | Significance Reports (Feature F) | **Done** | Requires manual evaluation |
-| Document Engine (OCR) | **Done** | Docling + Surya + Nanonets-OCR2 + quality alerts |
+| Document Engine (OCR) | **Done** | Docling (typed) + RapidOCR (scanned/photo) + MedGemma-via-llama-server (handwritten) + quality alerts. Surya + Nanonets-OCR2 removed for license / RAM cost — see revision notes. |
+| Walk-in ↔ User Linking | **Done** | `services/linking.py` two-tier matcher + `/patient/me/pending-matches` review flow + `PendingMatchesBanner` + `PatientPendingMatches` page. 49 dedicated tests. |
+| Family-Phone Support | **Done** | UNIQUE dropped on `users.phone_hash`; `patients.link_rejected_by_user_ids UUID[]` persists rejections per user. |
+| Local Model Verification | **Done** | All 6 models (MedGemma via llama-server, faster-whisper large-v3, MedCPT, BGE-M3 with sparse, BiomedCLIP, Docling) exercised e2e. |
+| HF Cache Bind-Mount | **Done** | `D:\models\hf-cache → /hf_cache` shared by backend + arq-worker; survives rebuilds. |
+| torch.compile Toolchain | **Done** | `g++` added to backend Dockerfile — Docling first-parse confidence 0.70 → 0.95, time 195s → 86s. |
+| THIRD_PARTY_LICENSES.md | **Done** | Full attribution + rejected-model rationale (Surya commercial-restrictive, Nanonets RAM-bound). |
 | Voice Scheduling | **Done** | 5 commands Hindi+English |
 | Voice-to-Text (PrescriptionBox) | **Done** | Mic buttons on diagnosis + instructions |
 | Voice-to-Text (ChatUI) | **Done** | Mic button for chat input |
@@ -556,6 +630,7 @@ See `init-schema.sql` and `alembic/versions/001_baseline.py` for the full schema
 | 13 | Patient portal + doctor search + PIN + telemedicine consent | **Done** |
 | 14 | Profile photos + NMC verification + DPDP + Hindi UI + PWA + Sentry + backup + sessions | **Done** |
 | 15 | Integration testing + bug fixes + code audit | **Done** |
+| 15+ | OCR license cleanup (Surya→RapidOCR, Nanonets→MedGemma), walk-in linker, family-phone support, license-clean model verification | **Done** |
 | 16 | IEEE paper + demo + deployment | **In Progress** |
 
 ---
@@ -582,3 +657,11 @@ See `init-schema.sql` and `alembic/versions/001_baseline.py` for the full schema
 18. **Sentry is opt-in** — Only active when `SENTRY_DSN` is set.
 19. **Backup to MinIO** — pg_dump uploaded to object storage; list via admin endpoint.
 20. **Multi-device sessions** — Track and revoke individual devices.
+21. **OCR pipeline must be license-clean** — RapidOCR (Apache-2.0) over Surya (commercial-restrictive); MedGemma-4B GGUF (already in stack) over Nanonets-OCR2 (6.5 GB RAM cost). Docling stays for typed PDFs (MIT). Full rationale in `THIRD_PARTY_LICENSES.md`.
+22. **Walk-in linking uses token-prefix, not SequenceMatcher** — character-ratio fuzzy match scored 0.72 for `"Priya Sharma"` vs `"Rajesh Sharma"`, a false positive on shared surnames. Token-prefix matching is O(n·m), zero false positives on the test corpus.
+23. **No SMS OTP** — free-tier only means paid OTP is off the table. Weak matches route to a UI review flow instead of a "verify by SMS" wall.
+24. **`users.phone_hash` UNIQUE dropped** — families share handsets in India; a UNIQUE constraint made co-existence impossible and offered no security anyway (phone alone is not proof of identity). DOB and name-token compatibility now do the disambiguation work.
+25. **HF cache on host, not in a Docker volume** — bind-mounted to `D:\models\hf-cache`. Survives rebuilds, inspectable from Windows, shared between backend and arq-worker (removes the ~5 GB duplicate that named volumes forced).
+26. **`g++` in backend image** — required by `torch._inductor` for CPU kernel JIT. Docling first-parse: confidence 0.70 → 0.95, time 195s → 86s.
+27. **Method names kept for API stability** — the OCR router still exposes `surya_parse` and `nanonets_ocr_parse` on `OCRService`, but they dispatch to RapidOCR and MedGemma respectively. Callers (agents, routers, tests) didn't have to change.
+28. **112 e2e tests, all passing** — run inside the backend container against real Postgres/Qdrant/Redis/MinIO. Playwright UI tests included. No mocks for infrastructure.

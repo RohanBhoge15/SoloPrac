@@ -9,25 +9,26 @@ Endpoints:
 
 from __future__ import annotations
 
-import uuid
 import logging
-from typing import Optional
+import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings as app_settings
 from app.database import get_db
 from app.dependencies import get_current_doctor
 from app.models import Doctor, Patient, ReportVerification
-from app.config import settings as app_settings
+from app.services.email_queue import email_queue
+from app.services.pdf_generator import pdf_generator
+from app.services.storage import storage_service
 from app.services.weekly_report import (
-    WeeklyReportService,
     REPORT_LAYOUTS,
+    WeeklyReportService,
     build_likert_study,
 )
-from app.services.pdf_generator import pdf_generator
-from app.services.email_queue import email_queue
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,7 @@ async def generate_weekly_report(
         raise HTTPException(status_code=400, detail=f"Invalid layout. Choose from: {REPORT_LAYOUTS}")
 
     # Verify patient belongs to doctor
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -91,9 +90,7 @@ async def generate_report_ai_summary(
 ):
     """Generate a weekly report with AI narrative summary."""
     # Verify patient belongs to doctor
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -117,9 +114,7 @@ async def download_weekly_report_pdf(
         raise HTTPException(status_code=400, detail=f"Invalid layout. Choose from: {REPORT_LAYOUTS}")
 
     # Verify patient belongs to doctor
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -141,6 +136,7 @@ async def download_weekly_report_pdf(
     # Store verification code in DB
     try:
         from app.models import ReportVerification
+
         rv = ReportVerification(
             id=uuid.uuid4(),
             patient_id=patient_id,
@@ -157,15 +153,18 @@ async def download_weekly_report_pdf(
     qr_data_uri = ""
     try:
         from app.services.pdf_security import PDFSecurityService
+
         pss = PDFSecurityService()
         qr_path = await pss.generate_qr_code(verify_url, size=80)
         # Embed it as a data URI or file path for the Jinja template
         import base64
+
         with open(qr_path, "rb") as f:
             qr_b64 = base64.b64encode(f.read()).decode()
         qr_data_uri = f"data:image/png;base64,{qr_b64}"
         # Clean up
         import os as _os
+
         try:
             _os.remove(qr_path)
         except OSError:
@@ -188,10 +187,8 @@ async def download_weekly_report_pdf(
         doctor_id=doctor.id,
     )
 
-    # Read and return PDF
-    import os
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
+    if not pdf_path:
+        raise HTTPException(status_code=404, detail="Report PDF could not be generated")
 
     # Trigger email notification to patient (if patient has email)
     try:
@@ -206,14 +203,34 @@ async def download_weekly_report_pdf(
     except Exception as e:
         logger.warning("Failed to enqueue weekly report email: %s", e)
 
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(pdf_bytes)),
-        },
-    )
+    # Serve the PDF bytes directly so clients (browser/portal) can download it
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", pdf_path)
+    except Exception as exc:
+        logger.error("Failed to fetch weekly report PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        from fastapi.responses import Response
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    import os
+
+    if os.path.isabs(pdf_path) and os.path.exists(pdf_path):
+        from fastapi.responses import FileResponse
+
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=filename,
+        )
+
+    raise HTTPException(status_code=404, detail="Report PDF file not found on storage")
 
 
 @router.get("/weekly-report/verify/{verification_code}")

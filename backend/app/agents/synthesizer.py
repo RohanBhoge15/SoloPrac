@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
 from openai import AsyncOpenAI
 
 from app.config import settings
@@ -57,6 +58,7 @@ class MaverickSynthesizer:
 
     Use get_instance() to get the shared singleton.
     """
+
     _instance: Optional["MaverickSynthesizer"] = None
 
     def __new__(cls):
@@ -79,6 +81,8 @@ class MaverickSynthesizer:
             self._client = AsyncOpenAI(
                 api_key=settings.NIM_API_KEY,
                 base_url=settings.NIM_BASE_URL,
+                timeout=20.0,
+                max_retries=0,
             )
             logger.info("MaverickSynthesizer: NIM client initialized (model=%s)", settings.MAVERICK_MODEL)
 
@@ -138,25 +142,35 @@ class MaverickSynthesizer:
             user_context += f"Relevant versions: {json.dumps(citations, default=str)[:1000]}\n\n"
 
         if user_context:
-            messages.append({
-                "role": "user",
-                "content": f"Here is the relevant patient information:\n\n{user_context}\n\nBased on this, respond to: {query}",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"Here is the relevant patient information:\n\n{user_context}\n\nBased on this, respond to: {query}",
+                }
+            )
         else:
             messages.append({"role": "user", "content": query})
 
         # Structured output mode
         response_format = None
-        if structured_output:
+        if structured_output and settings.MAVERICK_STRUCTURED_OUTPUT:
             response_format = {"type": "json_object"}
 
+        # P3.32 — bound the LLM call so a stalled NIM connection can't hang
+        # the whole request forever. 60s is generous for even the biggest
+        # answer; on TimeoutError we fall through to the retry / Groq path.
+        import asyncio as _asyncio
+
         try:
-            response = await self._client.chat.completions.create(
-                model=settings.MAVERICK_MODEL,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=2048,
-                response_format=response_format,
+            response = await _asyncio.wait_for(
+                self._client.chat.completions.create(
+                    model=settings.MAVERICK_MODEL,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=2048,
+                    response_format=response_format,
+                ),
+                timeout=60.0,
             )
 
             content = response.choices[0].message.content
@@ -168,10 +182,19 @@ class MaverickSynthesizer:
                 try:
                     parsed_structured = json.loads(content)
                 except json.JSONDecodeError:
-                    logger.warning("Maverick returned non-JSON despite response_format=json_object")
+                    import re as _re
 
-            logger.info("Maverick synthesis complete (model=%s, tokens=%d)",
-                        model_used, response.usage.total_tokens if response.usage else 0)
+                    fenced = _re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip())
+                    try:
+                        parsed_structured = json.loads(fenced)
+                    except json.JSONDecodeError:
+                        logger.warning("Maverick returned non-JSON despite response_format=json_object")
+
+            logger.info(
+                "Maverick synthesis complete (model=%s, tokens=%d)",
+                model_used,
+                response.usage.total_tokens if response.usage else 0,
+            )
 
             return {
                 "response": content or "",
@@ -187,6 +210,36 @@ class MaverickSynthesizer:
 
         except Exception as exc:
             logger.error("Maverick API call failed: %s", exc)
+            # Retry without response_format — some NIM models hang on json_object mode.
+            if response_format:
+                try:
+                    response = await _asyncio.wait_for(
+                        self._client.chat.completions.create(
+                            model=settings.MAVERICK_MODEL,
+                            messages=messages,
+                            temperature=0.3,
+                            max_tokens=2048,
+                        ),
+                        timeout=60.0,
+                    )
+                    content = response.choices[0].message.content
+                    logger.info(
+                        "Maverick synthesis retried without response_format (model=%s)", settings.MAVERICK_MODEL
+                    )
+                    return {
+                        "response": content or "",
+                        "citations": citations or [],
+                        "model": settings.MAVERICK_MODEL,
+                        "structured": None,
+                        "usage": {
+                            "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                            "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                            "total_tokens": response.usage.total_tokens if response.usage else 0,
+                        },
+                    }
+                except Exception as retry_exc:
+                    logger.error("Maverick retry (no response_format) also failed: %s", retry_exc)
+
             # Try Groq fallback
             if self._groq_client:
                 try:
@@ -225,20 +278,31 @@ class MaverickSynthesizer:
             user_context += f"\nContext: {json.dumps(context, indent=2, default=str)[:2000]}"
 
         if user_context:
-            messages.append({
-                "role": "user",
-                "content": f"{user_context}\n\nRespond to: {query}",
-            })
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"{user_context}\n\nRespond to: {query}",
+                }
+            )
         else:
             messages.append({"role": "user", "content": query})
 
+        # P3.32 — bound the initial connection to 60s. Once the stream starts
+        # producing tokens we don't add a per-chunk timeout, because NIM/Groq
+        # can legitimately pause between tokens on long generations; a stall
+        # will be detected by the caller (SSE keep-alive on the frontend).
+        import asyncio as _asyncio
+
         try:
-            stream = await self._client.chat.completions.create(
-                model=settings.MAVERICK_MODEL,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=2048,
-                stream=True,
+            stream = await _asyncio.wait_for(
+                self._client.chat.completions.create(
+                    model=settings.MAVERICK_MODEL,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=2048,
+                    stream=True,
+                ),
+                timeout=60.0,
             )
 
             async for chunk in stream:
@@ -246,6 +310,18 @@ class MaverickSynthesizer:
                 if delta and delta.content:
                     yield delta.content
 
+        except _asyncio.TimeoutError:
+            logger.error("Maverick streaming timed out after 60s — retrying via Groq")
+            # Retry once via Groq fallback if configured.
+            if self._groq_client:
+                try:
+                    groq_result = await self._groq_fallback(query, user_context, None)
+                    yield groq_result.get("response", "")
+                    return
+                except Exception as groq_exc:
+                    logger.error("Groq retry failed: %s", groq_exc)
+            fallback = self._fallback(query, context, None, None)
+            yield fallback["response"]
         except Exception as exc:
             logger.error("Maverick streaming failed: %s", exc)
             fallback = self._fallback(query, context, None, None)
@@ -259,11 +335,18 @@ class MaverickSynthesizer:
         else:
             messages.append({"role": "user", "content": query})
 
-        response = await self._groq_client.chat.completions.create(
-            model=settings.VISION_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=2048,
+        # P3.32 — same 60s cap for Groq. If both providers stall we surface a
+        # deterministic error message instead of a hung request.
+        import asyncio as _asyncio
+
+        response = await _asyncio.wait_for(
+            self._groq_client.chat.completions.create(
+                model=settings.VISION_MODEL,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=2048,
+            ),
+            timeout=60.0,
         )
 
         return {

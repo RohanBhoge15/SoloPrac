@@ -3,6 +3,35 @@
 
 # Development (no HTTPS)
 localhost {
+    # ─── Agent SSE endpoint ────────────────────────────────────────────
+    # Streams tokens as the LLM produces them. Without flush_interval,
+    # Caddy buffers the whole response — the doctor sees nothing until the
+    # entire answer is generated. `flush_interval -1` disables buffering so
+    # every chunk is forwarded the instant uvicorn writes it (P2.28).
+    # `transport http { keepalive off }` avoids reusing a paused upstream
+    # connection for the next SSE — some proxies mishandle that with HTTP/2.
+    handle /api/v1/agent/stream* {
+        reverse_proxy backend:8000 {
+            flush_interval -1
+            transport http {
+                read_timeout 600s
+                write_timeout 600s
+            }
+        }
+    }
+
+    # ─── WebSocket endpoints (portal, patient live updates) ────────────
+    handle /api/v1/ws* {
+        reverse_proxy backend:8000 {
+            flush_interval -1
+        }
+    }
+    handle /ws/* {
+        reverse_proxy backend:8000 {
+            flush_interval -1
+        }
+    }
+
     # API — use `handle` (not handle_path) to preserve the /api prefix
     handle /api/* {
         reverse_proxy backend:8000

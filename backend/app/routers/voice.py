@@ -7,8 +7,9 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Form
 from typing import Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.dependencies import get_current_doctor
 
@@ -29,11 +30,16 @@ async def transcribe_audio(
     """
     # Validate file type
     allowed_types = {
-        "audio/wav", "audio/wave", "audio/x-wav",
-        "audio/mp3", "audio/mpeg",
+        "audio/wav",
+        "audio/wave",
+        "audio/x-wav",
+        "audio/mp3",
+        "audio/mpeg",
         "audio/webm",
-        "audio/m4a", "audio/x-m4a",
-        "audio/ogg", "audio/x-ogg",
+        "audio/m4a",
+        "audio/x-m4a",
+        "audio/ogg",
+        "audio/x-ogg",
     }
     if file.content_type and file.content_type not in allowed_types:
         raise HTTPException(
@@ -50,6 +56,7 @@ async def transcribe_audio(
 
     try:
         from app.services.voice_scheduler import ASRService
+
         asr = ASRService()
         result = await asr.transcribe(audio_bytes, language=language)
         return {
@@ -67,3 +74,33 @@ async def transcribe_audio(
     except Exception as exc:
         logger.error("Transcription failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+
+
+@router.post("/synthesize")
+async def synthesize_audio(
+    text: str = Form(..., description="Text to synthesize"),
+    language: str = Form("en", description="Language: en or hi"),
+    doctor=Depends(get_current_doctor),
+):
+    """Synthesize speech to audio (Kokoro-82M for English, mms-tts-hin for Hindi).
+
+    Returns JSON metadata; audio is written to a temp WAV file on the server.
+    """
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Text is empty")
+    try:
+        from app.services.voice_scheduler import FastTTSService
+
+        tts = FastTTSService()
+        result = await tts.synthesize(text, language)
+        if not result.get("audio_path"):
+            raise HTTPException(
+                status_code=503,
+                detail=result.get("note") or result.get("error") or "TTS unavailable",
+            )
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Synthesis failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Synthesis failed: {exc}")

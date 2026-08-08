@@ -8,17 +8,18 @@ Endpoints:
 
 from __future__ import annotations
 
-import os
 import logging
+import os
 import subprocess
 import tempfile
 from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_doctor
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin-backup"])
@@ -43,10 +44,14 @@ async def create_backup(
         # pg_dump with gzip compression
         dump_cmd = [
             "pg_dump",
-            "--host", settings.POSTGRES_SERVER,
-            "--port", str(settings.POSTGRES_PORT),
-            "--username", settings.POSTGRES_USER,
-            "--dbname", settings.POSTGRES_DB,
+            "--host",
+            settings.POSTGRES_SERVER,
+            "--port",
+            str(settings.POSTGRES_PORT),
+            "--username",
+            settings.POSTGRES_USER,
+            "--dbname",
+            settings.POSTGRES_DB,
             "--no-owner",
             "--no-privileges",
         ]
@@ -81,9 +86,15 @@ async def create_backup(
 
         # Upload to MinIO
         from app.services.storage import storage_service
+
         s3_key = f"backups/{backup_filename}"
         with open(tmp_path, "rb") as f:
-            await storage_service.upload_file(f, s3_key, content_type="application/gzip")
+            await storage_service.upload_file(
+                file_data=f.read(),
+                bucket_type="pdfs",
+                key=s3_key,
+                content_type="application/gzip",
+            )
 
         os.unlink(tmp_path)
 
@@ -102,11 +113,9 @@ async def list_backups(
     """List available backups in MinIO."""
     try:
         from app.services.storage import storage_service
-        files = await storage_service.list_files(prefix="backups/")
-        backups = [
-            {"key": f["key"], "name": f["key"].split("/")[-1], "size": f.get("size", 0)}
-            for f in files if f["key"].endswith(".sql.gz")
-        ]
+
+        files = await storage_service.list_files("pdfs", "backups/")
+        backups = [{"key": f, "name": f.split("/")[-1], "size": 0} for f in files if f.endswith(".sql.gz")]
         backups.sort(key=lambda x: x["name"], reverse=True)
         return {"backups": backups}
     except Exception as exc:

@@ -14,13 +14,13 @@ export function Login() {
   const { login, devLogin } = useAuth()
   const navigate = useNavigate()
 
-  const handleDevLogin = async () => {
-    setError('')
-    setLoading(true)
-    try {
-      await devLogin()
-      navigate('/dashboard')
-    } catch (err: any) {
+const handleDevLogin = async () => {
+  setError('')
+  setLoading(true)
+  try {
+    await devLogin()
+    navigate('/')
+  } catch (err: any) {
       setError(err.response?.data?.detail || 'Dev login failed')
       setLoading(false)
     }

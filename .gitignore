@@ -109,3 +109,44 @@ caddy_config/
 
 ## Claude
 .claude/
+
+## Research paper & data (kept locally, not committed)
+EntireInfo.MD
+paper/
+paper-data/
+paper-data-requirements.md
+
+## Traffic simulator / manual e2e harness (not part of shippable project)
+testing/
+!testing/README.md
+
+## Research / eval / debug scripts (dataset-specific, not part of the app).
+## We enumerate the ones to hide instead of blanket-hiding scripts/ so that
+## real operational tools like admin_verify.py can still be tracked.
+scripts/download_openi.py
+scripts/embed_openi.py
+scripts/eval_feature_a.py
+scripts/eval_feature_a_v2.py
+scripts/eval_feature_b.py
+scripts/eval_feature_c_pubmedclip.py
+scripts/eval_latency.py
+scripts/train_feature_c_projector.py
+scripts/upsert_openi_to_qdrant.py
+scripts/verify_openi_qdrant.py
+
+## One-off probe / diagnose / model scripts left at backend/ root
+/backend/ai_flows.py
+/backend/diagnose*.py
+/backend/embed_openi.py
+/backend/eval_*.py
+/backend/full_flows.py
+/backend/link_disambiguation.py
+/backend/link_walkin.py
+/backend/model_*.py
+/backend/ocr_pipeline.py
+/backend/probe_*.py
+/backend/trace_*.py
+/backend/train_feature_c_projector.py
+/backend/ui_pending_matches.py
+/backend/upsert_openi_to_qdrant.py
+/backend/verify_openi_qdrant.py

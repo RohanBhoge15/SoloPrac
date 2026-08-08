@@ -15,20 +15,31 @@
 
 from __future__ import annotations
 
-import uuid
+import asyncio
 import json
 import logging
-import asyncio
-from datetime import datetime, timezone, date, timedelta
-from typing import Any, Dict, List, Optional, Set
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status, Response
-from sqlalchemy import select, func, text
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, status
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Doctor, Patient, User, Appointment, PatientNotification, PrescriptionBox, Invoice, Certificate, PatientVersion
-from app.dependencies import get_optional_doctor, get_current_user
-from app.services.calendar_service import find_available_slots, create_appointment
+from app.dependencies import get_current_user
+from app.models import (
+    Appointment,
+    Certificate,
+    Doctor,
+    Invoice,
+    Patient,
+    PatientNotification,
+    PatientVersion,
+    PrescriptionBox,
+    User,
+)
+from app.services.calendar_service import create_appointment, find_available_slots
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -49,12 +60,14 @@ router.include_router(patient_router)
 
 # ─── Cookie helpers for patient auth ───
 
+
 def _set_patient_cookies(response: Response, access_token: str) -> None:
     """Set HttpOnly, Secure, SameSite=Lax cookies for patient access token.
-    
+
     Cookies are scoped to /api path so they're only sent to API endpoints.
     """
     from app.config import get_settings
+
     settings = get_settings()
     cookie_kwargs = {
         "httponly": True,
@@ -69,6 +82,7 @@ def _set_patient_cookies(response: Response, access_token: str) -> None:
 def _clear_patient_cookies(response: Response) -> None:
     """Clear patient auth cookies on logout."""
     from app.config import get_settings
+
     settings = get_settings()
     cookie_kwargs = {
         "httponly": True,
@@ -77,6 +91,18 @@ def _clear_patient_cookies(response: Response) -> None:
         "path": "/api",
     }
     response.delete_cookie("patient_token", **cookie_kwargs)
+
+
+async def _link_walkins_to_user(db: AsyncSession, user: User) -> int:
+    """Auto-link every STRONG walk-in match for this user (phone + dob or
+    phone + fuzzy-name). Weak (phone-only) matches are left unlinked and
+    surface on the pending-matches list, where the user can self-claim.
+
+    Returns count of walk-ins auto-linked.
+    """
+    from app.services.linking import strong_link_walkins_to_user
+
+    return await strong_link_walkins_to_user(db, user)
 
 
 # ─── WebSocket Manager (Redis-backed for multi-worker) ──────────────────────────────
@@ -106,7 +132,9 @@ class ConnectionManager:
         if self._redis is None:
             try:
                 import redis.asyncio as aioredis
+
                 from app.config import settings
+
                 self._redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
             except Exception:
                 logger.warning("Redis not available — WebSocket notifications limited to local worker")
@@ -169,7 +197,9 @@ class ConnectionManager:
     async def connect(self, patient_id: str, websocket: WebSocket):
         await websocket.accept()
         self._patient_connections.setdefault(patient_id, []).append(websocket)
-        logger.info("WebSocket connected: patient=%s (%d active)", patient_id, len(self._patient_connections[patient_id]))
+        logger.info(
+            "WebSocket connected: patient=%s (%d active)", patient_id, len(self._patient_connections[patient_id])
+        )
 
     async def disconnect(self, patient_id: str, websocket: WebSocket):
         self._drop(self._patient_connections, patient_id, websocket)
@@ -250,16 +280,22 @@ ws_manager = ConnectionManager()
 async def patient_websocket(patient_id: str, websocket: WebSocket, token: str = Query("")):
     """WebSocket for real-time patient notifications.
 
-    Connect: ws://host/api/v1/ws/patient/{patient_id}?token=JWT_TOKEN
-    The patient JWT token (user-level) is required as a query parameter.
-    Verifies that the patient_id in the URL belongs to the authenticated user.
-    Events received:
-      {"type": "notification", "data": {...}}
-      {"type": "ping"}
+    Auth: reads JWT from `?token=` query param OR the `patient_token` HttpOnly cookie
+    (same cookie that the HTTP APIs use). This matches the browser flow where the
+    cookie is already set by /public/auth/login and JS cannot read it to append
+    to the WS URL.
     """
     # Verify patient JWT token before accepting connection
-    from jose import jwt as _jwt, JWTError as _JWTError
+    from jose import JWTError as _JWTError
+    from jose import jwt as _jwt
+
     from app.config import settings as _settings
+
+    # Cookie fallback — browsers automatically attach the same-origin cookie on
+    # the WS handshake.
+    if not token:
+        token = websocket.cookies.get("patient_token", "") or ""
+
     try:
         payload = _jwt.decode(token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM])
         if payload.get("type") != "patient":
@@ -293,7 +329,8 @@ async def patient_websocket(patient_id: str, websocket: WebSocket, token: str = 
 
 # ─── Public: Patient Auth ────────────────────────────
 
-@public_router.post("/auth/register")
+
+@public_router.post("/auth/register", status_code=201)
 async def patient_register(
     response: Response,
     body: dict,
@@ -303,14 +340,17 @@ async def patient_register(
 
     Sets JWT patient token as HttpOnly cookie.
     """
-    from app.schemas import UserRegister
-    from passlib.context import CryptContext
     import hashlib
+
+    from passlib.context import CryptContext
+
+    from app.schemas import UserRegister
 
     try:
         data = UserRegister(**body)
     except Exception as exc:
         from pydantic import ValidationError
+
         if isinstance(exc, ValidationError):
             raise HTTPException(status_code=422, detail=exc.errors())
         raise
@@ -326,6 +366,7 @@ async def patient_register(
     phone_hash = hashlib.sha256(data.phone.encode("utf-8")).hexdigest()
 
     from datetime import datetime as _dt
+
     dob_parsed = None
     if data.dob:
         try:
@@ -347,7 +388,19 @@ async def patient_register(
     await db.commit()
     await db.refresh(user)
 
+    # Backfill any pre-existing walk-in Patient rows whose phone matches this
+    # user, so a doctor's manual entry auto-connects on signup.
+    linked_count = 0
+    try:
+        linked_count = await _link_walkins_to_user(db, user)
+        if linked_count:
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Walk-in auto-link failed for user %s: %s", user.id, exc)
+        await db.rollback()
+
     from app.dependencies import create_user_token
+
     token = create_user_token(str(user.id))
 
     _set_patient_cookies(response, token)
@@ -355,7 +408,12 @@ async def patient_register(
     return {
         "status": "ok",
         "user_id": str(user.id),
+        "email": user.email,
         "profile_complete": False,
+        "linked_walkins": linked_count,
+        "access_token": token,
+        "token": token,
+        "token_type": "bearer",
     }
 
 
@@ -366,16 +424,18 @@ async def patient_login(
     db: AsyncSession = Depends(get_db),
 ):
     """Login patient with email and password.
-    
+
     Sets HttpOnly cookie instead of returning token in body.
     """
-    from app.schemas import UserLogin
     from passlib.context import CryptContext
+
+    from app.schemas import UserLogin
 
     try:
         data = UserLogin(**body)
     except Exception as exc:
         from pydantic import ValidationError
+
         if isinstance(exc, ValidationError):
             raise HTTPException(status_code=422, detail=exc.errors())
         raise
@@ -390,7 +450,19 @@ async def patient_login(
     if not pwd_context.verify(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    # Re-run walk-in linking on every login so that doctors added AFTER signup
+    # also get auto-connected. Cheap when no candidates exist (SELECT + empty
+    # loop); avoids the "I signed up but doctor added me later" gap.
+    try:
+        n = await _link_walkins_to_user(db, user)
+        if n:
+            await db.commit()
+    except Exception as exc:
+        logger.warning("login walk-in link failed for user %s: %s", user.id, exc)
+        await db.rollback()
+
     from app.dependencies import create_user_token
+
     token = create_user_token(str(user.id))
 
     profile_complete = bool(user.blood_group)
@@ -400,7 +472,11 @@ async def patient_login(
     return {
         "status": "ok",
         "user_id": str(user.id),
+        "email": user.email,
         "profile_complete": profile_complete,
+        "access_token": token,
+        "token": token,
+        "token_type": "bearer",
     }
 
 
@@ -420,12 +496,15 @@ async def patient_dev_login(response: Response, db: AsyncSession = Depends(get_d
     Sets HttpOnly cookie.
     """
     from app.config import settings as _settings
+
     if not _settings.DEBUG:
         raise HTTPException(status_code=404, detail="Not found")
 
-    from app.dependencies import create_user_token
-    from passlib.context import CryptContext
     import hashlib
+
+    from passlib.context import CryptContext
+
+    from app.dependencies import create_user_token
 
     DEV_EMAIL = "dev.patient@soloprac.local"
     DEV_PASSWORD = "devpass123"
@@ -451,10 +530,24 @@ async def patient_dev_login(response: Response, db: AsyncSession = Depends(get_d
         await db.commit()
         await db.refresh(user)
 
+    # Backfill any walk-ins matching this dev user's phone, so that a doctor
+    # who added a walk-in with phone 9999999999 sees it linked next dev-login.
+    try:
+        n = await _link_walkins_to_user(db, user)
+        if n:
+            await db.commit()
+    except Exception as exc:
+        logger.warning("dev-login walk-in link failed: %s", exc)
+        await db.rollback()
+
     profile_complete = bool(user.blood_group)
+    token = create_user_token(str(user.id))
+    # Actually set the HttpOnly cookie so subsequent authenticated requests work
+    # (the JS layer cannot read HttpOnly cookies to attach as Authorization).
+    _set_patient_cookies(response, token)
 
     return {
-        "token": create_user_token(str(user.id)),
+        "token": token,
         "user_id": str(user.id),
         "patient_id": str(user.id),  # backward compat for existing frontend
         "token_type": "bearer",
@@ -463,6 +556,7 @@ async def patient_dev_login(response: Response, db: AsyncSession = Depends(get_d
 
 
 # ─── Public: Doctor Search ──────────────────────────
+
 
 @public_router.get("/doctors/search")
 async def search_doctors(
@@ -499,10 +593,10 @@ async def search_doctors(
         query = query.where(Doctor.pincode == pincode)
     if q:
         query = query.where(
-            Doctor.name.ilike(f"%{q}%") |
-            Doctor.clinic_name.ilike(f"%{q}%") |
-            Doctor.clinic_address.ilike(f"%{q}%") |
-            Doctor.speciality.ilike(f"%{q}%")
+            Doctor.name.ilike(f"%{q}%")
+            | Doctor.clinic_name.ilike(f"%{q}%")
+            | Doctor.clinic_address.ilike(f"%{q}%")
+            | Doctor.speciality.ilike(f"%{q}%")
         )
 
     query = query.limit(limit)
@@ -604,8 +698,8 @@ async def _match_walkin_by_phone(
 
     Returns the matched Patient (now linked), or None if no match found.
     """
-    from app.utils.phone import phones_match
     from app.services.encryption import decrypt_value
+    from app.utils.phone import phones_match
 
     if not user.phone:
         return None
@@ -678,10 +772,13 @@ async def patient_book_appointment(
 
     # Find or create Patient record for this user under this doctor
     result = await db.execute(
-        select(Patient).where(
+        select(Patient)
+        .where(
             Patient.user_id == user.id,
             Patient.doctor_id == doctor_uuid,
-        ).order_by(Patient.created_at.desc()).limit(1)
+        )
+        .order_by(Patient.created_at.desc())
+        .limit(1)
     )
     patient = result.scalar_one_or_none()
     if not patient:
@@ -750,7 +847,9 @@ async def patient_book_appointment(
             await db.flush()
             logger.info(
                 "Created patient %s for user %s under doctor %s (first booking)",
-                patient.id, user.id, doctor_uuid,
+                patient.id,
+                user.id,
+                doctor_uuid,
             )
         else:
             # ── Walk-in patient found — link to this user ──
@@ -758,7 +857,9 @@ async def patient_book_appointment(
             await db.flush()
             logger.info(
                 "Linked walk-in patient %s to user %s (phone match under doctor %s)",
-                patient.id, user.id, doctor_uuid,
+                patient.id,
+                user.id,
+                doctor_uuid,
             )
 
     try:
@@ -781,9 +882,26 @@ async def patient_book_appointment(
 @patient_router.get("/me/profile")
 async def get_patient_profile(
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Get current user's profile including medical details."""
+    """Get current user's profile including medical details.
+
+    Also returns pending_matches_count so the frontend can show a "N clinic
+    records match your phone — tap to review" banner without an extra roundtrip.
+    """
     profile_complete = bool(user.blood_group)
+
+    # Count weak-match walk-ins the user hasn't claimed/rejected yet.
+    # Kept cheap — same scan the /pending-matches endpoint does.
+    pending_count = 0
+    try:
+        from app.services.linking import find_candidates_for_user
+
+        matches = await find_candidates_for_user(db, user)
+        pending_count = sum(1 for m in matches if not m.strong)
+    except Exception as exc:
+        logger.debug("pending_matches_count failed: %s", exc)
+
     return {
         "id": str(user.id),
         "email": user.email,
@@ -801,6 +919,7 @@ async def get_patient_profile(
         "emergency_contact_phone": user.emergency_contact_phone,
         "insurance_info": user.insurance_info,
         "profile_complete": profile_complete,
+        "pending_matches_count": pending_count,
     }
 
 
@@ -811,8 +930,9 @@ async def update_patient_profile(
     db: AsyncSession = Depends(get_db),
 ):
     """Update user profile fields — medical details, contact info, etc."""
-    from app.schemas import UserUpdate
     from pydantic import ValidationError
+
+    from app.schemas import UserUpdate
 
     try:
         update_data = UserUpdate(**body)
@@ -823,6 +943,7 @@ async def update_patient_profile(
     for field, value in update_data.model_dump(exclude_none=True).items():
         if field == "dob" and value:
             from datetime import datetime as _dt
+
             try:
                 value = _dt.fromisoformat(value)
             except ValueError:
@@ -843,6 +964,7 @@ async def update_patient_profile(
         "updated_fields": updated_fields,
         "profile_complete": profile_complete,
     }
+
 
 @patient_router.get("/me/inbox")
 async def patient_inbox(
@@ -923,34 +1045,43 @@ async def patient_reports(
         return {"prescriptions": [], "invoices": [], "certificates": []}
 
     # Prescriptions
-    rx_result = await db.execute(
-        select(PrescriptionBox).where(PrescriptionBox.patient_id.in_(patient_ids))
-    )
+    rx_result = await db.execute(select(PrescriptionBox).where(PrescriptionBox.patient_id.in_(patient_ids)))
     rxs = rx_result.scalars().all()
 
     # Invoices
-    inv_result = await db.execute(
-        select(Invoice).where(Invoice.patient_id.in_(patient_ids))
-    )
+    inv_result = await db.execute(select(Invoice).where(Invoice.patient_id.in_(patient_ids)))
     invs = inv_result.scalars().all()
 
     # Certificates
-    cert_result = await db.execute(
-        select(Certificate).where(Certificate.patient_id.in_(patient_ids))
-    )
+    cert_result = await db.execute(select(Certificate).where(Certificate.patient_id.in_(patient_ids)))
     certs = cert_result.scalars().all()
 
     return {
         "prescriptions": [
-            {"id": str(r.id), "created_at": r.created_at.isoformat() if r.created_at else None, "has_pdf": bool(r.pdf_path)}
+            {
+                "id": str(r.id),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "has_pdf": bool(r.pdf_path),
+            }
             for r in rxs
         ],
         "invoices": [
-            {"id": str(i.id), "invoice_number": i.invoice_number, "total": i.total, "status": i.status, "has_pdf": bool(i.pdf_path)}
+            {
+                "id": str(i.id),
+                "invoice_number": i.invoice_number,
+                "total": i.total,
+                "status": i.status,
+                "has_pdf": bool(i.pdf_path),
+            }
             for i in invs
         ],
         "certificates": [
-            {"id": str(c.id), "cert_type": c.cert_type, "verification_code": c.verification_code, "has_pdf": bool(c.pdf_path)}
+            {
+                "id": str(c.id),
+                "cert_type": c.cert_type,
+                "verification_code": c.verification_code,
+                "has_pdf": bool(c.pdf_path),
+            }
             for c in certs
         ],
     }
@@ -977,14 +1108,27 @@ async def patient_download_prescription_pdf(
     if not rx or not rx.pdf_path:
         raise HTTPException(status_code=404, detail="Prescription PDF not found")
 
-    from fastapi.responses import RedirectResponse
-    presigned_url = await storage_service.get_presigned_url("pdfs", rx.pdf_path)
-    if presigned_url:
-        return RedirectResponse(url=presigned_url, status_code=302)
+    # Serve the PDF bytes directly so clients (browser/portal) can download it
+    from fastapi.responses import Response
+
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", rx.pdf_path)
+    except Exception as exc:
+        logger.warning("Failed to fetch prescription PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="prescription_{prescription_id}.pdf"'},
+        )
 
     import os
+
     if os.path.isabs(rx.pdf_path) and os.path.exists(rx.pdf_path):
         from fastapi.responses import FileResponse
+
         return FileResponse(rx.pdf_path, media_type="application/pdf", filename=f"prescription_{prescription_id}.pdf")
 
     raise HTTPException(status_code=404, detail="PDF file not found on storage")
@@ -1011,14 +1155,26 @@ async def patient_download_invoice_pdf(
     if not inv or not inv.pdf_path:
         raise HTTPException(status_code=404, detail="Invoice PDF not found")
 
-    from fastapi.responses import RedirectResponse
-    presigned_url = await storage_service.get_presigned_url("pdfs", inv.pdf_path)
-    if presigned_url:
-        return RedirectResponse(url=presigned_url, status_code=302)
+    from fastapi.responses import Response
+
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", inv.pdf_path)
+    except Exception as exc:
+        logger.warning("Failed to fetch invoice PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="invoice_{inv.invoice_number}.pdf"'},
+        )
 
     import os
+
     if os.path.isabs(inv.pdf_path) and os.path.exists(inv.pdf_path):
         from fastapi.responses import FileResponse
+
         return FileResponse(inv.pdf_path, media_type="application/pdf", filename=f"invoice_{inv.invoice_number}.pdf")
 
     raise HTTPException(status_code=404, detail="PDF file not found on storage")
@@ -1036,6 +1192,7 @@ async def patient_download_certificate_pdf(
         raise HTTPException(status_code=404, detail="No patient records found")
 
     from app.models import Certificate
+
     result = await db.execute(
         select(Certificate).where(
             Certificate.id == certificate_id,
@@ -1046,14 +1203,26 @@ async def patient_download_certificate_pdf(
     if not cert or not cert.pdf_path:
         raise HTTPException(status_code=404, detail="Certificate PDF not found")
 
-    from fastapi.responses import RedirectResponse
-    presigned_url = await storage_service.get_presigned_url("pdfs", cert.pdf_path)
-    if presigned_url:
-        return RedirectResponse(url=presigned_url, status_code=302)
+    from fastapi.responses import Response
+
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", cert.pdf_path)
+    except Exception as exc:
+        logger.warning("Failed to fetch certificate PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="certificate_{certificate_id}.pdf"'},
+        )
 
     import os
+
     if os.path.isabs(cert.pdf_path) and os.path.exists(cert.pdf_path):
         from fastapi.responses import FileResponse
+
         return FileResponse(cert.pdf_path, media_type="application/pdf", filename=f"certificate_{certificate_id}.pdf")
 
     raise HTTPException(status_code=404, detail="PDF file not found on storage")
@@ -1070,9 +1239,7 @@ async def patient_appointments(
         return []
 
     result = await db.execute(
-        select(Appointment)
-        .where(Appointment.patient_id.in_(patient_ids))
-        .order_by(Appointment.start_at.desc())
+        select(Appointment).where(Appointment.patient_id.in_(patient_ids)).order_by(Appointment.start_at.desc())
     )
     appts = result.scalars().all()
     return [
@@ -1089,6 +1256,114 @@ async def patient_appointments(
     ]
 
 
+# ─── Pending matches (walk-in disambiguation) ───
+
+
+@patient_router.get("/me/pending-matches")
+async def patient_pending_matches(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List walk-in Patient records that phone-match this user but are NOT
+    strong-linked (dob/name differ). The patient reviews these one at a time
+    on the portal and taps Claim or Not-me. Doctors never see this list.
+
+    Each entry includes the clinic name/doctor so the patient can recognise
+    the context (e.g. "Dr. Mehta's clinic added a record on 12 Mar").
+    """
+    from app.services.linking import find_candidates_for_user
+
+    matches = await find_candidates_for_user(db, user)
+    # Only weak candidates go here — strong ones were already linked automatically.
+    weak = [m for m in matches if not m.strong]
+    if not weak:
+        return []
+
+    doctor_ids = {m.patient.doctor_id for m in weak}
+    doctor_rows = await db.execute(select(Doctor).where(Doctor.id.in_(doctor_ids)))
+    doctor_map = {d.id: d for d in doctor_rows.scalars().all()}
+
+    out = []
+    for m in weak:
+        d = doctor_map.get(m.patient.doctor_id)
+        head = m.patient.head_version
+        demo = (head.state_jsonb or {}).get("demographics", {}) if head else {}
+        out.append(
+            {
+                "patient_id": str(m.patient.id),
+                "clinic_name": d.clinic_name if d else None,
+                "doctor_name": d.name if d else None,
+                "doctor_speciality": d.speciality if d else None,
+                "created_at": m.patient.created_at.isoformat() if m.patient.created_at else None,
+                # Show enough demographics to help the user recognise the record —
+                # never leak someone else's phone number.
+                "record_name": demo.get("name"),
+                "record_dob": demo.get("dob"),
+                "record_gender": demo.get("gender"),
+            }
+        )
+    return out
+
+
+@patient_router.post("/me/claim/{patient_id}")
+async def patient_claim_walkin(
+    patient_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Patient confirms 'yes, that walk-in is me'. Sets Patient.user_id.
+
+    Only walk-ins whose phone matches this user AND are still unlinked can
+    be claimed — protects against a malicious user trying to grab records
+    that belong to a different phone number.
+    """
+    from app.services.linking import find_candidates_for_user
+
+    result = await db.execute(select(Patient).where(Patient.id == patient_id))
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    if patient.user_id is not None:
+        raise HTTPException(status_code=409, detail="Already claimed")
+
+    # Verify eligibility via the same matcher — cheap, and prevents any bypass.
+    matches = await find_candidates_for_user(db, user)
+    eligible = {m.patient.id for m in matches}
+    if patient.id not in eligible:
+        raise HTTPException(status_code=403, detail="Not eligible to claim this record")
+
+    patient.user_id = user.id
+    await db.commit()
+    logger.info("User %s manually claimed walk-in %s", user.id, patient.id)
+    return {"status": "ok", "patient_id": str(patient.id)}
+
+
+@patient_router.post("/me/reject/{patient_id}")
+async def patient_reject_walkin(
+    patient_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Patient says 'no, that walk-in isn't me'. Adds this user to the
+    patient's rejected list so we never re-surface it to them.
+    """
+    result = await db.execute(select(Patient).where(Patient.id == patient_id))
+    patient = result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    if patient.user_id is not None:
+        # Already claimed by someone (possibly this same user); nothing to do.
+        return {"status": "ok", "patient_id": str(patient.id)}
+
+    existing = list(patient.link_rejected_by_user_ids or [])
+    if user.id not in existing:
+        existing.append(user.id)
+        patient.link_rejected_by_user_ids = existing
+        await db.commit()
+    logger.info("User %s rejected walk-in %s", user.id, patient.id)
+    return {"status": "ok", "patient_id": str(patient.id)}
+
+
 @patient_router.get("/me/weekly-report/pdf")
 async def patient_weekly_report_pdf(
     layout: str = Query("family_friendly", description="Layout: clinical, executive, family_friendly"),
@@ -1097,8 +1372,8 @@ async def patient_weekly_report_pdf(
     db: AsyncSession = Depends(get_db),
 ):
     """Download patient's weekly clinical report as PDF (patient portal)."""
-    from app.services.weekly_report import WeeklyReportService, REPORT_LAYOUTS
     from app.services.pdf_generator import pdf_generator
+    from app.services.weekly_report import REPORT_LAYOUTS, WeeklyReportService
 
     if layout not in REPORT_LAYOUTS:
         raise HTTPException(status_code=400, detail=f"Invalid layout. Choose from: {REPORT_LAYOUTS}")
@@ -1125,15 +1400,18 @@ async def patient_weekly_report_pdf(
     # Generate QR verification code for the patient report
     try:
         from app.services.pdf_security import PDFSecurityService
+
         pss = PDFSecurityService()
         verification_code = f"WR-{uuid.uuid4().hex[:8].upper()}-{datetime.now(timezone.utc).strftime('%Y%m')}"
         verify_url = f"http://{('localhost')}/api/v1/certificates/verify/{verification_code}"
         qr_path = await pss.generate_qr_code(verify_url, size=80)
         import base64
+
         with open(qr_path, "rb") as f:
             qr_b64 = base64.b64encode(f.read()).decode()
         qr_data_uri = f"data:image/png;base64,{qr_b64}"
         import os as _os
+
         try:
             _os.remove(qr_path)
         except OSError:
@@ -1147,6 +1425,7 @@ async def patient_weekly_report_pdf(
 
     # Generate PDF
     import uuid
+
     patient_name = report.get("patient_name", f"Patient {str(patient.id)[:8]}")
     filename = f"weekly_report_{patient.id}_{layout}_{uuid.uuid4().hex[:8]}.pdf"
 
@@ -1156,38 +1435,67 @@ async def patient_weekly_report_pdf(
         doctor_id=patient.doctor_id,
     )
 
-    # Read and return PDF
-    import os
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
+    if not pdf_path:
+        raise HTTPException(status_code=404, detail="Report PDF could not be generated")
 
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(pdf_bytes)),
-        },
-    )
+    # Serve the PDF bytes directly so clients (browser/portal) can download it
+    from fastapi.responses import Response
+
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", pdf_path)
+    except Exception as exc:
+        logger.warning("Failed to fetch weekly report PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    import os
+
+    if os.path.isabs(pdf_path) and os.path.exists(pdf_path):
+        from fastapi.responses import FileResponse
+
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=filename,
+        )
+
+    raise HTTPException(status_code=404, detail="Report PDF file not found on storage")
 
 
 # ── WebSocket endpoints (mounted under api_router) ──
+
 
 @router.websocket("/ws/doctor/{doctor_id}")
 async def doctor_websocket(doctor_id: str, websocket: WebSocket, token: str = Query("")):
     """WebSocket for doctor real-time alerts (risk alerts, notifications).
 
-    Connect: ws://host/api/v1/ws/doctor/{doctor_id}?token=JWT_TOKEN
-    The doctor JWT token is required as a query parameter.
-    Verifies that the doctor_id in the URL matches the authenticated doctor.
+    Auth: reads JWT from `?token=` query param OR the `access_token` HttpOnly cookie
+    (same cookie that the HTTP APIs use).
 
     Registers with ws_manager so background jobs (Feature E risk scan) can
     push alerts here via ws_manager.notify_doctor.
     """
-    from jose import jwt as _jwt, JWTError as _JWTError
+    from jose import JWTError as _JWTError
+    from jose import jwt as _jwt
+
     from app.config import settings as _settings
+
+    # Cookie fallback (browsers auto-send same-origin cookies with WS handshake)
+    if not token:
+        token = websocket.cookies.get("access_token", "") or ""
+
     try:
         payload = _jwt.decode(token, _settings.JWT_SECRET_KEY, algorithms=[_settings.JWT_ALGORITHM])
+        # Access OR refresh both acceptable — doctor JWTs are type=access|refresh.
+        if payload.get("type") == "patient":
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
         token_sub = payload.get("sub")
         if not token_sub or token_sub != doctor_id:
             await websocket.close(code=4001, reason="Unauthorized")
@@ -1218,13 +1526,12 @@ async def websocket_stats():
 
 # ─── Helper: resolve User → Patient IDs across doctors ───
 
+
 async def _get_user_patient_ids(db: AsyncSession, user_id: UUID) -> List[UUID]:
     """Return all Patient IDs belonging to this user across all doctors.
 
     A user can be a patient at multiple clinics — this collects all of them.
     Returns an empty list if the user hasn't been seen by any doctor yet.
     """
-    result = await db.execute(
-        select(Patient.id).where(Patient.user_id == user_id)
-    )
+    result = await db.execute(select(Patient.id).where(Patient.user_id == user_id))
     return list(result.scalars().all())

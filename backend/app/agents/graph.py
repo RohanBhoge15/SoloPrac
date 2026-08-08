@@ -16,17 +16,17 @@ Usage:
 
 from __future__ import annotations
 
-import uuid
-import json
 import logging
+import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, Optional
 
-from app.agents.state import AgentState, AgentIntent, AgentToolCall, create_initial_state
+from app.agents.planner import PlanCritic, SelfPlanner
 from app.agents.router import IntentRouter
+from app.agents.state import AgentIntent, AgentState, AgentToolCall, create_initial_state
+from app.agents.synthesizer import MaverickSynthesizer
 from app.agents.tools import tool_registry
-from app.agents.planner import SelfPlanner, PlanCritic
-from app.services.langfuse import langfuse_client, trace_agent_step, trace_llm_call
+from app.services.langfuse import langfuse_client, trace_agent_step
 from app.services.pii import get_patient_name_for_reassociation, reassociate_pseudonym, validate_citations
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,9 @@ class AgentGraph:
         self.router = IntentRouter()
         self.planner = SelfPlanner()
         self.critic = PlanCritic()
+        # Streaming synthesizer for the context-only response path (P0.4).
+        # We reuse this instance so the AsyncOpenAI client's HTTP pool stays warm.
+        self.synthesizer = MaverickSynthesizer()
 
     def _add_trace(self, state: AgentState, event: str):
         state.setdefault("trace_events", []).append(event)
@@ -53,7 +56,8 @@ class AgentGraph:
         self._add_trace(state, f"Routing query: '{state['user_query'][:60]}...'")
 
         async with trace_agent_step(
-            "router", state.get("trace_id", str(uuid.uuid4())),
+            "router",
+            state.get("trace_id", str(uuid.uuid4())),
             doctor_id=str(state.get("doctor_id")) if state.get("doctor_id") else None,
             patient_id=str(state.get("patient_id")) if state.get("patient_id") else None,
             input_data={"query": state["user_query"]},
@@ -74,7 +78,8 @@ class AgentGraph:
         self._add_trace(state, f"Self-planning for {state['intent'].value}")
 
         async with trace_agent_step(
-            "planner", trace_id,
+            "planner",
+            trace_id,
             doctor_id=str(state.get("doctor_id")) if state.get("doctor_id") else None,
             patient_id=str(state.get("patient_id")) if state.get("patient_id") else None,
             input_data={"intent": state["intent"].value, "query": state["user_query"][:200]},
@@ -95,21 +100,125 @@ class AgentGraph:
             )
 
             # Log plan for paper evaluation
-            logger.info("Feature B plan: goal=%s steps=%d reasoning=%s",
-                         plan["goal"][:100], len(plan["steps"]), plan["reasoning"][:200])
+            logger.info(
+                "Feature B plan: goal=%s steps=%d reasoning=%s",
+                plan["goal"][:100],
+                len(plan["steps"]),
+                plan["reasoning"][:200],
+            )
 
             if span:
-                span.set_output({
-                    "goal": plan["goal"],
-                    "steps": plan.get("steps", []),
-                    "budget_tokens": plan.get("budget_tokens", 4000),
-                    "reasoning": plan.get("reasoning", ""),
-                })
+                span.set_output(
+                    {
+                        "goal": plan["goal"],
+                        "steps": plan.get("steps", []),
+                        "budget_tokens": plan.get("budget_tokens", 4000),
+                        "reasoning": plan.get("reasoning", ""),
+                    }
+                )
 
         return "execute"
 
     async def _executor_node(self, state: AgentState) -> str:
-        """Execute the current step."""
+        """Execute one wave of the plan DAG in parallel (P3.30).
+
+        Runs every step whose dependencies are already satisfied concurrently
+        via `asyncio.gather`, then returns "execute" if more waves remain or
+        "critic" if the plan is drained.
+        """
+        import asyncio as _asyncio
+
+        plan = state.get("plan", [])
+        trace_id = state.get("trace_id", str(uuid.uuid4()))
+        executed_ids: set = state.setdefault("executed_step_ids", set())
+
+        # Pick the next wave of ready steps.
+        ready = []
+        for step in plan:
+            sid = step.get("id")
+            if sid in executed_ids:
+                continue
+            deps = step.get("depends_on", []) or []
+            if all(d in executed_ids for d in deps):
+                ready.append(step)
+
+        if not ready:
+            self._add_trace(state, "Executor: no ready steps left")
+            return "critic"
+
+        self._add_trace(
+            state,
+            f"Executor: {len(ready)} step(s) in parallel: " + ", ".join(s.get("tool", "?") for s in ready),
+        )
+
+        async def _run_one(step: dict):
+            tool_name = step["tool"]
+            tool_args = dict(step.get("args") or {})
+            if state.get("doctor_id"):
+                tool_args.setdefault("doctor_id", str(state["doctor_id"]))
+            # Feed dependency results into tools that expect them.
+            for dep_id in step.get("depends_on", []) or []:
+                for tc in state.get("tool_calls", []):
+                    if tc.get("step_id") == dep_id and tc.get("result"):
+                        if tool_name == "synthesize_response":
+                            tool_args["context"] = tc["result"]
+                        break
+
+            tool_fn = tool_registry.get(tool_name)
+            if tool_fn is None:
+                return step, tool_name, tool_args, None, f"Tool '{tool_name}' not found"
+
+            try:
+                async with trace_agent_step(
+                    f"tool:{tool_name}",
+                    trace_id,
+                    doctor_id=str(state.get("doctor_id")) if state.get("doctor_id") else None,
+                    patient_id=str(state.get("patient_id")) if state.get("patient_id") else None,
+                    input_data={"tool": tool_name, "args": tool_args},
+                ) as span:
+                    result = await tool_fn(**tool_args)
+                    if span:
+                        span.set_output({"status": "ok", "result_preview": str(result)[:200]})
+                return step, tool_name, tool_args, result, None
+            except Exception as exc:
+                logger.error("Tool %s failed: %s", tool_name, exc)
+                return step, tool_name, tool_args, None, str(exc)
+
+        outcomes = await _asyncio.gather(*(_run_one(s) for s in ready))
+
+        any_error = False
+        for step, tool_name, tool_args, result, err in outcomes:
+            tc = AgentToolCall(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result=result,
+                error=err,
+            )
+            tc["step_id"] = step.get("id")
+            state["tool_calls"].append(tc)
+            if err:
+                any_error = True
+                state["error_count"] = state.get("error_count", 0) + 1
+                state["trace_events"].append(f"Executor: {tool_name} ERROR — {str(err)[:100]}")
+            else:
+                state["trace_events"].append(f"Executor: {tool_name} OK")
+                if tool_name == "retrieve_patient_context" and result:
+                    state["retrieved_context"] = result
+                    state["citations"] = result.get("citations", [])
+                elif tool_name in ("analyze_image", "compare_images"):
+                    state["analysis_result"] = result
+            executed_ids.add(step.get("id"))
+
+        state["current_step"] = len(executed_ids)
+
+        if any_error:
+            return "critic"
+        remaining = [s for s in plan if s.get("id") not in executed_ids]
+        return "execute" if remaining else "critic"
+
+    async def _executor_node_LEGACY_UNUSED(self, state: AgentState) -> str:
+        """(Superseded by DAG executor above — kept temporarily as a reference
+        for the sequential shape. Safe to delete after P3.30 is verified.)"""
         plan = state.get("plan", [])
         step_idx = state["current_step"]
         trace_id = state.get("trace_id", str(uuid.uuid4()))
@@ -140,9 +249,14 @@ class AgentGraph:
         tool_fn = tool_registry.get(tool_name)
         if tool_fn is None:
             error_msg = f"Tool '{tool_name}' not found"
-            state["tool_calls"].append(AgentToolCall(
-                tool_name=tool_name, tool_args=tool_args, result=None, error=error_msg,
-            ))
+            state["tool_calls"].append(
+                AgentToolCall(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    result=None,
+                    error=error_msg,
+                )
+            )
             state["error_count"] = state.get("error_count", 0) + 1
             state["trace_events"].append(f"Executor: {tool_name} FAILED — {error_msg}")
             state["current_step"] = step_idx + 1
@@ -150,16 +264,22 @@ class AgentGraph:
 
         # Trace tool execution
         async with trace_agent_step(
-            f"tool:{tool_name}", trace_id,
+            f"tool:{tool_name}",
+            trace_id,
             doctor_id=str(state.get("doctor_id")) if state.get("doctor_id") else None,
             patient_id=str(state.get("patient_id")) if state.get("patient_id") else None,
             input_data={"tool": tool_name, "args": tool_args},
         ) as span:
             try:
                 result = await tool_fn(**tool_args)
-                state["tool_calls"].append(AgentToolCall(
-                    tool_name=tool_name, tool_args=tool_args, result=result, error=None,
-                ))
+                state["tool_calls"].append(
+                    AgentToolCall(
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        result=result,
+                        error=None,
+                    )
+                )
                 state["trace_events"].append(f"Executor: {tool_name} OK")
 
                 # Store context for downstream use
@@ -174,9 +294,14 @@ class AgentGraph:
 
             except Exception as exc:
                 logger.error("Tool %s failed: %s", tool_name, exc)
-                state["tool_calls"].append(AgentToolCall(
-                    tool_name=tool_name, tool_args=tool_args, result=None, error=str(exc),
-                ))
+                state["tool_calls"].append(
+                    AgentToolCall(
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        result=None,
+                        error=str(exc),
+                    )
+                )
                 state["error_count"] = state.get("error_count", 0) + 1
                 state["trace_events"].append(f"Executor: {tool_name} ERROR \u2014 {str(exc)[:100]}")
                 if span:
@@ -233,8 +358,7 @@ class AgentGraph:
                     new_steps.append(step)
                 else:
                     # Check if the step had an error - if so, allow retry
-                    failed = any(tc.get("tool_name") == step.get("tool") and tc.get("error") 
-                                 for tc in tool_calls)
+                    failed = any(tc.get("tool_name") == step.get("tool") and tc.get("error") for tc in tool_calls)
                     if failed:
                         new_steps.append(step)
 
@@ -253,10 +377,20 @@ class AgentGraph:
         return "synthesize"
 
     async def _synthesizer_node(self, state: AgentState) -> str:
-        """Generate the final response."""
+        """Decide the response source. Actual token emission happens in run_stream
+        so we can stream from Maverick directly when appropriate (P0.4).
+
+        Three response sources, in preference order:
+          1. A tool already produced the final answer (synthesize_response
+             tool with a non-empty result) — reuse it verbatim.
+          2. We have retrieval context and Maverick is configured — set a
+             streaming flag; run_stream will call synthesize_stream() and
+             yield tokens as they arrive from NIM/Groq.
+          3. Fallback — the static context summary in _build_response.
+        """
         self._add_trace(state, "Synthesizing final response")
 
-        # Check if a tool already produced the response
+        # 1. Tool-produced answer takes priority.
         for tc in reversed(state.get("tool_calls", [])):
             if tc["tool_name"] == "synthesize_response" and tc["result"]:
                 result = tc["result"]
@@ -265,17 +399,24 @@ class AgentGraph:
                 else:
                     draft = str(result)
                 if draft:
-                    # Validate citations against retrieved versions
                     citations = state.get("citations", [])
                     if citations and draft:
                         draft = validate_citations(draft, citations)
                         state["trace_events"].append("Synthesizer: citations validated")
                     state["draft"] = draft
+                    state["stream_from_llm"] = False
                     state["trace_events"].append("Synthesizer: used tool-generated response")
                     return "respond"
 
-        # Build from context
+        # 2. Stream directly from Maverick when possible — this is the P0.4 fast path.
+        if self.synthesizer._client is not None or self.synthesizer._groq_client is not None:
+            state["stream_from_llm"] = True
+            state["trace_events"].append("Synthesizer: streaming from LLM")
+            return "respond"
+
+        # 3. Static fallback — no LLM configured.
         state["draft"] = self._build_response(state)
+        state["stream_from_llm"] = False
         state["trace_events"].append("Synthesizer: context response built")
         return "respond"
 
@@ -286,7 +427,7 @@ class AgentGraph:
         citations = state.get("citations", [])
 
         if results:
-            lines = [f"Based on the patient record, here's what I found:\n"]
+            lines = ["Based on the patient record, here's what I found:\n"]
             for r in results[:5]:
                 vn = r.get("version_number", "?")
                 ts = str(r.get("timestamp", ""))[:10]
@@ -336,6 +477,26 @@ class AgentGraph:
         # Look up real patient name once for re-association (sub-millisecond)
         patient_name = await get_patient_name_for_reassociation(patient_id) if patient_id else None
 
+        # Create the parent Langfuse trace up-front so every child span
+        # (router / planner / executor / critic / synthesizer) has a real trace
+        # to attach to. Without this, Langfuse v2 SDK drops orphan spans
+        # silently — which is what happened before this line existed.
+        trace_id = str(uuid.uuid4())
+        state["trace_id"] = trace_id
+        langfuse_client.create_trace(
+            name="agent_run",
+            user_id=str(doctor_id),
+            session_id=conversation_id,
+            input_data={"query": user_query, "patient_id": str(patient_id) if patient_id else None},
+            metadata={
+                "doctor_id": str(doctor_id),
+                "patient_id": str(patient_id) if patient_id else None,
+                "conversation_id": conversation_id,
+            },
+            tags=["agent", "chat"],
+            trace_id=trace_id,
+        )
+
         node_sequence = ["router", "plan", "execute", "critic", "synthesize", "respond"]
         node_fns = {
             "router": self._router_node,
@@ -361,24 +522,54 @@ class AgentGraph:
 
                 next_node = await fn(state)
 
-                if current_node == "synthesize" and state.get("draft"):
-                    draft = state["draft"]
-                    # Re-associate pseudonym with real patient name
-                    if patient_name:
-                        draft = reassociate_pseudonym(draft, patient_name)
-                        state["draft"] = draft
-                    words = draft.split(" ")
-                    buffer = ""
-                    for word in words:
-                        test = buffer + (" " if buffer else "") + word
-                        if len(test) >= 80:
-                            if buffer:
-                                yield {"type": "token", "text": buffer + " "}
-                            buffer = word
-                        else:
-                            buffer = test
-                    if buffer:
-                        yield {"type": "token", "text": buffer}
+                # ─── P0.4: streaming synthesis emission ───
+                if current_node == "synthesize":
+                    if state.get("stream_from_llm"):
+                        # Stream tokens directly from Maverick as they arrive.
+                        # This makes first-token latency <2s instead of ~30s.
+                        context = state.get("retrieved_context") or {}
+                        patient_context = context.get("patient_context") if isinstance(context, dict) else None
+                        accumulated = ""
+                        try:
+                            async for chunk in self.synthesizer.synthesize_stream(
+                                query=state["user_query"],
+                                context=context,
+                                patient_context=patient_context,
+                            ):
+                                # Re-associate pseudonym token-by-token; safe on partial text.
+                                out = reassociate_pseudonym(chunk, patient_name) if patient_name else chunk
+                                accumulated += out
+                                yield {"type": "token", "text": out}
+                        except Exception as exc:
+                            logger.exception("Streaming synthesis failed: %s", exc)
+                            fallback = self._build_response(state)
+                            if patient_name:
+                                fallback = reassociate_pseudonym(fallback, patient_name)
+                            yield {"type": "token", "text": fallback}
+                            accumulated = fallback
+                        # Validate citations on the completed text.
+                        citations = state.get("citations", [])
+                        if citations and accumulated:
+                            accumulated = validate_citations(accumulated, citations)
+                        state["draft"] = accumulated
+                    elif state.get("draft"):
+                        # Non-streaming path: word-buffer the pre-computed draft.
+                        draft = state["draft"]
+                        if patient_name:
+                            draft = reassociate_pseudonym(draft, patient_name)
+                            state["draft"] = draft
+                        words = draft.split(" ")
+                        buffer = ""
+                        for word in words:
+                            test = buffer + (" " if buffer else "") + word
+                            if len(test) >= 80:
+                                if buffer:
+                                    yield {"type": "token", "text": buffer + " "}
+                                buffer = word
+                            else:
+                                buffer = test
+                        if buffer:
+                            yield {"type": "token", "text": buffer}
 
                 current_node = next_node
 
@@ -409,7 +600,8 @@ class AgentGraph:
             "replan_count": state.get("replan_count", 0),
             "took_ms": (
                 (datetime.now(timezone.utc) - state["started_at"]).total_seconds() * 1000
-                if state.get("started_at") else 0
+                if state.get("started_at")
+                else 0
             ),
         }
 

@@ -22,10 +22,8 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
-from datetime import datetime, timezone
+from typing import Dict
 
-from app.config import settings
 from app.agents.synthesizer import MaverickSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -151,6 +149,9 @@ async def generate_notification(
 
             raw = response.get("response", "")
             import json as _json
+            import re as _re
+
+            raw = _re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
             parsed = _json.loads(raw) if raw else {}
             subject = parsed.get("subject", "").strip()
             body = parsed.get("body", "").strip()
@@ -177,6 +178,7 @@ def _fallback(event_type: str, context: dict) -> Dict[str, str]:
 
 # ─── Patient Notifications CRUD ────────────────────
 
+
 async def create_patient_notification(
     db_session,
     patient_id,
@@ -188,8 +190,9 @@ async def create_patient_notification(
     meta: dict = None,
 ) -> dict:
     """Create a patient notification record and push via WebSocket."""
-    from app.models import PatientNotification
     import uuid
+
+    from app.models import PatientNotification
 
     notification = PatientNotification(
         id=uuid.uuid4(),
@@ -208,6 +211,7 @@ async def create_patient_notification(
     # Push via WebSocket
     try:
         from app.routers.portal import ws_manager
+
         payload = {
             "type": "notification",
             "data": {
@@ -250,7 +254,9 @@ async def generate_and_dispatch(
 
     # Get doctor settings for channel preferences
     from sqlalchemy import select
+
     from app.models import Doctor
+
     doc_result = await db_session.execute(select(Doctor).where(Doctor.id == doctor_id))
     doc = doc_result.scalar_one_or_none()
     settings = doc.settings or {} if doc else {}
@@ -264,8 +270,12 @@ async def generate_and_dispatch(
 
     # Create and dispatch
     result = await create_patient_notification(
-        db_session, patient_id, doctor_id,
-        event_type, content["subject"], content["body"],
+        db_session,
+        patient_id,
+        doctor_id,
+        event_type,
+        content["subject"],
+        content["body"],
         channels=channels,
         meta=meta,
     )
@@ -274,6 +284,7 @@ async def generate_and_dispatch(
     if "email" in channels:
         try:
             from app.services.email_queue import email_queue
+
             await email_queue.enqueue(
                 email_type=event_type,
                 patient_id=str(patient_id),

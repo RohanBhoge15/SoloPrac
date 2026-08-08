@@ -83,9 +83,6 @@ export function Landing() {
             <Link to="/patient/login">
               <Button variant="ghost" size="sm">Patient Login</Button>
             </Link>
-            <Link to="/register">
-              <Button size="sm">Get Started</Button>
-            </Link>
           </div>
         </div>
       </nav>

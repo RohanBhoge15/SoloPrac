@@ -10,20 +10,19 @@ Endpoints:
 
 from __future__ import annotations
 
-import uuid
 import logging
+import uuid
 from datetime import datetime, timezone
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func, text
 
-from app.config import settings
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import get_db
 from app.dependencies import get_current_doctor
-from app.models import Doctor, Patient, Invoice, AuditLog
-from app.services.pdf_generator import pdf_generator
+from app.models import AuditLog, Invoice, Patient
 from app.services.notification_generator import generate_and_dispatch
+from app.services.pdf_generator import pdf_generator
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -36,9 +35,28 @@ def _amount_in_words(amount: int) -> str:
     if amount == 0:
         return "Rupees Zero Only"
 
-    ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
-            "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
-            "Seventeen", "Eighteen", "Nineteen"]
+    ones = [
+        "",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+        "Eleven",
+        "Twelve",
+        "Thirteen",
+        "Fourteen",
+        "Fifteen",
+        "Sixteen",
+        "Seventeen",
+        "Eighteen",
+        "Nineteen",
+    ]
     tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
 
     def _chunk(n: int) -> str:
@@ -69,11 +87,22 @@ def _amount_in_words(amount: int) -> str:
 
 
 async def _generate_invoice_number(db: AsyncSession, doctor_id) -> str:
-    """Generate sequential invoice number: INV-YYYY-NNNN."""
+    """Generate sequential invoice number: INV-YYYY-NNNN (concurrency-safe).
+
+    Serializes concurrent creates per doctor with a transaction-level advisory
+    lock, so COUNT-based numbering can't mint duplicates under load. Combined
+    with the (doctor_id, invoice_number) unique constraint this is race-free.
+    """
     now = datetime.now(timezone.utc)
     year = now.year
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"invoice:{doctor_id}"},
+    )
     result = await db.execute(
-        select(func.count()).select_from(Invoice).where(
+        select(func.count())
+        .select_from(Invoice)
+        .where(
             Invoice.doctor_id == doctor_id,
             Invoice.invoice_number.like(f"INV-{year}-%"),
         )
@@ -82,6 +111,7 @@ async def _generate_invoice_number(db: AsyncSession, doctor_id) -> str:
     return f"INV-{year}-{count + 1:04d}"
 
 
+@router.post("", status_code=status.HTTP_201_CREATED)
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_invoice(
     patient_id: uuid.UUID,
@@ -100,9 +130,7 @@ async def create_invoice(
     }
     """
     # Verify patient belongs to doctor
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -111,9 +139,8 @@ async def create_invoice(
     patient_name = "Patient"
     if patient.head_version_id:
         from app.models import PatientVersion
-        hv_result = await db.execute(
-            select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-        )
+
+        hv_result = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
         hv = hv_result.scalar_one_or_none()
         if hv and hv.state_jsonb:
             patient_name = hv.state_jsonb.get("demographics", {}).get("name", "Patient")
@@ -130,7 +157,9 @@ async def create_invoice(
     # Build line items for the PDF
     items = []
     if consultation_fee > 0:
-        items.append({"description": "Consultation Fee", "qty": 1, "rate": consultation_fee, "amount": consultation_fee})
+        items.append(
+            {"description": "Consultation Fee", "qty": 1, "rate": consultation_fee, "amount": consultation_fee}
+        )
     if medicine_cost > 0:
         items.append({"description": "Medicine Cost", "qty": 1, "rate": medicine_cost, "amount": medicine_cost})
 
@@ -187,6 +216,7 @@ async def create_invoice(
     # Audit log (non-blocking, separate session)
     try:
         from app.database import async_session_maker as _audit_session_maker
+
         async with _audit_session_maker() as audit_db:
             did = str(doctor.id)
             await audit_db.execute(
@@ -194,9 +224,12 @@ async def create_invoice(
                 {"did": did},
             )
             audit = AuditLog(
-                doctor_id=doctor.id, patient_id=patient.id,
-                actor=f"doctor:{doctor.id}", action="write",
-                resource_type="invoice", resource_id=inv.id,
+                doctor_id=doctor.id,
+                patient_id=patient.id,
+                actor=f"doctor:{doctor.id}",
+                action="write",
+                resource_type="invoice",
+                resource_id=inv.id,
                 payload_jsonb={"invoice_number": invoice_number, "total": total},
             )
             audit_db.add(audit)
@@ -234,6 +267,7 @@ async def create_invoice(
     }
 
 
+@router.get("")
 @router.get("/")
 async def list_invoices(
     patient_id: uuid.UUID,
@@ -249,18 +283,21 @@ async def list_invoices(
         .limit(limit)
     )
     invs = result.scalars().all()
-    return [
-        {
-            "id": str(inv.id),
-            "invoice_number": inv.invoice_number,
-            "status": inv.status,
-            "total": inv.total,
-            "payment_method": inv.payment_method,
-            "generated_at": inv.generated_at.isoformat() if inv.generated_at else None,
-            "has_pdf": bool(inv.pdf_path),
-        }
-        for inv in invs
-    ]
+    return {
+        "invoices": [
+            {
+                "id": str(inv.id),
+                "invoice_number": inv.invoice_number,
+                "status": inv.status,
+                "total": inv.total,
+                "payment_method": inv.payment_method,
+                "generated_at": inv.generated_at.isoformat() if inv.generated_at else None,
+                "has_pdf": bool(inv.pdf_path),
+            }
+            for inv in invs
+        ],
+        "count": len(invs),
+    }
 
 
 @router.get("/{invoice_id}")
@@ -270,9 +307,7 @@ async def get_invoice(
     doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id, Invoice.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id, Invoice.doctor_id == doctor.id))
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -299,19 +334,35 @@ async def download_invoice_pdf(
     doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id, Invoice.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id, Invoice.doctor_id == doctor.id))
     inv = result.scalar_one_or_none()
     if not inv or not inv.pdf_path:
         raise HTTPException(status_code=404, detail="PDF not found")
 
-    presigned_url = await storage_service.get_presigned_url("pdfs", inv.pdf_path)
-    if not presigned_url:
-        raise HTTPException(status_code=500, detail="Failed to generate PDF URL")
+    # Serve the PDF bytes directly so clients (browser/portal) can download it
+    from fastapi.responses import Response
 
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=presigned_url)
+    try:
+        pdf_bytes = await storage_service.download_file("pdfs", inv.pdf_path)
+    except Exception as exc:
+        logger.warning("Failed to fetch invoice PDF from storage: %s", exc)
+        pdf_bytes = None
+
+    if pdf_bytes:
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="invoice_{inv.invoice_number}.pdf"'},
+        )
+
+    import os
+
+    if os.path.isabs(inv.pdf_path) and os.path.exists(inv.pdf_path):
+        from fastapi.responses import FileResponse
+
+        return FileResponse(inv.pdf_path, media_type="application/pdf", filename=f"invoice_{inv.invoice_number}.pdf")
+
+    raise HTTPException(status_code=404, detail="PDF file not found on storage")
 
 
 @router.patch("/{invoice_id}/status")
@@ -322,9 +373,7 @@ async def update_invoice_status(
     doctor=Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Invoice).where(Invoice.id == invoice_id, Invoice.doctor_id == doctor.id)
-    )
+    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id, Invoice.doctor_id == doctor.id))
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")

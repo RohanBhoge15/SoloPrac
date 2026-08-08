@@ -16,13 +16,11 @@ Usage:
 
 from __future__ import annotations
 
-import json
-import math
+import logging
 import os
 import time
-import logging
-from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -31,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 # ─── InfoNCE Loss (NumPy implementation) ───────────────────
 
+
 def infonce_loss(
     projected_images: np.ndarray,  # (N, 1024)
-    text_embeddings: np.ndarray,   # (N, 1024)
+    text_embeddings: np.ndarray,  # (N, 1024)
     temperature: float = 0.07,
 ) -> float:
     """InfoNCE loss: -log(exp(sim(i,t)/τ) / Σ_j exp(sim(i,t_j)/τ)).
@@ -78,11 +77,13 @@ def _cross_entropy(logits: np.ndarray, labels: np.ndarray) -> float:
 
 # ─── Linear Projector Training ─────────────────────────────
 
+
 @dataclass
 class ProjectorConfig:
     """Training configuration for the linear projector."""
-    input_dim: int = 512       # BiomedCLIP dimension
-    output_dim: int = 1024     # BGE-M3 dimension
+
+    input_dim: int = 512  # BiomedCLIP dimension
+    output_dim: int = 1024  # BGE-M3 dimension
     learning_rate: float = 0.01
     num_epochs: int = 50
     batch_size: int = 32
@@ -99,7 +100,7 @@ class ProjectorTrainer:
     def train(
         self,
         image_embeddings: np.ndarray,  # (N, 512)
-        text_embeddings: np.ndarray,   # (N, 1024)
+        text_embeddings: np.ndarray,  # (N, 1024)
     ) -> Dict[str, Any]:
         """Train the linear projector using InfoNCE.
 
@@ -116,9 +117,13 @@ class ProjectorTrainer:
         assert image_embeddings.shape[0] == text_embeddings.shape[0], "Mismatched pair count"
 
         # Initialize W as identity (padded/truncated)
-        W = np.eye(
-            self.config.output_dim, self.config.input_dim,
-        ) * 0.1  # small init
+        W = (
+            np.eye(
+                self.config.output_dim,
+                self.config.input_dim,
+            )
+            * 0.1
+        )  # small init
 
         img_mean = np.mean(image_embeddings, axis=0)
         txt_mean = np.mean(text_embeddings, axis=0)
@@ -142,7 +147,7 @@ class ProjectorTrainer:
             perm = np.random.permutation(N)
 
             for i in range(0, N, self.config.batch_size):
-                batch_idx = perm[i:i + self.config.batch_size]
+                batch_idx = perm[i : i + self.config.batch_size]
                 X = img_norm[batch_idx]  # (B, 512)
                 Y = txt_norm[batch_idx]  # (B, 1024)
 
@@ -186,13 +191,14 @@ class ProjectorTrainer:
                 logger.info("Feature C epoch %d/%d: loss=%.4f", epoch + 1, self.config.num_epochs, avg_loss)
 
         took_sec = time.time() - start
-        logger.info("Training complete: %d epochs in %.1fs, final loss=%.4f",
-                     self.config.num_epochs, took_sec, loss_history[-1])
+        logger.info(
+            "Training complete: %d epochs in %.1fs, final loss=%.4f", self.config.num_epochs, took_sec, loss_history[-1]
+        )
 
         return {
             "W": W,
             "loss_history": loss_history,
-            "final_loss": loss_history[-1] if loss_history else float('inf'),
+            "final_loss": loss_history[-1] if loss_history else float("inf"),
             "training_samples": N,
             "epochs_completed": self.config.num_epochs,
             "took_seconds": round(took_sec, 1),
@@ -234,7 +240,7 @@ class ProjectorTrainer:
         hits = 0
         for i in range(N):
             # Top-k indices (excluding self)
-            top_k = np.argsort(-sim[i])[:k + 1]
+            top_k = np.argsort(-sim[i])[: k + 1]
             if i in top_k[:k]:
                 hits += 1
 
@@ -242,6 +248,7 @@ class ProjectorTrainer:
 
 
 # ─── Synthetic Data Generation for Training/Eval ──────────
+
 
 def generate_synthetic_pairs(
     num_pairs: int = 1000,
@@ -270,7 +277,7 @@ def generate_synthetic_pairs(
 
     # Generate matching image embeddings: image ≈ text @ W_true + noise
     noise = rng.randn(num_pairs, 512).astype(np.float32) * 0.05
-    image_embs = text_embs @ W_true.T + noise
+    image_embs = text_embs @ W_true + noise
 
     return image_embs, text_embs
 
@@ -306,10 +313,7 @@ def generate_chexpert_pairs(
 
 # ─── Persistence Helpers ──────────────────────────────────
 
-PROJECTOR_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "uploads", "projector_weights.npy"
-)
+PROJECTOR_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "projector_weights.npy")
 
 
 def save_projector(W: np.ndarray) -> str:

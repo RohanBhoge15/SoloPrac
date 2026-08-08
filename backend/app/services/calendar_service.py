@@ -17,18 +17,17 @@ Patient preference learning:
 
 from __future__ import annotations
 
-import uuid
 import json
 import logging
-from datetime import datetime, timezone, timedelta, date, time
-from typing import Any, Dict, List, Optional, Tuple
+import uuid
 from collections import defaultdict
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Appointment, Patient, PatientTimePreference, Doctor, AuditLog
-from app.services.email_queue import email_queue
+from app.models import Appointment, AuditLog, Doctor, Patient, PatientTimePreference
 from app.services.notification_generator import generate_and_dispatch
 
 logger = logging.getLogger(__name__)
@@ -40,6 +39,7 @@ DEFAULT_DURATION_MINUTES = 20
 
 
 # ─── Working Hours Parser ──────────────────────────
+
 
 def parse_working_hours(settings_json: dict) -> Dict[int, List[Tuple[int, int]]]:
     """Parse doctor_settings.working_hours_json into weekday → slot ranges.
@@ -117,6 +117,7 @@ def get_date_range_for_slot(weekday: int, ref_date: Optional[date] = None) -> Li
 
 # ─── Tool 1: Find Available Slots ──────────────────
 
+
 async def find_available_slots(
     db: AsyncSession,
     doctor_id: uuid.UUID,
@@ -188,26 +189,27 @@ async def find_available_slots(
                     for occ_start, occ_apt in occupied.items():
                         if occ_start[0] != day_key:
                             continue
-                        occ_end = occ_start[1] + (
-                            (occ_apt.end_at.hour * 60 + occ_apt.end_at.minute) -
-                            occ_start[1]
-                        )
+                        occ_end = occ_start[1] + ((occ_apt.end_at.hour * 60 + occ_apt.end_at.minute) - occ_start[1])
                         # Check overlap with buffer
                         if not (slot_end + buffer <= occ_start[1] or slot_start >= occ_end + buffer):
                             has_conflict = True
                             break
 
                     if not has_conflict:
-                        start_dt = datetime.combine(current, time(0, 0), tzinfo=timezone.utc) + timedelta(minutes=slot_start)
+                        start_dt = datetime.combine(current, time(0, 0), tzinfo=timezone.utc) + timedelta(
+                            minutes=slot_start
+                        )
                         end_dt = start_dt + timedelta(minutes=dur)
-                        slots.append({
-                            "start": start_dt.isoformat(),
-                            "end": end_dt.isoformat(),
-                            "date": day_key,
-                            "time": _minutes_to_time(slot_start),
-                            "duration_minutes": dur,
-                            "doctor_id": str(doctor_id),
-                        })
+                        slots.append(
+                            {
+                                "start": start_dt.isoformat(),
+                                "end": end_dt.isoformat(),
+                                "date": day_key,
+                                "time": _minutes_to_time(slot_start),
+                                "duration_minutes": dur,
+                                "doctor_id": str(doctor_id),
+                            }
+                        )
                         window_booking_count += 1
 
                     slot_start += total_slot_time
@@ -226,6 +228,7 @@ async def find_available_slots(
 
 # ─── Tool 2: Create Appointment ────────────────────
 
+
 async def create_appointment(
     db: AsyncSession,
     doctor_id: uuid.UUID,
@@ -242,31 +245,31 @@ async def create_appointment(
     Returns the created appointment data.
     """
     # Verify patient belongs to doctor
-    result = await db.execute(
-        select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor_id)
-    )
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor_id))
     patient = result.scalar_one_or_none()
     if not patient:
         raise ValueError("Patient not found")
 
     # Lock doctor row to prevent concurrent double-booking (SELECT FOR UPDATE)
-    doc_result = await db.execute(
-        select(Doctor).where(Doctor.id == doctor_id).with_for_update()
-    )
+    doc_result = await db.execute(select(Doctor).where(Doctor.id == doctor_id).with_for_update())
     doctor = doc_result.scalar_one_or_none()
     if not doctor:
         raise ValueError("Doctor not found")
 
-    # Check for conflicts (safe: doctor row is locked, no concurrent booking can sneak in)
+    # Check for conflicts (safe: doctor row is locked, no concurrent booking can sneak in).
+    # Use .first() — with .scalar_one_or_none() a >1-row result was raising
+    # MultipleResultsFound and returning 500 instead of a proper conflict error.
     conflict = await db.execute(
-        select(Appointment).where(
+        select(Appointment.id)
+        .where(
             Appointment.doctor_id == doctor_id,
             Appointment.start_at < end_at,
             Appointment.end_at > start_at,
             Appointment.status.in_(["scheduled", "done"]),
         )
+        .limit(1)
     )
-    if conflict.scalar_one_or_none():
+    if conflict.first() is not None:
         raise ValueError("Time slot conflicts with an existing appointment")
 
     # Create appointment
@@ -320,6 +323,7 @@ async def create_appointment(
             if patient.head_version and patient.head_version.state_jsonb:
                 patient_name = patient.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
             from app.database import async_session_maker
+
             async with async_session_maker() as notify_db:
                 await generate_and_dispatch(
                     notify_db,
@@ -328,7 +332,7 @@ async def create_appointment(
                     doctor_id=doctor_id,
                     meta={"resource_type": "appointment", "resource_id": str(apt.id)},
                     patient_name=patient_name,
-                    doctor_name=doctor.name if hasattr(doctor, 'name') else "Doctor",
+                    doctor_name=doctor.name if hasattr(doctor, "name") else "Doctor",
                     date=start_at.strftime("%Y-%m-%d"),
                     time=start_at.strftime("%H:%M"),
                 )
@@ -377,6 +381,7 @@ async def _log_patient_preference(db: AsyncSession, patient_id: uuid.UUID, start
 
 
 # ─── Tool 3: Reschedule Appointment ────────────────
+
 
 async def reschedule_appointment(
     db: AsyncSession,
@@ -452,6 +457,7 @@ async def reschedule_appointment(
             if pat and pat.head_version and pat.head_version.state_jsonb:
                 pat_name = pat.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
             from app.database import async_session_maker
+
             async with async_session_maker() as notify_db:
                 await generate_and_dispatch(
                     notify_db,
@@ -477,6 +483,7 @@ async def reschedule_appointment(
 
 
 # ─── Tool 4: Cancel Appointment ────────────────────
+
 
 async def cancel_appointment(
     db: AsyncSession,
@@ -524,6 +531,7 @@ async def cancel_appointment(
             if pat and pat.head_version and pat.head_version.state_jsonb:
                 pat_name = pat.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
             from app.database import async_session_maker
+
             async with async_session_maker() as notify_db:
                 await generate_and_dispatch(
                     notify_db,
@@ -542,6 +550,7 @@ async def cancel_appointment(
 
 
 # ─── Working Hours Validation ──────────────────────
+
 
 def validate_working_hours(working_hours_json: Any) -> Dict[str, Any]:
     """Validate working hours JSON structure.
@@ -580,6 +589,7 @@ def validate_working_hours(working_hours_json: Any) -> Dict[str, Any]:
 
 # ─── List Appointments ────────────────────────────
 
+
 async def list_appointments(
     db: AsyncSession,
     doctor_id: uuid.UUID,
@@ -610,30 +620,32 @@ async def list_appointments(
             # Get head version for name
             if patient.head_version_id:
                 from app.models import PatientVersion
-                vr = await db.execute(
-                    select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-                )
+
+                vr = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
                 ver = vr.scalar_one_or_none()
                 if ver and ver.state_jsonb:
                     demo = ver.state_jsonb.get("demographics", {})
                     if isinstance(demo, dict):
                         patient_name = demo.get("name", patient_name)
 
-        output.append({
-            "id": str(apt.id),
-            "patient_id": str(apt.patient_id),
-            "patient_name": patient_name,
-            "start_at": apt.start_at.isoformat(),
-            "end_at": apt.end_at.isoformat(),
-            "reason": apt.reason,
-            "status": apt.status,
-            "source": apt.source,
-        })
+        output.append(
+            {
+                "id": str(apt.id),
+                "patient_id": str(apt.patient_id),
+                "patient_name": patient_name,
+                "start_at": apt.start_at.isoformat(),
+                "end_at": apt.end_at.isoformat(),
+                "reason": apt.reason,
+                "status": apt.status,
+                "source": apt.source,
+            }
+        )
 
     return output
 
 
 # ─── Tool 5: Query Calendar NL ──────────────────────
+
 
 async def query_calendar_nl(
     db: AsyncSession,
@@ -669,9 +681,19 @@ async def query_calendar_nl(
     if "diabetic" in query_lower or "diabetes" in query_lower:
         appts = await list_appointments(db, doctor_id, date_from, date_to)
         filtered = [a for a in appts if "diabet" in a.get("reason", "").lower()]
-        return {"type": "filtered_appointments", "appointments": filtered, "summary": f"Found {len(filtered)} diabetes-related appointments"}
+        return {
+            "type": "filtered_appointments",
+            "appointments": filtered,
+            "summary": f"Found {len(filtered)} diabetes-related appointments",
+        }
 
-    if "tuesday" in query_lower or "monday" in query_lower or "wednesday" in query_lower or "thursday" in query_lower or "friday" in query_lower:
+    if (
+        "tuesday" in query_lower
+        or "monday" in query_lower
+        or "wednesday" in query_lower
+        or "thursday" in query_lower
+        or "friday" in query_lower
+    ):
         day_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4}
         for day_name, day_num in [("tuesday", 1), ("monday", 0), ("wednesday", 2), ("thursday", 3), ("friday", 4)]:
             if day_name in query_lower:
@@ -682,10 +704,14 @@ async def query_calendar_nl(
                     slots.extend(day_slots)
                 return {"type": "available_slots", "slots": slots, "summary": f"Available on {day_name.capitalize()}s"}
 
-    return {"type": "unknown", "summary": "Could not parse query. Try: 'When am I free next week?' or 'Show diabetic follow-ups this month'"}
+    return {
+        "type": "unknown",
+        "summary": "Could not parse query. Try: 'When am I free next week?' or 'Show diabetic follow-ups this month'",
+    }
 
 
 # ─── Tool 6: Bulk Reschedule ────────────────────────
+
 
 async def bulk_reschedule(
     db: AsyncSession,
@@ -708,8 +734,7 @@ async def bulk_reschedule(
 
     window_start, window_end = new_window
     slots = await find_available_slots(
-        db, doctor_id, window_start, window_end,
-        duration_minutes=20, prefer_morning=True
+        db, doctor_id, window_start, window_end, duration_minutes=20, prefer_morning=True
     )
 
     if not slots:
@@ -728,17 +753,22 @@ async def bulk_reschedule(
             new_end = datetime.fromisoformat(slot["end"])
 
             result = await reschedule_appointment(
-                db=db, doctor_id=doctor_id,
+                db=db,
+                doctor_id=doctor_id,
                 appointment_id=apt_id,
-                new_start=new_start, new_end=new_end,
-                reason="Bulk reschedule", notify_patient=True,
+                new_start=new_start,
+                new_end=new_end,
+                reason="Bulk reschedule",
+                notify_patient=True,
             )
-            results["rescheduled"].append({
-                "appointment_id": str(apt_id),
-                "old_slot": "TBD",
-                "new_start": slot["start"],
-                "new_end": slot["end"],
-            })
+            results["rescheduled"].append(
+                {
+                    "appointment_id": str(apt_id),
+                    "old_slot": "TBD",
+                    "new_start": slot["start"],
+                    "new_end": slot["end"],
+                }
+            )
         except Exception as exc:
             results["failed"].append({"appointment_id": str(apt_id), "error": str(exc)})
 
@@ -750,6 +780,7 @@ async def bulk_reschedule(
 
 
 # ─── Tool 7: Block Doctor Time ─────────────────────
+
 
 async def block_doctor_time(
     db: AsyncSession,
@@ -791,6 +822,7 @@ async def block_doctor_time(
 
 
 # ─── Tool 8: Smart Rearrange ───────────────────────
+
 
 async def smart_rearrange(
     db: AsyncSession,
@@ -855,22 +887,29 @@ async def smart_rearrange(
                 best_slot = slot
 
         if best_slot:
-            proposals.append({
-                "appointment_id": appt["id"],
-                "patient_id": appt["patient_id"],
-                "current_start": appt["start_at"],
-                "current_end": appt["end_at"],
-                "proposed_start": best_slot["start"],
-                "proposed_end": best_slot["end"],
-                "confidence": min(best_score / 20.0, 1.0),
-                "reason": f"Optimized for {optimization}",
-            })
+            proposals.append(
+                {
+                    "appointment_id": appt["id"],
+                    "patient_id": appt["patient_id"],
+                    "current_start": appt["start_at"],
+                    "current_end": appt["end_at"],
+                    "proposed_start": best_slot["start"],
+                    "proposed_end": best_slot["end"],
+                    "confidence": min(best_score / 20.0, 1.0),
+                    "reason": f"Optimized for {optimization}",
+                }
+            )
             slots.remove(best_slot)
 
-    return {"proposals": proposals, "summary": f"Generated {len(proposals)} rearrangement proposals", "optimization": optimization}
+    return {
+        "proposals": proposals,
+        "summary": f"Generated {len(proposals)} rearrangement proposals",
+        "optimization": optimization,
+    }
 
 
 # ─── Tool 9: Find Optimal Window ───────────────────
+
 
 async def find_optimal_window(
     db: AsyncSession,
@@ -918,6 +957,7 @@ async def find_optimal_window(
 
 # ─── Doctor-Off Scenario ──────────────────────────
 
+
 async def handle_doctor_off(
     db: AsyncSession,
     doctor_id: uuid.UUID,
@@ -926,11 +966,11 @@ async def handle_doctor_off(
     reason: str = "Doctor unavailable",
 ) -> Dict[str, Any]:
     """Handle 'I'm off' scenario:
-      1. Block doctor's time
-      2. Find all affected appointments
-      3. Auto-reschedule using smart_rearrange
-      4. Draft notification emails
-      5. Return approval card
+    1. Block doctor's time
+    2. Find all affected appointments
+    3. Auto-reschedule using smart_rearrange
+    4. Draft notification emails
+    5. Return approval card
     """
     block_result = await block_doctor_time(db, doctor_id, (off_start, off_end), reason)
 
@@ -949,6 +989,7 @@ async def handle_doctor_off(
         patient_name = "Patient"
         if patient and patient.head_version_id:
             from app.models import PatientVersion
+
             vr = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
             ver = vr.scalar_one_or_none()
             if ver and ver.state_jsonb:
@@ -959,10 +1000,11 @@ async def handle_doctor_off(
         old_start = datetime.fromisoformat(proposal["current_start"])
         new_start = datetime.fromisoformat(proposal["proposed_start"])
 
-        email_drafts.append({
-            "to": f"patient-{proposal['patient_id'][:8]}@example.com",
-            "subject": "Appointment Rescheduled - Action Required",
-            "body": f"""Dear {patient_name},
+        email_drafts.append(
+            {
+                "to": f"patient-{proposal['patient_id'][:8]}@example.com",
+                "subject": "Appointment Rescheduled - Action Required",
+                "body": f"""Dear {patient_name},
 
 Your appointment has been rescheduled due to doctor's unavailability.
 
@@ -972,8 +1014,9 @@ New: {new_start.strftime('%A, %B %d at %I:%M %p')}
 Please confirm or request a different time.
 
 SoloPrac AI""",
-            "proposal_id": proposal["appointment_id"],
-        })
+                "proposal_id": proposal["appointment_id"],
+            }
+        )
 
     return {
         "status": "doctor_off_processed",
@@ -990,6 +1033,7 @@ SoloPrac AI""",
 
 
 # ─── LangGraph Subgraph Integration ──────────────────
+
 
 def build_scheduling_subgraph() -> "StateGraph":
     """Build the voice scheduling LangGraph subgraph."""

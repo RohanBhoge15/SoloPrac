@@ -145,41 +145,35 @@ export function PatientDetail() {
     }
   }
 
-  // Fetch patient data on mount
+  // P2.16 — Fetch every independent patient resource in one round-trip.
+  //
+  // The four requests (head, patient row, timeline, documents) are truly
+  // independent so we fire them all in parallel via Promise.all. Total wall-
+  // clock ≈ slowest request instead of sum-of-four; each panel of the page
+  // renders as soon as its data lands (state is set per-response).
   useEffect(() => {
     if (!id) return
     let cancelled = false
+    setDocumentsLoading(true)
 
-    const load = async () => {
-      try {
-        const [headRes, patientRes] = await Promise.all([
-          apiClient.get(`/patients/${id}/head`).catch(() => null),
-          apiClient.get(`/patients/${id}`).catch(() => null),
-        ])
+    Promise.all([
+      apiClient.get(`/patients/${id}/head`).catch(() => null),
+      apiClient.get(`/patients/${id}`).catch(() => null),
+      // fetchTimeline() sets its own store state internally — treat as fire-
+      // and-forget so it races alongside the others.
+      Promise.resolve(fetchTimeline(id)).catch(() => null),
+      apiClient.get(`/patients/${id}/documents`).catch(() => null),
+    ])
+      .then(([headRes, patientRes, _timelineRes, docsRes]) => {
         if (cancelled) return
+
         if (headRes?.data) usePatientStore.setState({ activeHead: headRes.data })
-        if (patientRes?.data) {
-          setActivePatient(patientRes.data)
-        }
-        fetchTimeline(id)
+        if (patientRes?.data) setActivePatient(patientRes.data)
         if (!patientRes?.data && !headRes?.data) {
           setPatientError('Patient not found')
         }
-      } catch {
-        if (!cancelled) setPatientError('Failed to load patient')
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [id, fetchTimeline, setActivePatient])
 
-  // Load patient documents (unified timeline)
-  useEffect(() => {
-    if (!id) return
-    setDocumentsLoading(true)
-    apiClient.get(`/patients/${id}/documents`)
-      .then(res => {
-        const allDocs: DocumentItem[] = (res.data?.documents ?? []).map((d: any) => ({
+        const allDocs: DocumentItem[] = (docsRes?.data?.documents ?? []).map((d: any) => ({
           name: d.title,
           type: d.type,
           date: d.date?.slice(0, 10) ?? '',
@@ -192,11 +186,15 @@ export function PatientDetail() {
         }))
         setDocuments(allDocs)
       })
-      .catch((err) => {
-        console.warn('[PatientDetail] Failed to load documents:', err)
+      .catch(() => {
+        if (!cancelled) setPatientError('Failed to load patient')
       })
-      .finally(() => setDocumentsLoading(false))
-  }, [id])
+      .finally(() => {
+        if (!cancelled) setDocumentsLoading(false)
+      })
+
+    return () => { cancelled = true }
+  }, [id, fetchTimeline, setActivePatient])
 
   const state = activeHead?.state_jsonb ?? {}
   const demographicsRaw = state.demographics ?? {} as any

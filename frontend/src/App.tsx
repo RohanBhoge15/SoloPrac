@@ -1,28 +1,42 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AppLayout } from '@/layouts/AppLayout'
-import { Login } from '@/pages/Login'
-import { Register } from '@/pages/Register'
-import { Dashboard } from '@/pages/Dashboard'
-import { Calendar } from '@/pages/Calendar'
-import { Scratchpad } from '@/pages/Scratchpad'
-import { Settings } from '@/pages/Settings'
-import { PatientDetail } from '@/pages/PatientDetail'
-import { Chat } from '@/pages/Chat'
 import { PatientLayout } from '@/layouts/PatientLayout'
-import { PatientLogin } from '@/pages/PatientLogin'
-import { PatientRegistration } from '@/pages/PatientRegistration'
-import { PatientDashboard } from '@/pages/PatientDashboard'
-import { DoctorSearch } from '@/pages/DoctorSearch'
-import { PatientAppointments } from '@/pages/PatientAppointments'
-import { PatientInbox } from '@/pages/PatientInbox'
-import { PatientReports } from '@/pages/PatientReports'
-import { WeeklyReport } from '@/pages/WeeklyReport'
-import { PatientProfile } from '@/pages/PatientProfile'
 import { Landing } from '@/pages/Landing'
+import { Login } from '@/pages/Login'
+import { PatientLogin } from '@/pages/PatientLogin'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { ToastProvider } from '@/components/ui/Toast'
 import { apiClient } from '@/services/api'
+
+// P2.19 — Route-level lazy import so first paint only downloads the login /
+// landing bundle. Every other page becomes its own async chunk that's fetched
+// on demand (and can be prefetched on hover — see P2.20 hooks). Login pages
+// stay eager because they're the most common entry point post-logout.
+const Register = lazy(() => import('@/pages/Register').then(m => ({ default: m.Register })))
+const Dashboard = lazy(() => import('@/pages/Dashboard').then(m => ({ default: m.Dashboard })))
+const Calendar = lazy(() => import('@/pages/Calendar').then(m => ({ default: m.Calendar })))
+const Scratchpad = lazy(() => import('@/pages/Scratchpad').then(m => ({ default: m.Scratchpad })))
+const Settings = lazy(() => import('@/pages/Settings').then(m => ({ default: m.Settings })))
+const PatientDetail = lazy(() => import('@/pages/PatientDetail').then(m => ({ default: m.PatientDetail })))
+const Chat = lazy(() => import('@/pages/Chat').then(m => ({ default: m.Chat })))
+const PatientRegistration = lazy(() => import('@/pages/PatientRegistration').then(m => ({ default: m.PatientRegistration })))
+const PatientDashboard = lazy(() => import('@/pages/PatientDashboard').then(m => ({ default: m.PatientDashboard })))
+const DoctorSearch = lazy(() => import('@/pages/DoctorSearch').then(m => ({ default: m.DoctorSearch })))
+const PatientAppointments = lazy(() => import('@/pages/PatientAppointments').then(m => ({ default: m.PatientAppointments })))
+const PatientInbox = lazy(() => import('@/pages/PatientInbox').then(m => ({ default: m.PatientInbox })))
+const PatientReports = lazy(() => import('@/pages/PatientReports').then(m => ({ default: m.PatientReports })))
+const WeeklyReport = lazy(() => import('@/pages/WeeklyReport').then(m => ({ default: m.WeeklyReport })))
+const PatientProfile = lazy(() => import('@/pages/PatientProfile').then(m => ({ default: m.PatientProfile })))
+const PatientPendingMatches = lazy(() => import('@/pages/PatientPendingMatches').then(m => ({ default: m.PatientPendingMatches })))
+
+function LazyFallback() {
+  return (
+    <div className="min-h-[40vh] flex items-center justify-center">
+      <div className="animate-spin rounded-full h-8 w-8 border-4 border-primary-600 border-t-transparent" />
+    </div>
+  )
+}
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -69,21 +83,15 @@ function PatientProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function AppRoutes() {
-  const { user, loading, initializeAuth } = useAuth()
+  const { user } = useAuth()
 
-  useEffect(() => {
-    initializeAuth()
-  }, [initializeAuth])
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-600 border-t-transparent" />
-      </div>
-    )
-  }
+  // The `useQuery` inside AuthContext runs automatically on mount, so we don't
+  // need to call initializeAuth() here. Blocking the whole app on `loading`
+  // used to hide the Login page every time /auth/me refetched (during dev-login
+  // click, refresh, etc.), so guarding is handled per-route by <ProtectedRoute>.
 
   return (
+    <Suspense fallback={<LazyFallback />}>
     <Routes>
       {/* ── Patient portal (/patient/*) ── */}
       <Route path="/patient/login" element={
@@ -148,6 +156,14 @@ function AppRoutes() {
             </PatientProtectedRoute>
           }
         />
+        <Route
+          path="/patient/pending-matches"
+          element={
+            <PatientProtectedRoute>
+              <PatientPendingMatches />
+            </PatientProtectedRoute>
+          }
+        />
       </Route>
       <Route path="/patient/*" element={<Navigate to="/patient/login" replace />} />
 
@@ -178,6 +194,7 @@ function AppRoutes() {
       <Route path="/" element={<RootRedirect />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </Suspense>
   )
 }
 

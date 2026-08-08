@@ -17,20 +17,19 @@ stand-in for a missing backend: callers get None/raise so degraded retrieval is
 visible rather than silent.
 """
 
-import os
 import asyncio
-import hashlib
 import base64
+import hashlib
 import importlib.util
-from typing import Any, List, Dict, Optional, Literal
-from functools import lru_cache
 import logging
+import os
+from typing import Any, Dict, List, Literal, Optional
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 import torch
 from openai import AsyncOpenAI
 from PIL import Image
+from sentence_transformers import SentenceTransformer
 
 from app.config import settings
 
@@ -55,6 +54,7 @@ class EmbeddingBackendUnavailable(RuntimeError):
     Deliberately loud: an unavailable modality must never be papered over with
     zero vectors, which would silently poison retrieval.
     """
+
 
 # ─── Model Config ───
 EMBEDDING_MODELS = {
@@ -83,6 +83,38 @@ EMBEDDING_MODELS = {
 
 ModelName = Literal["medcpt", "bge-m3", "biomedclip"]
 
+# A model directory is only usable if it contains the actual weight file; a
+# partial download (configs/tokenizer only) must not be treated as available.
+_WEIGHT_MARKERS: Dict[ModelName, tuple] = {
+    "medcpt": ("model.safetensors", "pytorch_model.bin"),
+    "bge-m3": ("model.safetensors", "pytorch_model.bin"),
+    "biomedclip": ("open_clip_pytorch_model.bin",),
+}
+
+
+def _local_model_path(name: ModelName) -> str:
+    """Resolve a model to its local /models directory when present, else the HF name.
+
+    Prevents re-downloading embedder weights into HF_HOME when a local copy
+    already exists (mounted from the host models cache). Falls back to the
+    Hugging Face repo id if the directory is missing or incomplete, so the
+    service still works without the mount.
+    """
+    path = {
+        "medcpt": settings.MEDCPT_QUERY_PATH,
+        "bge-m3": settings.BGE_M3_PATH,
+        "biomedclip": settings.BIOMEDCLIP_PATH,
+    }.get(name, "")
+    if path and os.path.isdir(path):
+        if any(os.path.exists(os.path.join(path, m)) for m in _WEIGHT_MARKERS[name]):
+            return path
+        logger.warning(
+            "Local model dir %s is incomplete (missing weight file) — " "falling back to %s",
+            path,
+            EMBEDDING_MODELS[name]["model_name"],
+        )
+    return EMBEDDING_MODELS[name]["model_name"]
+
 
 class EmbeddingService:
     """Lazy-loaded embedding models with health checks, NIM API for BiomedCLIP,
@@ -107,6 +139,7 @@ class EmbeddingService:
             return self._cache_client
         try:
             from app.services.redis import redis_service
+
             self._cache_client = await redis_service.connect()
         except Exception:
             self._cache_client = False  # Mark as unavailable
@@ -123,11 +156,12 @@ class EmbeddingService:
         device = EMBEDDING_MODELS[name]["device"]
         if device == "cuda":
             try:
-                free_mem = torch.cuda.mem_get_info()[0] / (1024 ** 3)  # GB
+                free_mem = torch.cuda.mem_get_info()[0] / (1024**3)  # GB
                 if free_mem < 1.0:
                     logger.warning(
                         "GPU has only %.1fGB free — loading %s on CPU instead",
-                        free_mem, name,
+                        free_mem,
+                        name,
                     )
                     device = "cpu"
             except Exception:
@@ -149,7 +183,7 @@ class EmbeddingService:
         elif name == "biomedclip":
             model = self._load_biomedclip(cfg, device)
         else:
-            model = SentenceTransformer(cfg["model_name"], device=device)
+            model = SentenceTransformer(_local_model_path("medcpt"), device=device)
 
         self._models[name] = model
         self._loaded[name] = True
@@ -168,7 +202,7 @@ class EmbeddingService:
             from FlagEmbedding import BGEM3FlagModel
 
             return BGEM3FlagModel(
-                cfg["model_name"],
+                _local_model_path("bge-m3"),
                 use_fp16=(device == "cuda"),
                 devices=device,
             )
@@ -179,7 +213,7 @@ class EmbeddingService:
             "retrieval is UNAVAILABLE (hybrid search degrades to dense-only). "
             "Install `FlagEmbedding` to enable sparse vectors."
         )
-        return SentenceTransformer(cfg["model_name"], device=device)
+        return SentenceTransformer(_local_model_path("bge-m3"), device=device)
 
     def _load_biomedclip(self, cfg: Dict[str, Any], device: str) -> Dict[str, Any]:
         """Load BiomedCLIP through open_clip.
@@ -198,8 +232,18 @@ class EmbeddingService:
 
         import open_clip
 
-        model, _, preprocess = open_clip.create_model_and_transforms(cfg["open_clip_name"])
-        tokenizer = open_clip.get_tokenizer(cfg["open_clip_name"])
+        local = _local_model_path("biomedclip")
+        if local != cfg["model_name"]:
+            # Load straight from the local /models checkpoint (OpenCLIP format):
+            # the `local-dir:` schema reads open_clip_config.json + weights from
+            # disk, so nothing is re-downloaded into HF_HOME.
+            model_name = f"local-dir:{local}"
+            pretrained = os.path.join(local, "open_clip_pytorch_model.bin")
+        else:
+            model_name = cfg["open_clip_name"]
+            pretrained = None
+        model, _, preprocess = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
+        tokenizer = open_clip.get_tokenizer(model_name)
         model = model.to(device).eval()
         return {
             "model": model,
@@ -236,6 +280,7 @@ class EmbeddingService:
                 cached = await cache.get(cache_key)
                 if cached:
                     import json
+
                     return [np.array(v) for v in json.loads(cached)]
             except Exception:
                 pass
@@ -247,6 +292,7 @@ class EmbeddingService:
         if cache:
             try:
                 import json
+
                 await cache.set(cache_key, json.dumps(result.tolist()), ex=3600)
             except Exception:
                 pass
@@ -268,7 +314,8 @@ class EmbeddingService:
         return {"indices": indices, "values": values}
 
     async def encode_bge_m3(
-        self, texts: List[str],
+        self,
+        texts: List[str],
         return_dense: bool = True,
         return_sparse: bool = True,
     ) -> Dict[str, List]:
@@ -292,6 +339,7 @@ class EmbeddingService:
                 cached = await cache.get(cache_key)
                 if cached:
                     import json
+
                     return {"dense": json.loads(cached)}
             except Exception:
                 pass
@@ -312,9 +360,7 @@ class EmbeddingService:
                 dense = output["dense_vecs"]
                 result["dense"] = dense.tolist() if hasattr(dense, "tolist") else list(dense)
             if return_sparse:
-                result["sparse"] = [
-                    self._lexical_weights_to_sparse(w) for w in output["lexical_weights"]
-                ]
+                result["sparse"] = [self._lexical_weights_to_sparse(w) for w in output["lexical_weights"]]
         else:
             if return_dense:
                 dense = await asyncio.to_thread(model.encode, texts, normalize_embeddings=True)
@@ -332,6 +378,7 @@ class EmbeddingService:
         if cache and return_dense and not return_sparse:
             try:
                 import json
+
                 await cache.set(cache_key, json.dumps(result["dense"]), ex=3600)
             except Exception:
                 pass
@@ -394,7 +441,10 @@ class EmbeddingService:
         if name == "bge-m3" and HAS_FLAG_EMBEDDING:
             model = self.get_model("bge-m3")
             output = await asyncio.to_thread(
-                model.encode, [text], return_dense=True, return_sparse=False,
+                model.encode,
+                [text],
+                return_dense=True,
+                return_sparse=False,
                 return_colbert_vecs=False,
             )
             return np.asarray(output["dense_vecs"])

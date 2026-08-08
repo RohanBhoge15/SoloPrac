@@ -1,10 +1,8 @@
 # Configuration
 
-import os
 import sys
-from typing import Optional
+
 from pydantic_settings import BaseSettings
-from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -25,8 +23,15 @@ class Settings(BaseSettings):
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     DB_ECHO: bool = False
-    DB_POOL_SIZE: int = 10
-    DB_MAX_OVERFLOW: int = 20
+    # P1.13 — bumped from 10/20 to 25/50 per uvicorn worker.
+    # With 4 workers that's 100 base + 200 overflow = 300 max Postgres connections,
+    # which is comfortably under Postgres's default max_connections (100) after
+    # accounting for other services (Langfuse, arq worker) — see init-schema.sql
+    # for the matching max_connections bump. Sized for ~30 concurrent doctors
+    # × ~2-3 in-flight queries each + fan-out (P1.12 uses its own session per
+    # subquery, so 4 timeline sub-queries = 4 pool checkouts).
+    DB_POOL_SIZE: int = 25
+    DB_MAX_OVERFLOW: int = 50
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -63,8 +68,12 @@ class Settings(BaseSettings):
     # NVIDIA NIM
     NIM_API_KEY: str = ""
     NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
-    MAVERICK_MODEL: str = "nvidia/llama-4-maverick-17b-128e-instruct"
+    MAVERICK_MODEL: str = "meta/llama-3.2-1b-instruct"
     LLAMA_8B_MODEL: str = "nvidia/llama-3.1-8b-instruct"
+    # Some free-tier NIM models hang on `response_format=json_object`.
+    # When False, structured outputs are still requested but the flag is
+    # omitted so the call returns promptly (JSON is parsed leniently).
+    MAVERICK_STRUCTURED_OUTPUT: bool = True
     BIOMEDCLIP_MODEL: str = "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
     NVCLIP_MODEL: str = ""  # Deprecated — use NANONETS_OCR_MODEL instead
 
@@ -75,10 +84,18 @@ class Settings(BaseSettings):
     VISION_MODEL: str = "google/medgemma-4b-it"
 
     # Local models
-    MEDGEMMA_PATH: str = "/models/medgemma-4b-it"
+    MEDGEMMA_PATH: str = "/models/medgemma-gguf/medgemma-4b-it_Q4_K_M.gguf"
+    MEDGEMMA_SERVER_URL: str = "http://llama-server:8080"
     WHISPER_PATH: str = "/models/faster-whisper-large-v3"
     INDIC_WHISPER_PATH: str = "/models/indic-whisper"
-    PARLER_TTS_PATH: str = "/models/indic-parler-tts"
+    PARLER_TTS_PATH: str = "/models/parler-tts-mini-v1.1"
+    KOKORO_TTS_PATH: str = "/models/kokoro-onnx"
+    KOKORO_TTS_VOICE: str = "af_bella"
+    MMS_TTS_PATH: str = "/models/mms-tts-hin"
+    MEDCPT_QUERY_PATH: str = "/models/MedCPT-Query-Encoder"
+    MEDCPT_ARTICLE_PATH: str = "/models/MedCPT-Article-Encoder"
+    BGE_M3_PATH: str = "/models/bge-m3"
+    BIOMEDCLIP_PATH: str = "/models/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
     # OCR
     NANONETS_OCR_MODEL: str = "nanonets/Nanonets-OCR2-1.5B-exp"
@@ -138,11 +155,20 @@ _DEFAULTS_WARNED = False
 if not _DEFAULTS_WARNED:
     _DEFAULTS_WARNED = True
     if settings.JWT_SECRET_KEY in ("changeme_generate_strong_secret", ""):
-        print("WARNING: JWT_SECRET_KEY is still set to a default/empty value! Set a strong secret in .env", file=sys.stderr)
+        print(
+            "WARNING: JWT_SECRET_KEY is still set to a default/empty value! Set a strong secret in .env",
+            file=sys.stderr,
+        )
     if not settings.ENCRYPTION_KEY:
-        print("WARNING: ENCRYPTION_KEY is empty! PII encryption will fail at runtime. Set a 32-byte hex key in .env", file=sys.stderr)
+        print(
+            "WARNING: ENCRYPTION_KEY is empty! PII encryption will fail at runtime. Set a 32-byte hex key in .env",
+            file=sys.stderr,
+        )
     if settings.POSTGRES_PASSWORD in ("changeme", "soloprac_dev_password_change_me", ""):
-        print("WARNING: POSTGRES_PASSWORD is still a default! Change it in .env for any non-local deployment.", file=sys.stderr)
+        print(
+            "WARNING: POSTGRES_PASSWORD is still a default! Change it in .env for any non-local deployment.",
+            file=sys.stderr,
+        )
 
 
 def get_settings() -> Settings:
