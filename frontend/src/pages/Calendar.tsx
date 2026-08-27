@@ -157,27 +157,20 @@ export function Calendar() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  // D-6 (AUDIT.md): TIME_SLOTS only produces hour buckets (multiples of 60),
-  // but appointments can start at :15 / :30 / :45. The old exact-match against
-  // `HH:MM` dropped those appointments off the grid. Match by (date + hour
-  // bucket) instead. Original start_at is preserved untouched on the object
-  // so downstream display still shows the true minute (e.g. "10:15").
-  const getAppointmentForSlot = (day: string, slotMinutes: number) => {
+  // D-6 (AUDIT.md): hour-bucket match preserves true minute for display.
+  // Returns ALL appointments in that hour so stacked 09:15 + 09:45 are both visible
+  // (previously .find hid the second). Caller renders stacked chips.
+  const getAppointmentsForSlot = (day: string, slotMinutes: number) => {
     const slotHour = Math.floor(slotMinutes / 60)
-    return appointments.find((a: any) => {
+    return appointments.filter((a: any) => {
       if (!a?.start_at) return false
-      // Cancelled appointments should not occupy the grid as active bookings.
       if (a.status === 'cancelled') return false
-      // Compare in LOCAL time. `start_at` comes back as UTC (…Z), but the grid's
-      // row labels ("9 AM") and its `day` columns are local. String-slicing the
-      // UTC hour out of the ISO text meant a 9 AM IST booking (stored 03:30Z)
-      // was hunted for in the 3 AM row — which isn't rendered at all, so the
-      // appointment silently vanished right after being created.
       const d = new Date(a.start_at)
       if (Number.isNaN(d.getTime())) return false
       return format(d, 'yyyy-MM-dd') === day && d.getHours() === slotHour
     })
   }
+
 
   const handleAppointmentClick = (appt: any) => setSelectedAppointment(appt)
   const handleCancel = (appt: any) => setConfirmCancelId(appt.id)
@@ -391,17 +384,17 @@ export function Calendar() {
         </Card>
       )}
 
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden rounded-xl">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[700px]">
-            <thead>
-              <tr className="bg-gray-50 dark:bg-gray-800/50 border-b border-gray-200 dark:border-gray-700">
-                <th className="w-20 p-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Time</th>
+          <table className="w-full min-w-[740px]">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-surface-3 border-b border-border">
+                <th className="sticky left-0 z-20 w-20 p-2 text-left text-xs font-medium text-muted-fg bg-surface-3">Time</th>
                 {weekDays.map((day) => (
-                  <th key={day.toISOString()} className={cn('p-2 text-sm font-medium', isToday(day) && 'bg-primary-50 dark:bg-primary-900/20 text-primary-700')}>
-                    <div className="flex flex-col items-center gap-1">
-                      <span>{format(day, 'EEE')}</span>
-                      <span className="text-lg font-semibold">{format(day, 'd')}</span>
+                  <th key={day.toISOString()} className={cn('p-2 text-sm font-medium border-l border-border/40', isToday(day) ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700' : 'text-muted-fg')}>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <span className="text-[11px] uppercase tracking-wide">{format(day, 'EEE')}</span>
+                      <span className="text-lg font-semibold leading-none">{format(day, 'd')}</span>
                     </div>
                   </th>
                 ))}
@@ -409,42 +402,56 @@ export function Calendar() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="p-8 text-center text-gray-500"><Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />Loading appointments...</td></tr>
+                <tr><td colSpan={8} className="p-8 text-center text-muted-fg"><Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" />Loading appointments...</td></tr>
               ) : (
                 TIME_SLOTS.map((slot) => (
-                  <tr key={slot.value} className="border-b border-gray-100 dark:border-gray-700">
-                    <td className="w-20 p-2 text-xs text-gray-500 dark:text-gray-400 font-mono">{slot.label}</td>
+                  <tr key={slot.value} className="border-b border-border/60">
+                    <td className="sticky left-0 z-[1] w-20 p-2 text-xs text-muted-fg font-mono bg-surface-2">{slot.label}</td>
                     {weekDays.map((day) => {
-                      const appt = getAppointmentForSlot(format(day, 'yyyy-MM-dd'), slot.value)
+                      const appts = getAppointmentsForSlot(format(day, 'yyyy-MM-dd'), slot.value)
+                      const appt = appts[0] ?? null
+                      const extra = appts.length - 1
                       const cellKey = `${format(day, 'yyyy-MM-dd')}-${slot.value}`
-                      const isDropTarget = dropTarget === cellKey && !appt
+                      const isEmpty = appts.length === 0
+                      const isDropTarget = dropTarget === cellKey && isEmpty
                       return (
                         <td
                           key={day.toISOString()}
                           className={cn(
-                            "relative h-24 p-1 border-r border-gray-100 dark:border-gray-700",
-                            !appt && "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50",
-                            isDropTarget && "bg-primary-100 dark:bg-primary-900/40 ring-2 ring-primary-400 ring-inset"
+                            "relative h-24 p-1 border-r border-border/60 align-top",
+                            isEmpty && "cursor-pointer hover:bg-surface-3",
+                            isDropTarget && "bg-primary-50 dark:bg-primary-900/20 ring-2 ring-primary-400 ring-inset"
                           )}
-                          onClick={() => !appt && handleEmptyCellClick(day, slot.value)}
-                          onDragOver={!appt ? (e) => handleCellDragOver(e, cellKey) : undefined}
-                          onDragLeave={!appt ? () => setDropTarget(prev => prev === cellKey ? null : prev) : undefined}
-                          onDrop={!appt ? (e) => handleCellDrop(e, day, slot.value) : undefined}
+                          onClick={() => isEmpty && handleEmptyCellClick(day, slot.value)}
+                          onDragOver={isEmpty ? (e) => handleCellDragOver(e, cellKey) : undefined}
+                          onDragLeave={isEmpty ? () => setDropTarget(prev => prev === cellKey ? null : prev) : undefined}
+                          onDrop={isEmpty ? (e) => handleCellDrop(e, day, slot.value) : undefined}
                         >
-                          {appt && (
-                            <div
-                              draggable
-                              onDragStart={(e) => handleDragStart(e, appt)}
-                              onDragEnd={handleDragEnd}
-                              onClick={(e) => { e.stopPropagation(); handleAppointmentClick(appt) }}
-                              className={cn(
-                                "absolute inset-0 m-1 rounded bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 p-1.5 text-xs hover:bg-primary-200 dark:hover:bg-primary-900/50 cursor-move flex flex-col justify-between",
-                                draggingId === appt.id && "opacity-40"
+                          {appts.length > 0 && (
+                            <div className="absolute inset-1 flex flex-col gap-1 overflow-hidden">
+                              {appts.slice(0, 2).map((a: any) => (
+                                <div
+                                  key={a.id}
+                                  draggable
+                                  onDragStart={(e) => handleDragStart(e, a)}
+                                  onDragEnd={handleDragEnd}
+                                  onClick={(e) => { e.stopPropagation(); handleAppointmentClick(a) }}
+                                  className={cn(
+                                    "rounded-md bg-primary-50 dark:bg-primary-900/30 text-primary-800 dark:text-primary-200 border border-primary-200 dark:border-primary-800 p-1.5 text-xs hover:bg-primary-100 dark:hover:bg-primary-900/40 cursor-move flex flex-col justify-center gap-0.5 shadow-sm",
+                                    draggingId === a.id && "opacity-40"
+                                  )}
+                                  title="Drag to reschedule · click to view"
+                                >
+                                  <span className="truncate font-medium leading-none">{a.patient_name || `Patient ${a.patient_id?.slice(0, 6)}`}</span>
+                                  <span className="text-[10px] opacity-70 leading-none truncate">{a.reason || 'Consultation'}</span>
+                                </div>
+                              ))}
+                              {extra > 1 && (
+                                <div className="text-[10px] text-muted-fg px-1">+{extra - 1} more</div>
                               )}
-                              title="Drag to reschedule · click to view"
-                            >
-                              <span className="truncate font-medium">{appt.patient_name || `Patient ${appt.patient_id?.slice(0, 6)}`}</span>
-                              <span className="text-[10px] opacity-80">{appt.reason || 'Consultation'}</span>
+                              {appt && appts.length === 1 && (
+                                <span className="sr-only">{appt.patient_name}</span>
+                              )}
                             </div>
                           )}
                         </td>
