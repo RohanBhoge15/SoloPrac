@@ -15,7 +15,8 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      'inline-flex h-10 items-center justify-center rounded-md border border-border bg-surface p-1 text-muted-fg',
+      'inline-flex h-10 items-center rounded-lg border border-border bg-surface p-1 text-muted-fg gap-1',
+      'w-full overflow-x-auto scrollbar-none justify-start lg:justify-center',
       className
     )}
     {...props}
@@ -30,11 +31,11 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      'inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium transition-all',
-      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2',
+      'inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-all shrink-0',
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 focus-visible:ring-offset-surface',
       'disabled:pointer-events-none disabled:opacity-50',
-      'data-[state=active]:bg-surface-2 data-[state=active]:text-strong-fg data-[state=active]:shadow-card',
-      'hover:text-strong-fg',
+      'data-[state=active]:bg-surface-2 data-[state=active]:text-strong-fg data-[state=active]:shadow-card data-[state=active]:border data-[state=active]:border-border',
+      'hover:text-strong-fg hover:bg-surface-3/50',
       className
     )}
     {...props}

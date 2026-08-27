@@ -3,14 +3,14 @@ import { cn } from '@/utils/helpers'
 
 // Card primitive re-themed to clinical tokens. Default has zero padding on
 // the wrapper — Header/Content/Footer provide their own — so callers can
-// compose without double-padding. The old version had padding both here and
-// on Header, giving the "too much whitespace inside a card" look.
-const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-  ({ className, ...props }, ref) => (
+// compose without double-padding.
+const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement> & { interactive?: boolean }>(
+  ({ className, interactive, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(
-        'rounded-lg border border-border bg-surface-2 shadow-card',
+        'rounded-xl border border-border bg-surface-2 shadow-card transition-shadow',
+        interactive && 'hover:shadow-card-hover hover:border-border-strong cursor-pointer',
         className
       )}
       {...props}

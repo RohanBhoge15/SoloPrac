@@ -7,31 +7,31 @@ import { cn } from '@/utils/helpers'
 // Severity variants (critical/high/moderate/low) map to the tokens in
 // tailwind.config.js so charts and badges speak the same color language.
 const badgeVariants = cva(
-  'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
+  'inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors whitespace-nowrap',
   {
     variants: {
       variant: {
         default:
-          'border-transparent bg-primary-50 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200',
+          'border-transparent bg-primary-50 text-primary-800 dark:bg-primary-900/30 dark:text-primary-200',
         primary:
-          'border-transparent bg-primary-50 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200',
-        secondary: 'border-border bg-surface-2 text-muted-fg',
+          'border-transparent bg-primary-50 text-primary-800 dark:bg-primary-900/30 dark:text-primary-200',
+        secondary: 'border-border bg-surface-3 text-muted-fg',
         accent:
-          'border-transparent bg-accent-50 text-accent-800 dark:bg-accent-900/40 dark:text-accent-200',
+          'border-transparent bg-accent-50 text-accent-800 dark:bg-accent-900/30 dark:text-accent-200',
         success:
-          'border-transparent bg-accent-50 text-accent-800 dark:bg-accent-900/40 dark:text-accent-200',
+          'border-success/15 bg-success-subtle text-emerald-800 dark:text-emerald-200',
         warning:
-          'border-transparent bg-yellow-50 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200',
+          'border-warning/20 bg-warning-subtle text-amber-900 dark:text-amber-200',
         destructive:
-          'border-transparent bg-red-50 text-severity-critical dark:bg-red-900/40 dark:text-red-200',
+          'border-critical/15 bg-critical-subtle text-red-800 dark:text-red-200',
         outline: 'border-border bg-transparent text-strong-fg',
 
         // Severity variants — align badges with severity coloring used in
         // charts and alerts. Same token, same meaning everywhere.
-        critical: 'border-transparent bg-red-50 text-severity-critical',
-        high: 'border-transparent bg-orange-50 text-severity-high',
-        moderate: 'border-transparent bg-amber-50 text-severity-moderate',
-        low: 'border-transparent bg-slate-100 text-severity-low',
+        critical: 'border-critical/15 bg-critical-subtle text-severity-critical',
+        high: 'border-transparent bg-orange-50 text-severity-high dark:bg-orange-900/20',
+        moderate: 'border-transparent bg-amber-50 text-severity-moderate dark:bg-amber-900/20',
+        low: 'border-border bg-surface-3 text-severity-low',
       },
     },
     defaultVariants: {
