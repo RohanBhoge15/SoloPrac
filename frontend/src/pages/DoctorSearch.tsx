@@ -201,7 +201,7 @@ export function DoctorSearch() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Find a Doctor</h1>
+      <h1 className="text-2xl font-bold text-strong-fg">Find a Doctor</h1>
 
       <Card>
         <CardContent className="p-4">
@@ -286,7 +286,7 @@ export function DoctorSearch() {
                       className="h-12 w-12 rounded-full object-cover"
                     />
                     <div>
-                      <p className="font-medium text-gray-900 dark:text-white">{doc.name}</p>
+                      <p className="font-medium text-strong-fg">{doc.name}</p>
                       <p className="text-sm text-gray-500 flex items-center gap-1"><Stethoscope className="h-3 w-3" /> {doc.speciality}</p>
                       {doc.clinic_name && <p className="text-xs text-gray-400">{doc.clinic_name}</p>}
                       {doc.years_experience != null && (
@@ -346,7 +346,7 @@ export function DoctorSearch() {
                   {loadingSlots ? <Loader2 className="h-5 w-5 animate-spin mx-auto" /> : slots.length === 0 ? <p className="text-sm text-gray-400">No slots available this week</p> : (
                     <div className="space-y-1.5 max-h-64 overflow-y-auto">
                       {slots.slice(0, 15).map((slot, i) => (
-                        <button key={i} onClick={() => !booked && handleBookSlot(slot)} disabled={booking || booked} className={cn('w-full p-2 rounded-lg text-xs text-left border transition-colors', bookingSlot?.start === slot.start && booked ? 'bg-green-50 border-green-300 border-2' : 'hover:bg-gray-50 dark:hover:bg-gray-800 border-gray-200 dark:border-gray-700')}>
+                        <button key={i} onClick={() => !booked && handleBookSlot(slot)} disabled={booking || booked} className={cn('w-full p-2 rounded-lg text-xs text-left border transition-colors', bookingSlot?.start === slot.start && booked ? 'bg-green-50 border-green-300 border-2' : 'hover:bg-gray-50 dark:hover:bg-gray-800 border-border')}>
                           <span className="font-medium">{slot.date?.slice(5)}</span>
                           <span className="ml-2 text-gray-500">{slot.time}</span>
                           <span className="ml-1 text-[10px] text-gray-400">({slot.duration_minutes}min)</span>

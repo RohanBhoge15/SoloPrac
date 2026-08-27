@@ -86,7 +86,7 @@ export function PatientInbox() {
   return (
     <div className="space-y-4 animate-in fade-in duration-300">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Inbox</h1>
+        <h1 className="text-2xl font-bold text-strong-fg">Inbox</h1>
         <div className="flex items-center gap-2">
           {unreadCount > 0 && <Badge className="bg-blue-500 text-white">{unreadCount} unread</Badge>}
           <span className={cn(wsConnected ? 'text-green-600' : 'text-red-600')}>
@@ -101,15 +101,15 @@ export function PatientInbox() {
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm text-gray-900 dark:text-white">{n.subject}</span>
+                    <span className="font-medium text-sm text-strong-fg">{n.subject}</span>
                     {!n.read && <Badge className="bg-blue-500 text-white text-[10px]">New</Badge>}
                     {n.doctor && (
-                      <Badge variant="outline" className="text-[10px] text-gray-600 dark:text-gray-400">
+                      <Badge variant="outline" className="text-[10px] text-muted-fg">
                         Dr. {n.doctor.name} {n.doctor.speciality ? `· ${n.doctor.speciality}` : ''} {n.doctor.clinic_name ? `(${n.doctor.clinic_name})` : ''}
                       </Badge>
                     )}
                   </div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">{n.body}</p>
+                  <p className="text-sm text-muted-fg">{n.body}</p>
                   <p className="text-xs text-gray-400 mt-1 flex items-center gap-1"><Clock className="h-3 w-3" />{new Date(n.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
                   {n.meta && (patientDocPath(n.meta) || n.meta.pdf_url) && (
                     <a

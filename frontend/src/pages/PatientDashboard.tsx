@@ -64,7 +64,7 @@ export function PatientDashboard() {
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Dashboard</h1>
+        <h1 className="text-2xl font-bold text-strong-fg">My Dashboard</h1>
         <div className="flex items-center gap-2 text-sm">
           <span className={cn(wsConnected ? 'text-green-600' : 'text-red-600')}>
             {wsConnected ? '🟢 Live' : '🔴 Offline'}
@@ -107,7 +107,7 @@ export function PatientDashboard() {
               .map((apt: any) => (
               <div key={apt.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
                 <div>
-                  <p className="font-medium text-gray-900 dark:text-white">{new Date(apt.start_at).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
+                  <p className="font-medium text-strong-fg">{new Date(apt.start_at).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>
                   <p className="text-sm text-gray-500">{new Date(apt.start_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })} - {apt.reason || 'Consultation'}</p>
                 </div>
                 <Badge variant="default" className="bg-green-100 text-green-700">{apt.status}</Badge>
@@ -124,7 +124,7 @@ export function PatientDashboard() {
             {notifications.slice(0, 5).map((n: any) => (
               <div key={n.id} className={cn('p-3 rounded-lg', n.read ? 'bg-gray-50 dark:bg-gray-800/30' : 'bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800')}>
                 <div className="flex items-center justify-between">
-                  <p className="font-medium text-sm text-gray-900 dark:text-white">{n.subject}</p>
+                  <p className="font-medium text-sm text-strong-fg">{n.subject}</p>
                   {!n.read && <span className="h-2 w-2 rounded-full bg-blue-500" />}
                 </div>
                 <p className="text-xs text-gray-500 mt-1">{n.body}</p>

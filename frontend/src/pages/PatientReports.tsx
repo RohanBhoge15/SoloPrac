@@ -68,7 +68,7 @@ export function PatientReports() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Reports</h1>
+      <h1 className="text-2xl font-bold text-strong-fg">My Reports</h1>
 
       {/* Weekly Report Card */}
       <Card className="border-primary-200 dark:border-primary-800 bg-primary-50 dark:bg-primary-900/10">
@@ -79,7 +79,7 @@ export function PatientReports() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
+          <p className="text-sm text-muted-fg">
             Download your weekly clinical summary with diagnoses, medications, vitals, and upcoming appointments.
           </p>
           <div className="flex items-center gap-3 flex-wrap">

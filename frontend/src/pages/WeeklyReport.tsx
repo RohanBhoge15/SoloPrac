@@ -139,7 +139,7 @@ export function WeeklyReport() {
         <span className="text-xs text-gray-500">{s.date}</span>
         <Badge className={cn('text-[10px]', TIER_COLORS[s.tier])}>{s.tier}</Badge>
       </div>
-      <p className="text-sm text-gray-900 dark:text-white">{s.summary}</p>
+      <p className="text-sm text-strong-fg">{s.summary}</p>
       {s.score && (
         <div className="mt-1 flex items-center gap-2">
           <span className="text-[10px] text-gray-400">Significance: {s.score.toFixed(3)}</span>
@@ -170,7 +170,7 @@ export function WeeklyReport() {
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Weekly Reports</h1>
+        <h1 className="text-2xl font-bold text-strong-fg">Weekly Reports</h1>
         <Badge variant="outline" className="text-[10px]">Feature F</Badge>
       </div>
 

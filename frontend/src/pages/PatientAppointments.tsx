@@ -131,7 +131,7 @@ export function PatientAppointments() {
 
   return (
     <div className="space-y-4 animate-in fade-in duration-300">
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">My Appointments</h1>
+      <h1 className="text-2xl font-bold text-strong-fg">My Appointments</h1>
 
       {appointments.length === 0 ? (
         <p className="text-gray-400 text-center py-8">No appointments found.</p>
@@ -144,7 +144,7 @@ export function PatientAppointments() {
                   <CalendarDays className="h-5 w-5 text-primary-600" />
                 </div>
                 <div>
-                  <p className="font-medium text-gray-900 dark:text-white">{fmtDate(apt.start_at)}</p>
+                  <p className="font-medium text-strong-fg">{fmtDate(apt.start_at)}</p>
                   <p className="text-sm text-gray-500">
                     {fmtTime(apt.start_at)} - {apt.reason || 'Consultation'}
                   </p>
@@ -178,9 +178,9 @@ export function PatientAppointments() {
 
       {rescheduleFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white dark:bg-gray-900 shadow-xl max-h-[80vh] overflow-y-auto">
+          <div className="w-full max-w-md rounded-xl bg-surface-2 shadow-xl max-h-[80vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b px-4 py-3">
-              <h2 className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+              <h2 className="font-semibold text-strong-fg flex items-center gap-2">
                 <CalendarClock className="h-5 w-5" /> Pick a new time
               </h2>
               <button onClick={() => setRescheduleFor(null)} className="text-gray-400 hover:text-gray-600">
