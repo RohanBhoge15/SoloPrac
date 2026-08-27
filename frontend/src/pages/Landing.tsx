@@ -66,15 +66,15 @@ const STATS = [
 
 export function Landing() {
   return (
-    <div className="min-h-screen bg-white dark:bg-gray-950">
+    <div className="min-h-screen bg-surface-2">
       {/* ── Navbar ── */}
-      <nav className="sticky top-0 z-50 border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-950/80 backdrop-blur-md">
+      <nav className="sticky top-0 z-50 border-b border-border bg-surface-2/90 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="h-8 w-8 rounded-lg bg-primary-600 flex items-center justify-center">
               <Stethoscope className="h-5 w-5 text-white" />
             </div>
-            <span className="text-xl font-bold text-gray-900 dark:text-white">SoloPrac AI</span>
+            <span className="text-xl font-bold text-strong-fg">SoloPrac AI</span>
           </div>
           <div className="flex items-center gap-3">
             <Link to="/login">
@@ -96,7 +96,7 @@ export function Landing() {
               <Sparkles className="h-4 w-4" />
               Built for India's Solo Doctors
             </div>
-            <h1 className="text-4xl sm:text-6xl font-bold text-gray-900 dark:text-white tracking-tight">
+            <h1 className="text-4xl sm:text-6xl font-bold text-strong-fg tracking-tight">
               Your Clinic's AI
               <span className="text-primary-600"> Operating System</span>
             </h1>
@@ -124,13 +124,13 @@ export function Landing() {
       </section>
 
       {/* ── Stats ── */}
-      <section className="border-y border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
+      <section className="border-y border-border bg-surface-3">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
             {STATS.map((stat, i) => (
               <div key={i} className="text-center">
                 <div className="text-2xl font-bold text-primary-600">{stat.value}</div>
-                <div className="text-sm text-gray-500 dark:text-gray-400 mt-1">{stat.label}</div>
+                <div className="text-sm text-muted-fg mt-1">{stat.label}</div>
               </div>
             ))}
           </div>
@@ -146,7 +146,7 @@ export function Landing() {
               <div className="h-12 w-12 rounded-xl bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center mb-5">
                 <Stethoscope className="h-6 w-6 text-primary-600" />
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">For Doctors</h3>
+              <h3 className="text-2xl font-bold text-strong-fg mb-3">For Doctors</h3>
               <p className="text-gray-600 dark:text-gray-400 mb-6">
                 Solo practitioners managing their own clinic. One doctor, one clinic, zero paperwork.
               </p>
@@ -180,7 +180,7 @@ export function Landing() {
               <div className="h-12 w-12 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center mb-5">
                 <Users className="h-6 w-6 text-blue-600" />
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 dark:text-white mb-3">For Patients</h3>
+              <h3 className="text-2xl font-bold text-strong-fg mb-3">For Patients</h3>
               <p className="text-gray-600 dark:text-gray-400 mb-6">
                 Find trusted doctors, book appointments, and access your medical records — all in one place.
               </p>
@@ -211,10 +211,10 @@ export function Landing() {
       </section>
 
       {/* ── Features ── */}
-      <section className="bg-gray-50 dark:bg-gray-900/50 border-y border-gray-200 dark:border-gray-800">
+      <section className="bg-surface-3 border-y border-border">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
           <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Everything You Need</h2>
+            <h2 className="text-3xl font-bold text-strong-fg">Everything You Need</h2>
             <p className="mt-3 text-gray-600 dark:text-gray-400 max-w-xl mx-auto">
               Purpose-built for solo medical practitioners in India. No bloat, no enterprise features — just what you need.
             </p>
@@ -226,7 +226,7 @@ export function Landing() {
                   <div className="h-10 w-10 rounded-lg bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center mb-4">
                     <feature.icon className="h-5 w-5 text-primary-600" />
                   </div>
-                  <h3 className="font-semibold text-gray-900 dark:text-white mb-2">{feature.title}</h3>
+                  <h3 className="font-semibold text-strong-fg mb-2">{feature.title}</h3>
                   <p className="text-sm text-gray-600 dark:text-gray-400">{feature.description}</p>
                 </CardContent>
               </Card>
@@ -238,7 +238,7 @@ export function Landing() {
       {/* ── How It Works ── */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
         <div className="text-center mb-12">
-          <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Get Started in 3 Steps</h2>
+          <h2 className="text-3xl font-bold text-strong-fg">Get Started in 3 Steps</h2>
           <p className="mt-3 text-gray-600 dark:text-gray-400">
             From sign-up to your first AI-assisted prescription — under 2 minutes.
           </p>
@@ -249,7 +249,7 @@ export function Landing() {
               <div className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-primary-600 text-white text-xl font-bold mb-4">
                 {step.step}
               </div>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">{step.title}</h3>
+              <h3 className="text-lg font-semibold text-strong-fg mb-2">{step.title}</h3>
               <p className="text-sm text-gray-600 dark:text-gray-400">{step.description}</p>
             </div>
           ))}
@@ -257,13 +257,13 @@ export function Landing() {
       </section>
 
       {/* ── Compliance ── */}
-      <section className="bg-gray-50 dark:bg-gray-900/50 border-y border-gray-200 dark:border-gray-800">
+      <section className="bg-surface-3 border-y border-border">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-8">
             <div className="flex items-start gap-3">
               <Shield className="h-6 w-6 text-primary-600 mt-1 shrink-0" />
               <div>
-                <h4 className="font-semibold text-gray-900 dark:text-white">DPDP Act Compliant</h4>
+                <h4 className="font-semibold text-strong-fg">DPDP Act Compliant</h4>
                 <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                   Full consent management, data erasure rights, and purpose limitation — India's data protection law built in.
                 </p>
@@ -272,7 +272,7 @@ export function Landing() {
             <div className="flex items-start gap-3">
               <Lock className="h-6 w-6 text-primary-600 mt-1 shrink-0" />
               <div>
-                <h4 className="font-semibold text-gray-900 dark:text-white">End-to-End Encrypted</h4>
+                <h4 className="font-semibold text-strong-fg">End-to-End Encrypted</h4>
                 <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                   PII encrypted at rest, HttpOnly cookies, RBAC — your patients' data is always protected.
                 </p>
@@ -281,7 +281,7 @@ export function Landing() {
             <div className="flex items-start gap-3">
               <Globe className="h-6 w-6 text-primary-600 mt-1 shrink-0" />
               <div>
-                <h4 className="font-semibold text-gray-900 dark:text-white">Made for India</h4>
+                <h4 className="font-semibold text-strong-fg">Made for India</h4>
                 <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                   State-specific prescriptions, NMC verification, Indian drug names, Hindi UI — built for how Indian doctors actually work.
                 </p>
@@ -294,7 +294,7 @@ export function Landing() {
       {/* ── CTA ── */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
         <div className="text-center">
-          <h2 className="text-3xl font-bold text-gray-900 dark:text-white">
+          <h2 className="text-3xl font-bold text-strong-fg">
             Ready to modernize your practice?
           </h2>
           <p className="mt-3 text-gray-600 dark:text-gray-400 max-w-lg mx-auto">
@@ -317,16 +317,16 @@ export function Landing() {
       </section>
 
       {/* ── Footer ── */}
-      <footer className="border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50">
+      <footer className="border-t border-border bg-surface-3">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <div className="h-6 w-6 rounded bg-primary-600 flex items-center justify-center">
                 <Stethoscope className="h-3.5 w-3.5 text-white" />
               </div>
-              <span className="text-sm font-semibold text-gray-900 dark:text-white">SoloPrac AI</span>
+              <span className="text-sm font-semibold text-strong-fg">SoloPrac AI</span>
             </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
+            <p className="text-sm text-muted-fg">
               BTech Capstone Project · IEEE Paper · Made in India
             </p>
           </div>

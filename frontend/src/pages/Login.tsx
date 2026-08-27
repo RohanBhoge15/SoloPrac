@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Card } from '@/components/ui/Card'
-import { Mail, Lock, Stethoscope, Loader2, AlertCircle } from 'lucide-react'
+import { Mail, Lock, Stethoscope, AlertCircle } from 'lucide-react'
 
 export function Login() {
   const [email, setEmail] = useState('')
@@ -42,23 +42,23 @@ const handleDevLogin = async () => {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 px-4">
+    <div className="min-h-screen flex items-center justify-center bg-surface px-4 py-8">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <Link to="/" className="inline-flex items-center gap-2 text-2xl font-bold text-primary-600 dark:text-primary-400">
-            <Stethoscope className="h-8 w-8" />
+          <Link to="/" className="inline-flex items-center gap-2 text-2xl font-bold text-primary-600 hover:text-primary-700 transition-colors">
+            <div className="h-9 w-9 rounded-lg bg-primary-600 flex items-center justify-center shadow-sm">
+              <Stethoscope className="h-5 w-5 text-white" />
+            </div>
             SoloPrac AI
           </Link>
-          <p className="mt-2 text-gray-500 dark:text-gray-400">
-            Sign in to your clinical workspace
-          </p>
+          <p className="mt-2 text-sm text-muted-fg">Sign in to your clinical workspace</p>
         </div>
 
         {/* Login Card */}
-        <Card className="p-6">
+        <Card className="p-6 shadow-card-elevated">
           {error && (
-            <div className="mb-4 flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-700 dark:text-red-300 text-sm">
+            <div className="mb-4 flex items-center gap-2 p-3 bg-critical-subtle border border-critical/15 rounded-lg text-red-700 dark:text-red-300 text-sm" role="alert">
               <AlertCircle className="h-4 w-4 flex-shrink-0" />
               {error}
             </div>
@@ -72,6 +72,7 @@ const handleDevLogin = async () => {
                 <Input
                   id="email"
                   type="email"
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="doctor@clinic.com"
@@ -89,6 +90,7 @@ const handleDevLogin = async () => {
                 <Input
                   id="password"
                   type="password"
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
@@ -99,15 +101,8 @@ const handleDevLogin = async () => {
               </div>
             </div>
 
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Signing in...
-                </>
-              ) : (
-                'Sign in'
-              )}
+            <Button type="submit" className="w-full" loading={loading}>
+              Sign in
             </Button>
           </form>
 

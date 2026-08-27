@@ -59,7 +59,7 @@ export function PatientRegistration() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-surface p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-6">
@@ -67,7 +67,7 @@ export function PatientRegistration() {
             <User className="h-8 w-8" />
             SoloPrac AI
           </Link>
-          <p className="mt-2 text-gray-500 dark:text-gray-400">Patient portal</p>
+          <p className="mt-2 text-muted-fg">Patient portal</p>
         </div>
 
         <Card className="w-full max-w-md">

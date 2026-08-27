@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
-import { Loader2, User, Mail, Lock, ArrowRight } from 'lucide-react'
+import { User, Mail, Lock, ArrowRight } from 'lucide-react'
 import { apiClient } from '@/services/api'
 
 export function PatientLogin() {
@@ -43,21 +43,23 @@ export function PatientLogin() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-surface p-4">
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-6">
-          <Link to="/" className="inline-flex items-center gap-2 text-2xl font-bold text-primary-600 dark:text-primary-400">
-            <User className="h-8 w-8" />
+          <Link to="/" className="inline-flex items-center gap-2 text-2xl font-bold text-primary-600 hover:text-primary-700 transition-colors">
+            <div className="h-9 w-9 rounded-lg bg-primary-600 flex items-center justify-center shadow-sm">
+              <User className="h-5 w-5 text-white" />
+            </div>
             SoloPrac AI
           </Link>
-          <p className="mt-2 text-gray-500 dark:text-gray-400">Patient portal</p>
+          <p className="mt-2 text-sm text-muted-fg">Patient portal</p>
         </div>
 
-        <Card className="w-full max-w-sm">
+        <Card className="w-full max-w-sm shadow-card-elevated">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-2">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary-600">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary-600 shadow-sm">
               <User className="h-6 w-6 text-white" />
             </div>
           </div>
@@ -80,8 +82,7 @@ export function PatientLogin() {
               </div>
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
-            <Button type="submit" className="w-full" disabled={loading || !email || !password}>
-              {loading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+            <Button type="submit" className="w-full" loading={loading} disabled={!email || !password}>
               Sign In
               <ArrowRight className="h-4 w-4 ml-2" />
             </Button>

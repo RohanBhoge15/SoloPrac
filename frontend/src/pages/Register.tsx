@@ -67,7 +67,7 @@ export function Register() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 px-4 py-8">
+    <div className="min-h-screen flex items-center justify-center bg-surface px-4 py-8">
       <div className="w-full max-w-xl">
         {/* Logo */}
         <div className="text-center mb-8">
@@ -75,7 +75,7 @@ export function Register() {
             <Stethoscope className="h-8 w-8" />
             SoloPrac AI
           </Link>
-          <p className="mt-2 text-gray-500 dark:text-gray-400">
+          <p className="mt-2 text-muted-fg">
             Create your clinical workspace
           </p>
         </div>
@@ -178,7 +178,7 @@ export function Register() {
                 <MapPin className="h-4 w-4 text-primary-500" />
                 Pin your clinic on the map
               </label>
-              <p className="mt-0.5 mb-2 text-xs text-gray-500 dark:text-gray-400">
+              <p className="mt-0.5 mb-2 text-xs text-muted-fg">
                 Click the map or search an address. Patients search by distance from your pin.
               </p>
               <MapPicker
@@ -240,7 +240,7 @@ export function Register() {
           </form>
         </Card>
 
-        <p className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
+        <p className="mt-6 text-center text-sm text-muted-fg">
           Already have an account?{' '}
           <Link to="/login" className="text-primary-600 hover:underline">
             Sign in
