@@ -285,13 +285,13 @@ export function PatientDetail() {
 
         {/* Record tabs */}
         <Tabs defaultValue="overview" className="w-full">
-          <TabsList className="w-full grid grid-cols-3 lg:grid-cols-6">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="images">Images</TabsTrigger>
-            <TabsTrigger value="documents">Documents</TabsTrigger>
-            <TabsTrigger value="rx">Prescriptions</TabsTrigger>
-            <TabsTrigger value="certificate">Certificate</TabsTrigger>
-            <TabsTrigger value="invoice">Invoice</TabsTrigger>
+          <TabsList className="w-full flex overflow-x-auto gap-1">
+            <TabsTrigger value="overview" className="shrink-0">Overview</TabsTrigger>
+            <TabsTrigger value="images" className="shrink-0">Images</TabsTrigger>
+            <TabsTrigger value="documents" className="shrink-0">Documents</TabsTrigger>
+            <TabsTrigger value="rx" className="shrink-0">Prescriptions</TabsTrigger>
+            <TabsTrigger value="certificate" className="shrink-0">Certificate</TabsTrigger>
+            <TabsTrigger value="invoice" className="shrink-0">Invoice</TabsTrigger>
           </TabsList>
 
           {/* ─── Overview ─── */}
@@ -308,16 +308,17 @@ export function PatientDetail() {
                 </CardHeader>
                 <CardContent className="space-y-2">
                   {(Object.keys(displayDemo) as (keyof Demographics)[]).map(k => (
-                    <div key={k} className="flex justify-between items-center gap-2">
-                      <span className="text-xs text-muted-fg capitalize">{k}</span>
+                    <div key={k} className="flex justify-between items-center gap-2 py-1">
+                      <span className="text-xs text-muted-fg capitalize shrink-0">{k}</span>
                       {editMode ? (
                         <Input
-                          defaultValue={String(displayDemo[k] || '')}
+                          value={String(displayDemo[k] || '')}
                           onChange={e => handleFieldEdit(k, e.target.value)}
                           className="w-40 h-7 text-xs text-right"
+                          aria-label={`Edit ${k}`}
                         />
                       ) : (
-                        <span className="text-sm text-strong-fg font-medium text-right truncate">
+                        <span className="text-sm text-strong-fg font-medium text-right truncate max-w-[10rem]">
                           {String(displayDemo[k]) || '—'}
                         </span>
                       )}
@@ -606,7 +607,7 @@ function MobileCopilotSheet({
     <div className="xl:hidden">
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-4 right-4 z-30 h-12 w-12 rounded-full bg-primary-600 text-white shadow-card-hover flex items-center justify-center hover:bg-primary-700"
+        className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-30 h-12 w-12 rounded-full bg-primary-600 text-white shadow-card-elevated flex items-center justify-center hover:bg-primary-700 active:scale-95 transition-transform"
         aria-label="Open Clinical Copilot"
       >
         <Sparkles className="h-5 w-5" />
