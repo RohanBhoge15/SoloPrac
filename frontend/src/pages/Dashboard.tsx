@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Calendar, FileText, Search, Mic, Plus, Users, Stethoscope, TrendingUp, AlertTriangle } from 'lucide-react'
@@ -15,10 +16,12 @@ interface StatCard {
   value: string | number
   change: string
   icon: React.ElementType
-  color: string
+  iconBg: string
+  iconColor: string
 }
 
 export function Dashboard() {
+  const navigate = useNavigate()
   const { user } = useAuth()
   const { alerts, fetchAlerts, pushAlert } = useRiskStore()
   const { patients, fetchPatients } = usePatientStore()
@@ -29,13 +32,12 @@ export function Dashboard() {
   // command palette so it matches the ⌘K shortcut advertised on the badge.
   const { openPalette } = useCommandPalette()
 
-  // Stat cards — color pair is a foreground token (icon) + backdrop token
-  // (icon tile). Kept short so the JSX below can stay readable.
+  // Stat cards — explicit bg + icon color avoids fragile string split
   const [stats, setStats] = useState<StatCard[]>([
-    { label: 'Total Patients', value: 0, change: '', icon: Users, color: 'text-primary-700 bg-primary-50' },
-    { label: "Today's Appointments", value: 0, change: '', icon: Calendar, color: 'text-accent-700 bg-accent-50' },
-    { label: 'Pending Reports', value: 0, change: '', icon: FileText, color: 'text-severity-moderate bg-amber-50' },
-    { label: 'AI Alerts', value: 0, change: '', icon: TrendingUp, color: 'text-severity-critical bg-red-50' },
+    { label: 'Total Patients', value: 0, change: '', icon: Users, iconBg: 'bg-primary-50', iconColor: 'text-primary-700' },
+    { label: "Today's Appointments", value: 0, change: '', icon: Calendar, iconBg: 'bg-accent-50', iconColor: 'text-accent-700' },
+    { label: 'Pending Reports', value: 0, change: '', icon: FileText, iconBg: 'bg-amber-50', iconColor: 'text-severity-moderate' },
+    { label: 'AI Alerts', value: 0, change: '', icon: TrendingUp, iconBg: 'bg-red-50', iconColor: 'text-severity-critical' },
   ])
 
   useEffect(() => { fetchAlerts() }, [fetchAlerts])
@@ -54,8 +56,8 @@ export function Dashboard() {
 
   useEffect(() => {
     const totalPatients = patients.length
-    const todayAppointments = appointments.filter(a => a.status === 'scheduled' || a.status === 'confirmed').length
-    const criticalAlerts = alerts.filter(a => a.severity > 0.7).length
+    const todayAppointments = appointments.filter((a) => a.status === 'scheduled' || a.status === 'confirmed').length
+    const criticalAlerts = alerts.filter((a) => a.severity > 0.7).length
 
     setStats([
       {
@@ -63,22 +65,25 @@ export function Dashboard() {
         value: totalPatients,
         change: totalPatients > 0 ? 'Active' : 'No patients yet',
         icon: Users,
-        color: 'text-primary-700 bg-primary-50',
+        iconBg: 'bg-primary-50',
+        iconColor: 'text-primary-700',
       },
       {
         label: "Today's Appointments",
         value: todayAppointments,
         change: todayAppointments > 0 ? `${todayAppointments} scheduled` : 'No appointments',
         icon: Calendar,
-        color: 'text-accent-700 bg-accent-50',
+        iconBg: 'bg-accent-50',
+        iconColor: 'text-accent-700',
       },
-      { label: 'Pending Reports', value: 0, change: 'No data', icon: FileText, color: 'text-severity-moderate bg-amber-50' },
+      { label: 'Pending Reports', value: 0, change: 'No data', icon: FileText, iconBg: 'bg-amber-50', iconColor: 'text-severity-moderate' },
       {
         label: 'AI Alerts',
         value: alerts.length,
         change: criticalAlerts > 0 ? `${criticalAlerts} high priority` : alerts.length > 0 ? 'All normal' : 'No alerts',
         icon: TrendingUp,
-        color: 'text-severity-critical bg-red-50',
+        iconBg: 'bg-red-50',
+        iconColor: 'text-severity-critical',
       },
     ])
   }, [patients.length, appointments.length, alerts.length])
@@ -111,16 +116,16 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {stats.map((stat) => (
-          <Card key={stat.label} className="transition-shadow hover:shadow-card-hover">
+          <Card key={stat.label} className="transition-shadow hover:shadow-card-hover" interactive>
             <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="vital-label">{stat.label}</p>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="vital-label truncate">{stat.label}</p>
                   <p className="text-vital-md text-strong-fg mt-1 tnum">{stat.value}</p>
-                  <p className="text-xs text-muted-fg mt-1">{stat.change}</p>
+                  <p className="text-xs text-muted-fg mt-1 truncate">{stat.change}</p>
                 </div>
-                <div className={cn('p-3 rounded-lg', stat.color.split(' ').find(c => c.startsWith('bg-')))}>
-                  <stat.icon className={cn('h-5 w-5', stat.color.split(' ').find(c => c.startsWith('text-')))} />
+                <div className={cn('p-3 rounded-xl shrink-0', stat.iconBg)}>
+                  <stat.icon className={cn('h-5 w-5', stat.iconColor)} />
                 </div>
               </div>
             </CardContent>
@@ -168,7 +173,9 @@ export function Dashboard() {
         <Card className="lg:col-span-2">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Recent Patients</CardTitle>
-            <a href="/patients" className="text-sm font-medium text-primary-700 hover:underline">View all →</a>
+            <button onClick={openPalette} className="text-sm font-medium text-primary-700 hover:underline">
+              Search patients →
+            </button>
           </CardHeader>
           <CardContent>
             <div className="space-y-1">
@@ -192,11 +199,12 @@ export function Dashboard() {
                   const lastVisit = patient.updated_at
                     ? new Date(patient.updated_at).toLocaleDateString()
                     : 'Never'
-                  return (
-                    <div
+                    return (
+                    <button
                       key={patient.id}
-                      className="flex items-center justify-between p-2.5 rounded-md hover:bg-surface transition-colors cursor-pointer"
-                      onClick={() => window.location.href = `/patients/${patient.id}`}
+                      type="button"
+                      className="flex items-center justify-between w-full p-2.5 rounded-lg hover:bg-surface-3 transition-colors text-left"
+                      onClick={() => navigate(`/patients/${patient.id}`)}
                       {...prefetchPatient(patient.id)}
                     >
                       <div className="flex items-center gap-3 min-w-0">
@@ -212,13 +220,13 @@ export function Dashboard() {
                           </p>
                         </div>
                       </div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </CardContent>
+          </Card>
       </div>
 
       <Card>
