@@ -59,8 +59,8 @@ export function Settings() {
           <CurrentIcon className="h-5 w-5" />
         </div>
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Settings — {current.title}</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">{current.subtitle}</p>
+          <h1 className="text-xl font-semibold text-strong-fg">Settings — {current.title}</h1>
+          <p className="text-sm text-muted-fg">{current.subtitle}</p>
         </div>
       </div>
 
@@ -287,7 +287,7 @@ function ProfileTab() {
 
         {/* Verification + Photo Banner */}
         {verificationStatus !== 'verified' && (
-          <div className="p-4 rounded-xl bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 border border-amber-200 dark:border-amber-800">
+          <div className="p-4 rounded-xl bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 border border-warning/15">
             <div className="flex items-start gap-3">
               <Shield className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
               <div>
@@ -303,7 +303,7 @@ function ProfileTab() {
         )}
 
         {/* Profile Photo */}
-        <div className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+        <div className="flex items-center gap-4 p-4 bg-surface-3 rounded-xl">
           <div className="relative group">
             {photoUrl ? (
               <img
@@ -329,8 +329,8 @@ function ProfileTab() {
             </button>
           </div>
           <div>
-            <p className="font-medium text-gray-900 dark:text-white">{form.name || 'Your Name'}</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400">{form.speciality || 'Speciality'}</p>
+            <p className="font-medium text-strong-fg">{form.name || 'Your Name'}</p>
+            <p className="text-sm text-muted-fg">{form.speciality || 'Speciality'}</p>
             {yearsExperience !== null && (
               <div className="flex items-center gap-1 mt-1">
                 <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
@@ -351,10 +351,10 @@ function ProfileTab() {
         </div>
 
         {/* ── Clinic Branding — Logo + Signature ── */}
-        <div className="p-4 rounded-xl bg-gray-50 dark:bg-gray-800/50 space-y-4">
+        <div className="p-4 rounded-xl bg-surface-3 space-y-4">
           <div>
-            <p className="text-sm font-medium text-gray-900 dark:text-white">Clinic Branding</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            <p className="text-sm font-medium text-strong-fg">Clinic Branding</p>
+            <p className="text-xs text-muted-fg mt-0.5">
               Your logo appears at the top of every prescription, invoice and certificate.
               Your signature appears above your name in the sign-off area.
             </p>
@@ -365,7 +365,7 @@ function ProfileTab() {
             <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wide text-gray-500">Clinic Logo</Label>
               <div className="flex items-center gap-3">
-                <div className="h-16 w-24 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center overflow-hidden shrink-0">
+                <div className="h-16 w-24 rounded-lg bg-surface-2 border border-border flex items-center justify-center overflow-hidden shrink-0">
                   {clinicLogoUrl ? (
                     <img src={clinicLogoUrl} alt="Clinic logo" className="max-h-full max-w-full object-contain" />
                   ) : (
@@ -403,7 +403,7 @@ function ProfileTab() {
             <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wide text-gray-500">Signature</Label>
               <div className="flex items-center gap-3">
-                <div className="h-16 w-24 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 flex items-center justify-center overflow-hidden shrink-0">
+                <div className="h-16 w-24 rounded-lg bg-surface-2 border border-border flex items-center justify-center overflow-hidden shrink-0">
                   {signatureUrl ? (
                     <img src={signatureUrl} alt="Signature" className="max-h-full max-w-full object-contain" />
                   ) : (
@@ -466,12 +466,12 @@ function ProfileTab() {
           </div>
         </div>
 
-        <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+        <div className="border-t border-border pt-4">
           <Label className="flex items-center gap-2 mb-2">
             <MapPin className="h-4 w-4 text-primary-500" />
             Practice Location
           </Label>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+          <p className="text-sm text-muted-fg mb-3">
             Pin your clinic location on the map so patients can find you.
             Click the map or search an address to place the marker.
           </p>
@@ -603,10 +603,10 @@ function NotificationsTab() {
         {NOTIF_EVENTS.map(evt => {
           const p = prefs[evt.key] || DEFAULT_NOTIF_PREFS[evt.key]
           return (
-            <div key={evt.key} className="p-4 rounded-lg border border-gray-200 dark:border-gray-700 space-y-3">
+            <div key={evt.key} className="p-4 rounded-lg border border-border space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-medium text-gray-900 dark:text-white">{evt.label}</p>
+                  <p className="font-medium text-strong-fg">{evt.label}</p>
                   <p className="text-xs text-gray-500">
                     {p.enabled ? 'Enabled' : 'Disabled'}
                     {evt.supportsHoursBefore && p.enabled && p.hours_before ? ` · ${p.hours_before}h before` : ''}
@@ -620,7 +620,7 @@ function NotificationsTab() {
                     checked={p.enabled}
                     onChange={e => updatePref(evt.key, { enabled: e.target.checked })}
                   />
-                  <span className="relative w-11 h-6 bg-gray-300 dark:bg-gray-700 rounded-full peer-checked:bg-primary-500 transition-colors">
+                  <span className="relative w-11 h-6 bg-border-strong rounded-full peer-checked:bg-primary-500 transition-colors">
                     <span className={`absolute left-0.5 top-0.5 h-5 w-5 bg-white rounded-full shadow transition-transform ${p.enabled ? 'translate-x-5' : ''}`} />
                   </span>
                 </label>
@@ -678,7 +678,7 @@ function NotificationsTab() {
           )}
         </Button>
 
-        <p className="text-xs text-gray-500 italic pt-2 border-t border-gray-200 dark:border-gray-700">
+        <p className="text-xs text-gray-500 italic pt-2 border-t border-border">
           Notifications are delivered via in-app WebSocket (free) and email (PDF reports only). SMS is not used.
         </p>
       </CardContent>
@@ -755,7 +755,7 @@ function ScheduleTab() {
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {Object.entries(hours).map(([day, h]) => (
-            <div key={day} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+            <div key={day} className="flex items-center gap-2 p-2 rounded-lg bg-surface-3">
               <input type="checkbox" checked={h.enabled} onChange={e => setHours(prev => ({ ...prev, [day]: { ...prev[day], enabled: e.target.checked } }))} className="mr-1 accent-primary-600" />
               <span className="w-20 text-sm font-medium">{dayNames[day]}</span>
               {h.enabled ? (
@@ -856,9 +856,9 @@ function SecurityTab() {
         )}
 
         {sessions && (
-          <div className="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 text-sm">
+          <div className="p-3 rounded-lg bg-surface-3 text-sm">
             <p className="font-medium mb-1">Session Info</p>
-            <p className="text-gray-600 dark:text-gray-400">{sessions.note}</p>
+            <p className="text-muted-fg">{sessions.note}</p>
             <p className="text-gray-500 text-xs mt-1">
               Access token: {sessions.access_token_expiry_minutes} min &bull;
               Refresh token: {sessions.refresh_token_expiry_days} days
@@ -875,7 +875,7 @@ function SecurityTab() {
         </Button>
 
         {confirmDelete ? (
-          <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+          <div className="p-3 rounded-lg bg-critical-subtle border border-critical/15">
             <p className="text-sm font-medium text-red-800 dark:text-red-200 mb-2">
               Are you sure? This will permanently delete all data.
             </p>
@@ -922,25 +922,25 @@ function BillingTab() {
         <CardTitle className="flex items-center gap-2"><CreditCard className="h-5 w-5" />Billing & Usage</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="p-4 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+        <div className="p-4 rounded-lg bg-success-subtle border border-success/15">
           <p className="font-medium text-green-900 dark:text-green-100">Free Tier Active</p>
-          <p className="text-sm text-green-700 dark:text-green-300">{billing?.message || "You're on the free tier. No charges apply."}</p>
+          <p className="text-sm text-success">{billing?.message || "You're on the free tier. No charges apply."}</p>
         </div>
         <div className="grid grid-cols-3 gap-4 text-center">
-          <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+          <div className="p-4 rounded-lg bg-surface-3">
             <p className="text-2xl font-bold text-primary-600">{billing?.notification_count ?? 0}</p>
             <p className="text-sm text-gray-500">Notifications</p>
           </div>
-          <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+          <div className="p-4 rounded-lg bg-surface-3">
             <p className="text-2xl font-bold text-primary-600">{billing?.patient_count ?? 0}</p>
             <p className="text-sm text-gray-500">Patients</p>
           </div>
-          <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+          <div className="p-4 rounded-lg bg-surface-3">
             <p className="text-2xl font-bold text-primary-600">₹{billing?.total_billed ?? 0}</p>
             <p className="text-sm text-gray-500">Total Billed</p>
           </div>
         </div>
-        <div className="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-600 dark:text-gray-400">
+        <div className="p-3 rounded-lg bg-surface-3 text-sm text-muted-fg">
           <span className="font-medium">Appointments: </span>{billing?.appointment_count ?? 0}
         </div>
       </CardContent>
