@@ -15,12 +15,20 @@ export default {
     extend: {
       colors: {
         // Semantic tokens — always reference these for surfaces + text.
-        // Values come from the CSS variables in globals.css.
+        // Values come from the CSS variables in index.css.
         surface: 'hsl(var(--surface) / <alpha-value>)',
         'surface-2': 'hsl(var(--surface-2) / <alpha-value>)',
+        'surface-3': 'hsl(var(--surface-3) / <alpha-value>)',
         border: 'hsl(var(--border) / <alpha-value>)',
+        'border-strong': 'hsl(var(--border-strong) / <alpha-value>)',
         'muted-fg': 'hsl(var(--muted-fg) / <alpha-value>)',
         'strong-fg': 'hsl(var(--strong-fg) / <alpha-value>)',
+        success: 'hsl(var(--success) / <alpha-value>)',
+        'success-subtle': 'hsl(var(--success-subtle) / <alpha-value>)',
+        warning: 'hsl(var(--warning) / <alpha-value>)',
+        'warning-subtle': 'hsl(var(--warning-subtle) / <alpha-value>)',
+        critical: 'hsl(var(--critical) / <alpha-value>)',
+        'critical-subtle': 'hsl(var(--critical-subtle) / <alpha-value>)',
 
         // Primary — clinical teal-blue. 600 is the workhorse for buttons/links.
         primary: {
@@ -57,8 +65,7 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        serif: ['Merriweather', 'Georgia', 'serif'],
+        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
       },
       fontSize: {
         // Tighter tabular sizes for vitals numbers.
@@ -71,9 +78,10 @@ export default {
         xl: '0.75rem',
       },
       boxShadow: {
-        // Softer, single-direction — clinical, not playful.
-        card: '0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06)',
-        'card-hover': '0 2px 6px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.08)',
+        card: '0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04)',
+        'card-hover': '0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.06)',
+        'card-elevated': '0 8px 24px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.06)',
+        focus: '0 0 0 3px hsl(var(--primary-600) / 0.18)',
       },
       animation: {
         'fade-in': 'fadeIn 0.2s ease-out',

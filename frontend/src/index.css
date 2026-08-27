@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -11,18 +11,36 @@
 */
 @layer base {
   :root {
-    --surface:      210 33% 98%;    /* page background */
-    --surface-2:    0 0% 100%;      /* card / raised panel */
-    --border:       214 22% 88%;
-    --muted-fg:     215 15% 42%;    /* secondary text */
-    --strong-fg:    222 30% 12%;    /* headlines + big numbers */
+    --surface:         210 33% 98%;   /* page background */
+    --surface-2:       0 0% 100%;     /* card / raised panel */
+    --surface-3:       210 20% 97%;   /* subtle inset / hover */
+    --border:          214 22% 88%;
+    --border-strong:   214 20% 82%;
+    --muted-fg:        215 15% 42%;   /* secondary text */
+    --strong-fg:       222 30% 12%;   /* headlines + big numbers */
+    --success:         158 64% 32%;   /* accent-600 */
+    --success-subtle:  138 76% 96%;
+    --warning:         38 92% 50%;
+    --warning-subtle:  48 96% 89%;
+    --critical:        0 72% 51%;
+    --critical-subtle: 0 86% 96%;
+    --primary-600:     196 82% 27%;
   }
   .dark {
-    --surface:      220 26% 8%;
-    --surface-2:    220 24% 11%;
-    --border:       220 18% 22%;
-    --muted-fg:     215 15% 65%;
-    --strong-fg:    210 40% 96%;
+    --surface:         220 26% 8%;
+    --surface-2:       220 24% 11%;
+    --surface-3:       220 20% 14%;
+    --border:          220 18% 22%;
+    --border-strong:   220 16% 28%;
+    --muted-fg:        215 15% 65%;
+    --strong-fg:       210 40% 96%;
+    --success:         158 64% 42%;
+    --success-subtle:  158 30% 14%;
+    --warning:         38 92% 60%;
+    --warning-subtle:  38 30% 16%;
+    --critical:        0 72% 58%;
+    --critical-subtle: 0 32% 16%;
+    --primary-600:     196 82% 32%;
   }
 
   * {
@@ -67,9 +85,17 @@
   @apply outline-none ring-2 ring-primary-600 ring-offset-2;
   ring-offset-color: hsl(var(--surface));
 }
+*:focus:not(:focus-visible) {
+  @apply ring-0 ring-offset-0;
+}
 
 ::selection {
-  background: hsl(var(--primary-600, 200 82% 27%) / 0.25);
+  background: hsl(var(--primary-600) / 0.22);
+}
+
+/* Skip to content — visible on focus for keyboard users */
+.skip-link {
+  @apply fixed left-4 top-4 z-[100] -translate-y-20 bg-primary-600 text-white px-4 py-2 rounded-md text-sm font-medium shadow-card-elevated transition-transform focus:translate-y-0 focus:outline-none focus:ring-2 focus:ring-white;
 }
 
 /* ── Motion utilities ── */
@@ -145,13 +171,13 @@
     @apply badge bg-primary-50 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200;
   }
   .badge-success {
-    @apply badge bg-accent-50 text-accent-800 dark:bg-accent-900/40 dark:text-accent-200;
+    @apply badge bg-success-subtle text-emerald-900 dark:text-emerald-200 border border-success/15;
   }
   .badge-warning {
-    @apply badge bg-yellow-50 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200;
+    @apply badge bg-warning-subtle text-amber-900 dark:text-amber-200 border border-warning/20;
   }
   .badge-danger {
-    @apply badge bg-red-50 text-red-800 dark:bg-red-900/40 dark:text-red-200;
+    @apply badge bg-critical-subtle text-red-800 dark:text-red-200 border border-critical/15;
   }
   .badge-neutral {
     @apply badge bg-surface-2 border border-border text-muted-fg;
