@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { cn } from '@/utils/helpers'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -67,7 +67,7 @@ function ScratchpadTextEditor({
               'px-2 py-1 text-xs rounded border',
               mode === 'preview'
                 ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
-                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
+                : 'border-border text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
             )}
           >
             Highlighted
@@ -79,7 +79,7 @@ function ScratchpadTextEditor({
               'px-2 py-1 text-xs rounded border',
               mode === 'edit'
                 ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
-                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
+                : 'border-border text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
             )}
           >
             Edit
@@ -94,7 +94,7 @@ function ScratchpadTextEditor({
           value={text}
           onChange={(e) => onChange(e.target.value)}
           spellCheck={false}
-          className="w-full p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 min-h-[160px] max-h-[400px] text-gray-900 dark:text-white text-sm whitespace-pre-wrap font-mono border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-y"
+          className="w-full p-4 rounded-lg bg-surface-3 min-h-[160px] max-h-[400px] text-strong-fg text-sm whitespace-pre-wrap font-mono border border-border focus:outline-none focus:ring-2 focus:ring-primary-500 resize-y"
           placeholder="No text extracted. Type or paste corrections here."
         />
       )}
@@ -122,6 +122,7 @@ const DOC_TYPE_COLORS: Record<string, string> = {
 export function Scratchpad() {
   const [files, setFiles] = useState<UploadingFile[]>([])
   const [dragOver, setDragOver] = useState(false)
+  const dragDepthRef = useRef(0)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [selectedPatient, setSelectedPatient] = useState<string | null>(null)
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null)
@@ -275,13 +276,22 @@ export function Scratchpad() {
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
+    dragDepthRef.current += 1
     setDragOver(true)
   }
 
-  const handleDragLeave = () => setDragOver(false)
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragDepthRef.current -= 1
+    if (dragDepthRef.current <= 0) {
+      dragDepthRef.current = 0
+      setDragOver(false)
+    }
+  }
 
   const handleDropEvent = (e: React.DragEvent) => {
     e.preventDefault()
+    dragDepthRef.current = 0
     setDragOver(false)
     handleDrop(e.dataTransfer.files)
   }
@@ -383,8 +393,8 @@ export function Scratchpad() {
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Scratchpad</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">
+        <h1 className="text-2xl font-bold text-strong-fg">Scratchpad</h1>
+        <p className="text-muted-fg mt-1">
           Drop any document — PDF, JPG, PNG, WebP — AI will extract text and classify the document type
         </p>
       </div>
@@ -399,17 +409,17 @@ export function Scratchpad() {
           'border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer',
           dragOver
             ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-            : 'border-gray-300 dark:border-gray-600 hover:border-primary-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+            : 'border-border hover:border-primary-400 hover:bg-gray-50 dark:hover:bg-gray-800/50'
         )}
       >
         <Upload className="mx-auto h-12 w-12 text-gray-400" />
-        <p className="mt-4 text-lg font-medium text-gray-900 dark:text-white">
+        <p className="mt-4 text-lg font-medium text-strong-fg">
           Drop documents here or click to browse
         </p>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+        <p className="mt-1 text-sm text-muted-fg">
           PDF, JPG, PNG, WebP — max 25MB each
         </p>
-        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500 hidden sm:block">
+        <p className="mt-1 text-xs text-muted-fg/60 hidden sm:block">
           Tip: Ctrl+V to paste from clipboard
         </p>
         <Input
@@ -475,14 +485,14 @@ export function Scratchpad() {
                 key={file.id}
                 className={cn(
                   'flex items-center gap-3 p-3 rounded-lg border transition-colors',
-                  file.status === 'completed' && 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800',
-                  file.status === 'error' && 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800',
-                  file.status === 'uploading' && 'bg-blue-50 dark:bg-blue-900/10 border-blue-200 dark:border-blue-800',
-                  (file.status === 'parsing' || file.status === 'uploading') && 'bg-yellow-50 dark:bg-yellow-900/10 border-yellow-200 dark:border-yellow-800',
+                  file.status === 'completed' && 'bg-success-subtle border-success/15',
+                  file.status === 'error' && 'bg-critical-subtle border-critical/15',
+                  file.status === 'uploading' && 'bg-primary-50/50 border-primary-200/50',
+                  (file.status === 'parsing' || file.status === 'uploading') && 'bg-warning-subtle border-warning/15',
                 )}
               >
                 {/* Thumbnail/Icon */}
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-surface-3 overflow-hidden">
                   {file.preview ? (
                     <img src={file.preview} alt={file.name} className="h-full w-full object-cover" />
                   ) : file.type === 'application/pdf' ? (
@@ -495,7 +505,7 @@ export function Scratchpad() {
                 {/* Details */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <p className="font-medium text-gray-900 dark:text-white truncate">{file.name}</p>
+                    <p className="font-medium text-strong-fg truncate">{file.name}</p>
                     {file.result?.doc_type && (
                       <Badge variant="secondary" className={cn('text-[10px]', DOC_TYPE_COLORS[file.result.doc_type] || '')}>
                         {DOC_TYPE_LABELS[file.result.doc_type] || file.result.doc_type}
@@ -683,7 +693,7 @@ export function Scratchpad() {
                   }}
                 />
                 {file.result?.doc_type === 'prescription' && (
-                  <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                  <p className="mt-2 text-[11px] text-muted-fg">
                     Tip: fix any OCR mistakes above before saving. The prescription
                     highlighter will re-parse your edits.
                   </p>
@@ -695,7 +705,7 @@ export function Scratchpad() {
                     <p className="text-xs font-semibold text-gray-500 uppercase">Structured Fields</p>
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       {Object.entries(file.result.structured).filter(([k]) => !['type', 'extracted_at', 'text_length'].includes(k)).slice(0, 8).map(([key, value]) => (
-                        <div key={key} className="p-1.5 rounded bg-gray-50 dark:bg-gray-800/50">
+                        <div key={key} className="p-1.5 rounded bg-surface-3">
                           <span className="text-gray-500 capitalize">{key.replace('_', ' ')}</span>
                           <p className="font-medium truncate">
                             {Array.isArray(value) ? `${value.length} items` : String(value).slice(0, 60)}
@@ -714,7 +724,7 @@ export function Scratchpad() {
       {/* Save to Patient Dialog — Two-step: Review → Pick Patient */}
       {showSaveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => !saving && setShowSaveDialog(false)}>
-          <div className="bg-white dark:bg-gray-900 rounded-xl p-6 max-w-lg w-full mx-4 shadow-2xl border border-gray-200 dark:border-gray-700 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-2 rounded-xl p-6 max-w-lg w-full mx-4 shadow-2xl border border-border max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
             {saved ? (
               <div className="text-center py-6">
                 <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
@@ -725,7 +735,7 @@ export function Scratchpad() {
               <>
                 {/* Step 1: Review extracted text + add notes */}
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Review Extracted Text</h3>
+                  <h3 className="text-lg font-semibold text-strong-fg">Review Extracted Text</h3>
                   <span className="text-xs text-gray-400">Step 1 of 2</span>
                 </div>
 
@@ -757,7 +767,7 @@ export function Scratchpad() {
                 <textarea
                   value={editedText}
                   onChange={e => setEditedText(e.target.value)}
-                  className="w-full h-40 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 text-sm font-mono text-gray-900 dark:text-white resize-y focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  className="w-full h-40 p-3 rounded-lg border border-border bg-surface-3 text-sm font-mono text-strong-fg resize-y focus:outline-none focus:ring-2 focus:ring-primary-500"
                   placeholder="OCR extracted text..."
                 />
 
@@ -765,7 +775,7 @@ export function Scratchpad() {
                 <textarea
                   value={doctorNotes}
                   onChange={e => setDoctorNotes(e.target.value)}
-                  className="w-full h-20 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-white resize-y focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  className="w-full h-20 p-3 rounded-lg border border-border bg-surface-2 text-sm text-strong-fg resize-y focus:outline-none focus:ring-2 focus:ring-primary-500"
                   placeholder="Add your clinical observations, context, or instructions..."
                 />
 
@@ -783,7 +793,7 @@ export function Scratchpad() {
               <>
                 {/* Step 2: Pick patient */}
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Select Patient</h3>
+                  <h3 className="text-lg font-semibold text-strong-fg">Select Patient</h3>
                   <span className="text-xs text-gray-400">Step 2 of 2</span>
                 </div>
 
@@ -821,13 +831,13 @@ export function Scratchpad() {
                           'flex items-center gap-3 w-full p-3 rounded-lg border transition-colors text-left',
                           selectedPatient === p.id
                             ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
-                            : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'
+                            : 'border-border hover:bg-gray-50 dark:hover:bg-gray-800'
                         )}
                       >
                         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
                           <span className="text-xs font-medium text-primary-700 dark:text-primary-300">{p.initials}</span>
                         </div>
-                        <span className="font-medium text-gray-900 dark:text-white">{p.name}</span>
+                        <span className="font-medium text-strong-fg">{p.name}</span>
                         {selectedPatient === p.id && (
                           <CheckCircle className="h-4 w-4 text-primary-600 ml-auto" />
                         )}
@@ -861,9 +871,9 @@ export function Scratchpad() {
       {/* Document Viewer Modal */}
       {viewingDoc && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => { const u = viewingDoc.url; setViewingDoc(null); if (u.startsWith('blob:')) URL.revokeObjectURL(u) }}>
-          <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[90vw] h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-              <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{viewingDoc.name}</span>
+          <div className="bg-surface-2 rounded-xl shadow-2xl border border-border w-[90vw] h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <span className="text-sm font-medium text-strong-fg truncate">{viewingDoc.name}</span>
               <button onClick={() => { const u = viewingDoc.url; setViewingDoc(null); if (u.startsWith('blob:')) URL.revokeObjectURL(u) }} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
                 <X className="h-4 w-4 text-gray-500" />
               </button>
@@ -891,15 +901,15 @@ export function Scratchpad() {
           aria-label="Extracted text"
         >
           <div
-            className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[90vw] max-w-3xl h-[80vh] flex flex-col"
+            className="bg-surface-2 rounded-xl shadow-2xl border border-border w-[90vw] max-w-3xl h-[80vh] flex flex-col"
             onClick={e => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <div className="min-w-0 pr-3">
-                <div className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                <div className="text-sm font-medium text-strong-fg truncate">
                   Extracted text — {textPreview.name}
                 </div>
-                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                <div className="mt-0.5 text-xs text-muted-fg flex items-center gap-2">
                   {textPreview.docType && (
                     <span>{DOC_TYPE_LABELS[textPreview.docType] || textPreview.docType}</span>
                   )}
@@ -920,7 +930,7 @@ export function Scratchpad() {
                       () => toast.error('Copy failed'),
                     )
                   }}
-                  className="px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  className="px-2 py-1 text-xs rounded border border-border hover:bg-gray-100 dark:hover:bg-gray-800"
                 >
                   Copy
                 </button>
@@ -943,7 +953,7 @@ export function Scratchpad() {
                   </pre>
                 )
               ) : (
-                <div className="h-full flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+                <div className="h-full flex items-center justify-center text-sm text-muted-fg">
                   No text extracted from this document.
                 </div>
               )}
