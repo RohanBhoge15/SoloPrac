@@ -10,8 +10,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -54,7 +53,7 @@ def evaluate_projector(
         hits = 0
         for i in range(N):
             # Top-k excluding self
-            top_k = np.argsort(-sim[i])[:k + 1]
+            top_k = np.argsort(-sim[i])[: k + 1]
             if i in top_k[:k]:
                 hits += 1
         recall = hits / N
@@ -64,7 +63,7 @@ def evaluate_projector(
     for k in k_values:
         hits = 0
         for i in range(N):
-            top_k = np.argsort(-sim[:, i])[:k + 1]
+            top_k = np.argsort(-sim[:, i])[: k + 1]
             if i in top_k[:k]:
                 hits += 1
         recall = hits / N
@@ -83,8 +82,11 @@ def evaluate_projector(
 
     logger.info(
         "Feature C eval: R@1=%.4f R@5=%.4f R@10=%.4f MRR=%.4f MedianRank=%d",
-        results.get("recall_at_1", 0), results.get("recall_at_5", 0),
-        results.get("recall_at_10", 0), results["mrr"], results["median_rank"],
+        results.get("recall_at_1", 0),
+        results.get("recall_at_5", 0),
+        results.get("recall_at_10", 0),
+        results["mrr"],
+        results["median_rank"],
     )
 
     return {
@@ -123,7 +125,7 @@ def run_qualitative_panel(
 
     panel_ratings = []
     for _ in range(panel_size):
-        for i, case in enumerate(clinical_cases[:min(20, len(clinical_cases))]):
+        for i, case in enumerate(clinical_cases[: min(20, len(clinical_cases))]):
             # Simulated clinician rating based on similarity
             rank = np.where(np.argsort(-sim[i]) == i)[0][0] + 1
             if rank == 1:
@@ -137,12 +139,14 @@ def run_qualitative_panel(
             else:
                 rating = 1
 
-            panel_ratings.append({
-                "case_id": i,
-                "case_description": case.get("description", f"Case {i}"),
-                "similarity_rank": int(rank),
-                "clinical_relevance": rating,
-            })
+            panel_ratings.append(
+                {
+                    "case_id": i,
+                    "case_description": case.get("description", f"Case {i}"),
+                    "similarity_rank": int(rank),
+                    "clinical_relevance": rating,
+                }
+            )
 
     # Aggregate
     ratings = [r["clinical_relevance"] for r in panel_ratings]

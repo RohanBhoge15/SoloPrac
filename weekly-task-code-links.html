@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SoloPrac AI — Weekly Task Code Links</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.6; padding: 20px; }
+  h1 { color: #58a6ff; font-size: 28px; margin-bottom: 8px; }
+  h2 { color: #f0883e; font-size: 22px; margin: 30px 0 10px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  h3 { color: #7ee787; font-size: 17px; margin: 18px 0 6px; }
+  .subtitle { color: #8b949e; margin-bottom: 24px; }
+  .week { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 20px; margin: 16px 0; }
+  .person { margin: 12px 0; }
+  .person-name { color: #d2a8ff; font-weight: 600; font-size: 15px; }
+  ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+  a { color: #58a6ff; text-decoration: none; transition: color 0.15s; }
+  a:hover { color: #79c0ff; text-decoration: underline; }
+  .file-path { color: #8b949e; font-size: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+  .line-num { color: #f0883e; font-weight: 600; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; }
+  .badge-fe { background: #1f6feb33; color: #58a6ff; }
+  .badge-ai { background: #23883833; color: #7ee787; }
+  .badge-be { background: #da363333; color: #f85149; }
+  .badge-sec { background: #d2992233; color: #e3b341; }
+  .badge-test { background: #8957e533; color: #d2a8ff; }
+  .note { background: #1c2128; border-left: 3px solid #58a6ff; padding: 8px 12px; margin: 8px 0; font-size: 13px; color: #8b949e; border-radius: 0 4px 4px 0; }
+  code { background: #1c2128; padding: 1px 5px; border-radius: 3px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 13px; color: #f0883e; }
+</style>
+</head>
+<body>
+
+<h1>📂 SoloPrac AI — Weekly Task → Code Links</h1>
+<p class="subtitle">Click any link to open the exact file + line in VS Code. Hover for the code preview.</p>
+
+<!-- ============================================================ -->
+<!-- WEEK 2 -->
+<!-- ============================================================ -->
+<div class="week">
+<h2>Week 2 — Setup & Core Implementation</h2>
+
+<div class="person">
+<p class="person-name">Ranveer Singh Thakur (C031) <span class="badge badge-fe">Frontend</span></p>
+<ol>
+  <li>React + Vite + Tailwind setup →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/vite.config.ts:1">frontend/vite.config.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/tailwind.config.js:1">tailwind.config.js:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/package.json:1">package.json:1</a>
+  </li>
+  <li>UI component library (13 components) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Button.tsx:1">ui/Button.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Input.tsx:1">ui/Input.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Card.tsx:1">ui/Card.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Badge.tsx:1">ui/Badge.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Avatar.tsx:1">ui/Avatar.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Skeleton.tsx:1">ui/Skeleton.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Tabs.tsx:1">ui/Tabs.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Toast.tsx:1">ui/Toast.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Label.tsx:1">ui/Label.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/EmptyState.tsx:1">ui/EmptyState.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/ConfirmationDialog.tsx:1">ui/ConfirmationDialog.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/ResponsiveAvatar.tsx:1">ui/ResponsiveAvatar.tsx:1</a>
+  </li>
+  <li>AppLayout + PatientLayout →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/layouts/AppLayout.tsx:1">layouts/AppLayout.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/layouts/PatientLayout.tsx:1">layouts/PatientLayout.tsx:1</a>
+  </li>
+  <li>React Router v6 nested routes →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:60">App.tsx:60</a> (Routes definition)
+  </li>
+  <li>Axios API client + 401 refresh →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/services/api.ts:5">api.ts:5</a> (apiClient creation),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/services/api.ts:34">api.ts:34</a> (401 interceptor)
+  </li>
+  <li>Zustand stores (5 stores) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/store/doctorStore.ts:1">store/doctorStore.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/store/patientStore.ts:1">store/patientStore.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/store/notificationStore.ts:1">store/notificationStore.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/store/riskStore.ts:1">store/riskStore.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/store/searchStore.ts:1">store/searchStore.ts:1</a>
+  </li>
+  <li>AuthContext + ThemeContext →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/contexts/AuthContext.tsx:23">AuthContext.tsx:23</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/contexts/ThemeContext.tsx:1">ThemeContext.tsx:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Nihal Korgaonkar (C051) <span class="badge badge-ai">AI/ML</span></p>
+<ol>
+  <li>Embedding service (3 models) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/embeddings.py:113">embeddings.py:113</a> (EmbeddingService class)
+  </li>
+  <li>Qdrant vector DB setup →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/qdrant.py:62">qdrant.py:62</a> (QdrantService class),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/qdrant.py:85">qdrant.py:85</a> (_ensure_collection)
+  </li>
+  <li>NVIDIA NIM integration →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/config.py:75">config.py:75</a> (MAVERICK_MODEL)
+  </li>
+  <li>Groq fallback →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/config.py:88">config.py:88</a> (GROQ_API_KEY)
+  </li>
+  <li>Langfuse tracing →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/langfuse.py:1">langfuse.py:1</a>
+  </li>
+  <li>GPU optimizer →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/gpu_optimizer.py:69">gpu_optimizer.py:69</a> (GPUOptimizer class)
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Rohan Bhoge (C053) <span class="badge badge-be">Backend</span></p>
+<ol>
+  <li>FastAPI main app + lifespan →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/main.py:30">main.py:30</a> (lifespan function),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/main.py:124">main.py:124</a> (app = FastAPI)
+  </li>
+  <li>SQLAlchemy models (15+ tables) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:34">models.py:34</a> (User),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:75">models.py:75</a> (Doctor),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:119">models.py:119</a> (Patient),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:164">models.py:164</a> (PatientVersion),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:228">models.py:228</a> (PrescriptionBox),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:244">models.py:244</a> (Invoice),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:270">models.py:270</a> (Certificate),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:286">models.py:286</a> (Appointment)
+  </li>
+  <li>Pydantic schemas →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/schemas.py:11">schemas.py:11</a> (UserRegister),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/schemas.py:94">schemas.py:94</a> (PatientVersionBase),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/schemas.py:167">schemas.py:167</a> (PrescriptionCreate)
+  </li>
+  <li>Configuration →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/config.py:1">config.py:1</a> (Settings class)
+  </li>
+  <li>Database setup →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/database.py:1">database.py:1</a> (async sessions, RLS context vars)
+  </li>
+  <li>Initial schema + RLS →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/init-schema.sql:1">init-schema.sql:1</a>
+  </li>
+  <li>Router registration (23 routers) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/__init__.py:1">routers/__init__.py:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Dev Patel (C054) <span class="badge badge-sec">Security</span></p>
+<ol>
+  <li>Docker Compose (8+ services) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/docker-compose.yml:1">docker-compose.yml:1</a>
+  </li>
+  <li>Caddyfile (HTTPS) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/Caddyfile:1">Caddyfile:1</a>
+  </li>
+  <li>Backend Dockerfile →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/Dockerfile:1">backend/Dockerfile:1</a>
+  </li>
+  <li>Frontend Dockerfile →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/Dockerfile:1">frontend/Dockerfile:1</a>
+  </li>
+  <li>Dependencies →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/pyproject.toml:1">backend/pyproject.toml:1</a>
+  </li>
+</ol>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- WEEK 3 -->
+<!-- ============================================================ -->
+<div class="week">
+<h2>Week 3 — Core Features Implementation</h2>
+
+<div class="person">
+<p class="person-name">Ranveer Singh Thakur (C031) <span class="badge badge-fe">Frontend</span></p>
+<ol>
+  <li>Doctor Login page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Login.tsx:9">Login.tsx:9</a>
+  </li>
+  <li>Doctor Register page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Register.tsx:10">Register.tsx:10</a>
+  </li>
+  <li>Patient Login page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientLogin.tsx:10">PatientLogin.tsx:10</a>
+  </li>
+  <li>Patient Registration →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientRegistration.tsx:10">PatientRegistration.tsx:10</a>
+  </li>
+  <li>Landing page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Landing.tsx:67">Landing.tsx:67</a>
+  </li>
+  <li>ProtectedRoute + PatientProtectedRoute →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:43">App.tsx:43</a> (ProtectedRoute),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:56">App.tsx:56</a> (PatientProtectedRoute)
+  </li>
+  <li>Root redirect logic →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:145">App.tsx:145</a> (RootRedirect)
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Nihal Korgaonkar (C051) <span class="badge badge-ai">AI/ML</span></p>
+<ol>
+  <li>MedGemma integration (local VLM) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/config.py:95">config.py:95</a> (MEDGEMMA_PATH, MEDGEMMA_SERVER_URL),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/tools.py:455">tools.py:455</a> (_analyze_with_medgemma)
+  </li>
+  <li>Document parser (OCR pipeline) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/document_parser.py:1">document_parser.py:1</a>
+  </li>
+  <li>Image registration →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/image_registration.py:1">image_registration.py:1</a>
+  </li>
+  <li>PII de-identification →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pii.py:116">pii.py:116</a> (pseudonymize_id),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pii.py:145">pii.py:145</a> (strip_pii),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pii.py:164">pii.py:164</a> (reassociate_pseudonym)
+  </li>
+  <li>Agent graph (LangGraph) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/graph.py:35">graph.py:35</a> (AgentGraph class)
+  </li>
+  <li>Agent router (intent classification) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/router.py:31">router.py:31</a> (IntentRouter class),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/router.py:42">router.py:42</a> (classify method)
+  </li>
+  <li>Agent tools →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/tools.py:101">tools.py:101</a> (retrieve_patient_context),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/tools.py:290">tools.py:290</a> (synthesize_response)
+  </li>
+  <li>Agent synthesizer →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/synthesizer.py:56">synthesizer.py:56</a> (MaverickSynthesizer class)
+  </li>
+  <li>Agent state →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/state.py:1">state.py:1</a>
+  </li>
+  <li>Agent planner →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/agents/planner.py:1">planner.py:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Rohan Bhoge (C053) <span class="badge badge-be">Backend</span></p>
+<ol>
+  <li>Doctor CRUD →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:746">auth.py:746</a> (register_doctor),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:828">auth.py:828</a> (login_doctor),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:349">auth.py:349</a> (get_me),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:385">auth.py:385</a> (update_doctor_profile)
+  </li>
+  <li>Patient CRUD →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patients.py:282">patients.py:282</a> (create_patient),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patients.py:206">patients.py:206</a> (list_patients),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patients.py:346">patients.py:346</a> (get_patient)
+  </li>
+  <li><strong>Version minting system</strong> (core innovation) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patients.py:48">patients.py:48</a> (_mint_version function),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:140">models.py:140</a> (compute_hash — SHA-256),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:155">models.py:155</a> (verify_hash — tamper check),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:163">models.py:163</a> (before_insert validation)
+  </li>
+  <li>Version timeline →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patients.py:386">patients.py:386</a> (get_patient_timeline)
+  </li>
+  <li>Version comparison →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patients.py:429">patients.py:429</a> (diff_patient_versions)
+  </li>
+  <li>Version revert →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patients.py:466">patients.py:466</a> (revert_patient_to_version)
+  </li>
+  <li>MinIO storage →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/storage.py:46">storage.py:46</a> (StorageService class),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/storage.py:116">storage.py:116</a> (upload_file),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/storage.py:151">storage.py:151</a> (download_file)
+  </li>
+  <li>Prescriptions →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/prescriptions.py:35">prescriptions.py:35</a> (create_prescription),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/prescriptions.py:145">prescriptions.py:145</a> (approve_prescription),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/prescriptions.py:334">prescriptions.py:334</a> (download_prescription_pdf)
+  </li>
+  <li>Invoices →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/invoices.py:116">invoices.py:116</a> (create_invoice),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/invoices.py:331">invoices.py:331</a> (download_invoice_pdf)
+  </li>
+  <li>Certificates →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/certificates.py:43">certificates.py:43</a> (create_certificate),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/certificates.py:185">certificates.py:185</a> (download_certificate_pdf),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/certificates.py:230">certificates.py:230</a> (verify_certificate)
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Dev Patel (C054) <span class="badge badge-sec">Security</span></p>
+<ol>
+  <li><strong>RLS enforcement</strong> →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/middleware/__init__.py:138">middleware/__init__.py:138</a> (doctor_identity_middleware),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/middleware/__init__.py:152">middleware/__init__.py:152</a> (_consume_token)
+  </li>
+  <li>Audit log middleware →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/middleware/__init__.py:59">middleware/__init__.py:59</a> (audit_log_middleware)
+  </li>
+  <li>Security headers →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/middleware/__init__.py:120">middleware/__init__.py:120</a> (X-Content-Type-Options, X-Frame-Options, etc.)
+  </li>
+  <li>PII encryption →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/encryption.py:42">encryption.py:42</a> (encrypt_value),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/encryption.py:87">encryption.py:87</a> (decrypt_value),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/encryption.py:136">encryption.py:136</a> (EncryptionService class)
+  </li>
+  <li>Audit service →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/audit.py:47">audit.py:47</a> (verify_rls_isolation),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/audit.py:462">audit.py:462</a> (run_security_audit)
+  </li>
+  <li>Rate limiting →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/dependencies.py:1">dependencies.py:1</a> (rate_limit_key)
+  </li>
+  <li>CORS config →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/main.py:140">main.py:140</a> (CORSMiddleware)
+  </li>
+</ol>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- WEEK 4 -->
+<!-- ============================================================ -->
+<div class="week">
+<h2>Week 4 — Advanced Features & Research</h2>
+
+<div class="person">
+<p class="person-name">Ranveer Singh Thakur (C031) <span class="badge badge-fe">Frontend</span></p>
+<ol>
+  <li>Dashboard page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Dashboard.tsx:21">Dashboard.tsx:21</a>
+  </li>
+  <li>PatientDetail page (tabbed) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientDetail.tsx:54">PatientDetail.tsx:54</a>
+  </li>
+  <li>VersionChain component →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/patient/VersionChain.tsx:1">VersionChain.tsx:1</a>
+  </li>
+  <li>NewPrescriptionModal →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/patient/NewPrescriptionModal.tsx:1">NewPrescriptionModal.tsx:1</a>
+  </li>
+  <li>PrescriptionBox →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/PrescriptionBox.tsx:1">PrescriptionBox.tsx:1</a>
+  </li>
+  <li>NewVersionModal →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/patient/NewVersionModal.tsx:1">NewVersionModal.tsx:1</a>
+  </li>
+  <li>Route-level code splitting →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:16">App.tsx:16</a> (React.lazy for Register),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:17">App.tsx:17</a> (Dashboard),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:18">App.tsx:18</a> (Calendar) ... through line 32
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Nihal Korgaonkar (C051) <span class="badge badge-ai">AI/ML</span></p>
+<ol>
+  <li><strong>Clinical Copilot</strong> (AI Assistant) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/agent.py:1">routers/agent.py:1</a> (/agent/chat endpoint)
+  </li>
+  <li>Temporal RAG retrieval →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/temporal_rag.py:205">temporal_rag.py:205</a> (TemporalMultimodalRetriever),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/temporal_rag.py:249">temporal_rag.py:249</a> (retrieve method)
+  </li>
+  <li>Weekly report generation →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/weekly_report.py:89">weekly_report.py:89</a> (WeeklyReportService),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/weekly_report.py:370">weekly_report.py:370</a> (generate_report)
+  </li>
+  <li>Clinical significance scoring →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/clinical_significance.py:56">clinical_significance.py:56</a> (clinical_significance_from_tags)
+  </li>
+  <li>Evaluation Feature A →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_feature_a.py:1">eval_feature_a.py:1</a>
+  </li>
+  <li>Evaluation Feature B →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_feature_b.py:1">eval_feature_b.py:1</a>
+  </li>
+  <li>Evaluation Feature C →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_feature_c_pubmedclip.py:1">eval_feature_c_pubmedclip.py:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Rohan Bhoge (C053) <span class="badge badge-be">Backend</span> <span class="badge badge-test">Feature Eval</span></p>
+<ol>
+  <li>Calendar endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/calendar.py:67">calendar.py:67</a> (create_new_appointment),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/calendar.py:156">calendar.py:156</a> (get_appointments),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/calendar.py:217">calendar.py:217</a> (get_working_hours)
+  </li>
+  <li>Portal endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/portal.py:1">portal.py:1</a>
+  </li>
+  <li>Weekly report endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/weekly_report.py:1">weekly_report.py:1</a>
+  </li>
+  <li>Risk alerts →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/risk_alerts.py:1">risk_alerts.py:1</a>
+  </li>
+  <li>Background jobs (arq) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/background_jobs.py:45">background_jobs.py:45</a> (get_arq_pool),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/background_jobs.py:131">background_jobs.py:131</a> (parse_document_job),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/background_jobs.py:313">background_jobs.py:313</a> (index_version_job),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/background_jobs.py:377">background_jobs.py:377</a> (generate_weekly_report_job),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/background_jobs.py:436">background_jobs.py:436</a> (compare_images_job)
+  </li>
+  <li>Notification generator →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/notification_generator.py:126">notification_generator.py:126</a> (generate_notification),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/notification_generator.py:186">notification_generator.py:186</a> (create_patient_notification),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/notification_generator.py:259">notification_generator.py:259</a> (create_doctor_notification)
+  </li>
+  <li><strong>Feature evaluation for research paper</strong> →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_feature_a.py:1">eval_feature_a.py:1</a> (Temporal RAG eval),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_feature_b.py:1">eval_feature_b.py:1</a> (Image Comparison eval),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_feature_c_pubmedclip.py:1">eval_feature_c_pubmedclip.py:1</a> (Multi-Modal eval),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_latency.py:1">eval_latency.py:1</a> (Latency benchmarks)
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Dev Patel (C054) <span class="badge badge-sec">Security</span></p>
+<ol>
+  <li>JWT authentication (access + refresh) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:51">auth.py:51</a> (_set_auth_cookies),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:204">auth.py:204</a> (refresh_token),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:981">auth.py:981</a> (logout)
+  </li>
+  <li>DPDP compliance →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/dpdp.py:47">dpdp.py:47</a> (get_consent_status),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/dpdp.py:79">dpdp.py:79</a> (update_consent),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/dpdp.py:137">dpdp.py:137</a> (erase_personal_data)
+  </li>
+  <li>Admin endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/admin.py:48">admin.py:48</a> (list_pending_verifications),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/admin.py:77">admin.py:77</a> (approve_doctor),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/admin.py:146">admin.py:146</a> (reject_doctor)
+  </li>
+  <li>Security endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/security.py:44">security.py:44</a> (upload_security_status),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/security.py:109">security.py:109</a> (verify_upload)
+  </li>
+  <li>ConsentRecord model →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:340">models.py:340</a> (ConsentRecord)
+  </li>
+  <li>DoctorSession model →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/models.py:356">models.py:356</a> (DoctorSession)
+  </li>
+  <li>JWT config →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/config.py:60">config.py:60</a> (JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRATION_MINUTES)
+  </li>
+</ol>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- WEEK 5 -->
+<!-- ============================================================ -->
+<div class="week">
+<h2>Week 5 — Full Integration & Polish</h2>
+
+<div class="person">
+<p class="person-name">Ranveer Singh Thakur (C031) <span class="badge badge-fe">Frontend</span></p>
+<ol>
+  <li>Calendar page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Calendar.tsx:36">Calendar.tsx:36</a>
+  </li>
+  <li>Scratchpad page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Scratchpad.tsx:122">Scratchpad.tsx:122</a>
+  </li>
+  <li>Settings page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Settings.tsx:42">Settings.tsx:42</a>
+  </li>
+  <li>PatientDashboard →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientDashboard.tsx:12">PatientDashboard.tsx:12</a>
+  </li>
+  <li>DoctorSearch →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/DoctorSearch.tsx:13">DoctorSearch.tsx:13</a>
+  </li>
+  <li>PatientAppointments →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientAppointments.tsx:23">PatientAppointments.tsx:23</a>
+  </li>
+  <li>PatientInbox →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientInbox.tsx:28">PatientInbox.tsx:28</a>
+  </li>
+  <li>PatientNew →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientNew.tsx:16">PatientNew.tsx:16</a>
+  </li>
+  <li>WeeklyReport page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/WeeklyReport.tsx:47">WeeklyReport.tsx:47</a>
+  </li>
+  <li>PatientProfile →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientProfile.tsx:30">PatientProfile.tsx:30</a>
+  </li>
+  <li>PatientReports →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientReports.tsx:10">PatientReports.tsx:10</a>
+  </li>
+  <li>PatientPendingMatches →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/PatientPendingMatches.tsx:27">PatientPendingMatches.tsx:27</a>
+  </li>
+  <li>Chat (AI Assistant) page →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/pages/Chat.tsx:4">Chat.tsx:4</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Nihal Korgaonkar (C051) <span class="badge badge-ai">AI/ML</span></p>
+<ol>
+  <li>Qdrant indexer (auto-index on version create) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/indexer.py:86">indexer.py:86</a> (index_version),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/indexer.py:190">indexer.py:190</a> (index_version_job)
+  </li>
+  <li>Batch import (Open-i) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/batch_import.py:53">batch_import.py:53</a> (batch_import_prescription_pdf)
+  </li>
+  <li>Embed Open-i script →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/embed_openi.py:1">embed_openi.py:1</a>
+  </li>
+  <li>Upsert Open-i to Qdrant →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/upsert_openi_to_qdrant.py:1">upsert_openi_to_qdrant.py:1</a>
+  </li>
+  <li>Linking service (walk-in matching) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/linking.py:154">linking.py:154</a> (find_candidates_for_user),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/linking.py:192">linking.py:192</a> (strong_link_walkins_to_user)
+  </li>
+  <li>Link disambiguation →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/link_disambiguation.py:1">link_disambiguation.py:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Rohan Bhoge (C053) <span class="badge badge-be">Backend</span></p>
+<ol>
+  <li>Seed demo script →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/scripts/seed_demo.py:1">seed_demo.py:1</a>
+  </li>
+  <li>Patient documents router →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/patient_documents.py:1">patient_documents.py:1</a>
+  </li>
+  <li>Doctor inbox →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/doctor_inbox.py:1">doctor_inbox.py:1</a>
+  </li>
+  <li>Email queue →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/email_queue.py:1">email_queue.py:1</a>
+  </li>
+  <li>PDF generator →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pdf_generator.py:513">pdf_generator.py:513</a> (PDFGenerator class),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pdf_generator.py:735">pdf_generator.py:735</a> (generate_prescription),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pdf_generator.py:773">pdf_generator.py:773</a> (generate_invoice),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pdf_generator.py:817">pdf_generator.py:817</a> (generate_certificate)
+  </li>
+  <li>Voice endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/voice.py:1">voice.py:1</a>
+  </li>
+  <li>Jobs endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/jobs.py:1">jobs.py:1</a>
+  </li>
+  <li>Research data management →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/research_data_mgmt.py:1">research_data_mgmt.py:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Dev Patel (C054) <span class="badge badge-sec">Security</span></p>
+<ol>
+  <li>Calendar security →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/calendar_security.py:31">calendar_security.py:31</a> (CalendarRateLimiter),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/calendar_security.py:86">calendar_security.py:86</a> (CalendarSecurityService),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/calendar_security.py:155">calendar_security.py:155</a> (verify_rls_appointments)
+  </li>
+  <li>Patient security →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/patient_security.py:23">patient_security.py:23</a> (PatientSecurityService),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/patient_security.py:27">patient_security.py:27</a> (verify_patient_ownership)
+  </li>
+  <li>WebSocket security →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/ws_security.py:59">ws_security.py:59</a> (WebSocketSecurity),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/ws_security.py:65">ws_security.py:65</a> (authenticate)
+  </li>
+  <li>PDF security →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pdf_security.py:49">pdf_security.py:49</a> (PDFSecurityService),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pdf_security.py:58">pdf_security.py:58</a> (add_watermark),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/pdf_security.py:242">pdf_security.py:242</a> (log_pdf_event)
+  </li>
+  <li>Image security →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/image_security.py:62">image_security.py:62</a> (ImageSecurityService),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/image_security.py:103">image_security.py:103</a> (verify_image),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/image_security.py:162">image_security.py:162</a> (encrypt_image)
+  </li>
+  <li>Security audit →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/security_audit.py:1">security_audit.py:1</a>
+  </li>
+  <li>Backup endpoints →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/backup.py:29">backup.py:29</a> (create_backup),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/backup.py:110">backup.py:110</a> (list_backups)
+  </li>
+</ol>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- WEEK 6 -->
+<!-- ============================================================ -->
+<div class="week">
+<h2>Week 6 — Frontend Optimization & Bug Fixes</h2>
+
+<div class="person">
+<p class="person-name">Ranveer Singh Thakur (C031) <span class="badge badge-fe">Frontend</span></p>
+<ol>
+  <li>Lazy loading optimization →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/App.tsx:16">App.tsx:16–32</a> (all React.lazy imports)
+  </li>
+  <li>usePrefetchPatient hook →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/hooks/usePrefetchPatient.ts:1">usePrefetchPatient.ts:1</a>
+  </li>
+  <li>Skeleton loading →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ui/Skeleton.tsx:1">Skeleton.tsx:1</a>
+  </li>
+  <li>CommandPalette (⌘K) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/CommandPalette.tsx:1">CommandPalette.tsx:1</a>
+  </li>
+  <li>ContextPanel →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ContextPanel.tsx:1">ContextPanel.tsx:1</a>
+  </li>
+  <li>useSSE + useWebSocket hooks →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/hooks/useSSE.ts:1">useSSE.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/hooks/useWebSocket.ts:1">useWebSocket.ts:1</a>
+  </li>
+  <li>AgentTrace, ApprovalCard, TimelineScrubber →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/AgentTrace.tsx:1">AgentTrace.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ApprovalCard.tsx:1">ApprovalCard.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/TimelineScrubber.tsx:1">TimelineScrubber.tsx:1</a>
+  </li>
+  <li>RiskAlerts, CameraCapture, ImageGallery, ImageComparison →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/RiskAlerts.tsx:1">RiskAlerts.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/CameraCaptureModal.tsx:1">CameraCaptureModal.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ImageGallery.tsx:1">ImageGallery.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/ImageComparison.tsx:1">ImageComparison.tsx:1</a>
+  </li>
+  <li>PendingMatchesBanner, PatientSearch, PatientRow, MapPicker →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/PendingMatchesBanner.tsx:1">PendingMatchesBanner.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/PatientSearch.tsx:1">PatientSearch.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/PatientRow.tsx:1">PatientRow.tsx:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/MapPicker.tsx:1">MapPicker.tsx:1</a>
+  </li>
+  <li>CopilotPane →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/components/patient/CopilotPane.tsx:1">CopilotPane.tsx:1</a>
+  </li>
+  <li>i18n setup →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/src/i18n.ts:1">i18n.ts:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Nihal Korgaonkar (C051) <span class="badge badge-ai">AI/ML</span></p>
+<ol>
+  <li>Redis caching →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/cache.py:36">cache.py:36</a> (cache key functions),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/cache.py:59">cache.py:59</a> (invalidate_cache)
+  </li>
+  <li>Clinical summary →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/clinical_summary.py:48">clinical_summary.py:48</a> (ClinicalSummaryGenerator),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/clinical_summary.py:87">clinical_summary.py:87</a> (generate method)
+  </li>
+  <li>Feature C projector →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/feature_c_projector.py:82">feature_c_projector.py:82</a> (ProjectorConfig),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/feature_c_projector.py:94">feature_c_projector.py:94</a> (ProjectorTrainer)
+  </li>
+  <li>Feature E clustering →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/feature_e_clustering.py:106">feature_e_clustering.py:106</a> (HDBSCANClusterer),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/feature_e_clustering.py:275">feature_e_clustering.py:275</a> (AnomalyDetector)
+  </li>
+  <li>Feature B evaluation →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/feature_b_eval.py:1">feature_b_eval.py:1</a>
+  </li>
+  <li>Final evaluation →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/final_eval.py:1">final_eval.py:1</a>
+  </li>
+  <li>Eval latency →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/eval_latency.py:1">eval_latency.py:1</a>
+  </li>
+  <li>Medical formatter →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/medical_formatter.py:1">medical_formatter.py:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Rohan Bhoge (C053) <span class="badge badge-be">Backend</span></p>
+<ol>
+  <li>Lazy torch imports fix →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/embeddings.py:25">embeddings.py:25</a> (_get_torch),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/embeddings.py:29">embeddings.py:29</a> (_get_numpy),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/embeddings.py:33">embeddings.py:33</a> (_get_sentence_transformer)
+  </li>
+  <li>PDF URL fix (prescriptions) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/prescriptions.py:334">prescriptions.py:334</a> (download_prescription_pdf)
+  </li>
+  <li>PDF URL fix (certificates) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/certificates.py:185">certificates.py:185</a> (download_certificate_pdf)
+  </li>
+  <li>PDF URL fix (invoices) →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/invoices.py:331">invoices.py:331</a> (download_invoice_pdf)
+  </li>
+  <li>Audit log RLS fix →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:746">auth.py:746</a> (register_doctor — rollback fix),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/routers/auth.py:828">auth.py:828</a> (login_doctor — rollback fix)
+  </li>
+  <li>Demo dry-run script →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/scripts/demo_dryrun.py:1">demo_dryrun.py:1</a>
+  </li>
+  <li>E2E multi-user script →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/scripts/e2e_multiuser.py:1">e2e_multiuser.py:1</a>
+  </li>
+  <li>Schema aligner →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/schema_aligner.py:1">schema_aligner.py:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="person">
+<p class="person-name">Dev Patel (C054) <span class="badge badge-sec">Security</span></p>
+<ol>
+  <li>Audit log fixer →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/audit_log_fixer.py:1">audit_log_fixer.py:1</a>
+  </li>
+  <li>RAG audit →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/rag_audit.py:1">rag_audit.py:1</a>
+  </li>
+  <li>Notification prefs →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/notification_prefs.py:46">notification_prefs.py:46</a> (validate_notification_prefs),
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/notification_prefs.py:90">notification_prefs.py:90</a> (get_enabled_channels)
+  </li>
+  <li>Sanitizer →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/app/services/sanitizer.py:1">sanitizer.py:1</a>
+  </li>
+  <li>Verify RLS script →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/scripts/verify_rls.py:1">verify_rls.py:1</a>
+  </li>
+  <li>Clear demo script →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/backend/scripts/clear_demo.py:1">clear_demo.py:1</a>
+  </li>
+</ol>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- E2E TESTS (Bonus) -->
+<!-- ============================================================ -->
+<div class="week">
+<h2>E2E Tests (Playwright) — Ranveer Singh Thakur</h2>
+<ol>
+  <li>smoke.spec.ts →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/e2e/smoke.spec.ts:1">e2e/smoke.spec.ts:1</a>
+  </li>
+  <li>01-routes.spec.ts →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/e2e/01-routes.spec.ts:1">e2e/01-routes.spec.ts:1</a>
+  </li>
+  <li>02-signup.spec.ts →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/e2e/02-signup.spec.ts:1">e2e/02-signup.spec.ts:1</a>
+  </li>
+  <li>03-multitenant.spec.ts →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/e2e/03-multitenant.spec.ts:1">e2e/03-multitenant.spec.ts:1</a>
+  </li>
+  <li>fixtures.ts + actors.ts + helpers.ts →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/e2e/fixtures.ts:1">e2e/fixtures.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/e2e/actors.ts:1">e2e/actors.ts:1</a>,
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/e2e/helpers.ts:1">e2e/helpers.ts:1</a>
+  </li>
+  <li>Playwright config →
+    <a href="vscode://file/c:/Users/rohan/SoloPrac/frontend/playwright.config.ts:1">playwright.config.ts:1</a>
+  </li>
+</ol>
+</div>
+
+<div class="note">
+  <strong>How to use:</strong> Click any link above to open the exact file + line in VS Code.
+  Make sure VS Code is installed and the <code>vscode://</code> protocol is registered (it is by default).
+  <br><br>
+  <strong>Project root:</strong> <code>C:/Users/rohan/SoloPrac</code>
+</div>
+
+</body>
+</html>

@@ -157,6 +157,8 @@ class AgentGraph:
             if state.get("doctor_id"):
                 tool_args.setdefault("doctor_id", str(state["doctor_id"]))
             # Feed dependency results into tools that expect them.
+            if tool_name == "synthesize_response" and "context" not in tool_args:
+                tool_args["context"] = {}
             for dep_id in step.get("depends_on", []) or []:
                 for tc in state.get("tool_calls", []):
                     if tc.get("step_id") == dep_id and tc.get("result"):
@@ -235,6 +237,9 @@ class AgentGraph:
         if state.get("doctor_id"):
             tool_args.setdefault("doctor_id", str(state["doctor_id"]))
 
+        # Ensure synthesize_response always has context (default empty dict)
+        if tool_name == "synthesize_response" and "context" not in tool_args:
+            tool_args["context"] = {}
         # Resolve dependency results
         for dep_id in step.get("depends_on", []):
             for tc in state.get("tool_calls", []):
@@ -439,8 +444,7 @@ class AgentGraph:
             return "\n".join(lines)
 
         return (
-            f"I processed your request about '{state['user_query']}'.\n\n"
-            f"*Verified by AI · Doctor review recommended.*"
+            f"I processed your request about '{state['user_query']}'.\n\n*Verified by AI · Doctor review recommended.*"
         )
 
     async def _responder_node(self, state: AgentState) -> str:
@@ -507,8 +511,20 @@ class AgentGraph:
             "respond": self._responder_node,
         }
 
+        FRIENDLY_NODE_LABEL = {
+            "router": "Classifying your question…",
+            "plan": "Planning the steps…",
+            "execute": "Searching the patient record…",
+            "critic": "Reviewing the draft…",
+            "synthesize": "Drafting the answer…",
+            "respond": "Finalizing the response…",
+        }
+
+        # User-facing trace (clean, no internal debug) shown in the chat UI.
+        user_trace = ["Understanding your request…"]
+
         current_node = "router"
-        yield {"type": "trace", "message": "Understanding your request..."}
+        yield {"type": "trace", "message": user_trace[-1]}
 
         while current_node != "END":
             fn = node_fns.get(current_node)
@@ -517,8 +533,11 @@ class AgentGraph:
                 break
 
             try:
+                # Internal debug line (server logs only) — NOT shown to the user.
                 self._add_trace(state, f"Entering node: {current_node}")
-                yield {"type": "trace", "message": self._node_label(current_node)}
+                friendly = FRIENDLY_NODE_LABEL.get(current_node, f"Processing {current_node}…")
+                yield {"type": "trace", "message": friendly}
+                user_trace.append(friendly)
 
                 next_node = await fn(state)
 
@@ -595,7 +614,7 @@ class AgentGraph:
             "type": "done",
             "response": final_response,
             "intent": state.get("intent", AgentIntent.GENERAL_CHAT).value if state.get("intent") else "unknown",
-            "trace_events": state.get("trace_events", []),
+            "trace_events": user_trace,
             "citations": state.get("citations", []),
             "replan_count": state.get("replan_count", 0),
             "took_ms": (

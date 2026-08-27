@@ -22,18 +22,16 @@ Output:
 
 from __future__ import annotations
 
-import json
+import logging
 import math
 import random
-import time
-import logging
 import statistics
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Tuple
 from uuid import UUID, uuid4
 
 from app.services.temporal_rag import TemporalMultimodalRetriever
-from app.services.embeddings import embedding_service
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +67,12 @@ VITALS_TEMPLATES = [
 ]
 
 TAGS_POOL = [
-    "new_diagnosis", "medication_change", "abnormal_lab", "routine_visit",
-    "vitals_in_range", "missed_appointment",
+    "new_diagnosis",
+    "medication_change",
+    "abnormal_lab",
+    "routine_visit",
+    "vitals_in_range",
+    "missed_appointment",
 ]
 
 
@@ -152,18 +154,20 @@ def generate_synthetic_patient(
             "clinical": clinical,
         }
 
-        versions.append({
-            "version_number": v,
-            "patient_id": str(patient_id),
-            "doctor_id": str(doctor_id),
-            "state_jsonb": state,
-            "timestamp": timestamp.isoformat(),
-            "summary": clinical["summary"],
-            "tags": clinical["tags"],
-            "edit_type": "manual",
-            "author": f"doctor:{doctor_id}",
-            "clinical_significance": 0.3 if v > 1 else 1.0,
-        })
+        versions.append(
+            {
+                "version_number": v,
+                "patient_id": str(patient_id),
+                "doctor_id": str(doctor_id),
+                "state_jsonb": state,
+                "timestamp": timestamp.isoformat(),
+                "summary": clinical["summary"],
+                "tags": clinical["tags"],
+                "edit_type": "manual",
+                "author": f"doctor:{doctor_id}",
+                "clinical_significance": 0.3 if v > 1 else 1.0,
+            }
+        )
 
     return versions
 
@@ -191,10 +195,12 @@ def generate_test_dataset(
             num_visits=num_visits_per_patient,
             seed=p,
         )
-        patients_data.append({
-            "patient_id": str(patient_id),
-            "versions": versions,
-        })
+        patients_data.append(
+            {
+                "patient_id": str(patient_id),
+                "versions": versions,
+            }
+        )
 
         # Generate query pairs for this patient
         rng = random.Random(p)
@@ -206,42 +212,53 @@ def generate_test_dataset(
 
             # Generate different query types
             if "new_diagnosis" in tags:
-                query_pairs.append({
-                    "query": f"What new diagnosis was made for this patient?",
-                    "patient_id": str(patient_id),
-                    "relevant_versions": [v["version_number"]],
-                    "query_time": v["timestamp"],
-                    "type": "diagnosis",
-                })
+                query_pairs.append(
+                    {
+                        "query": "What new diagnosis was made for this patient?",
+                        "patient_id": str(patient_id),
+                        "relevant_versions": [v["version_number"]],
+                        "query_time": v["timestamp"],
+                        "type": "diagnosis",
+                    }
+                )
 
             if diagnoses:
-                query_pairs.append({
-                    "query": f"What are the patient's current diagnoses?",
-                    "patient_id": str(patient_id),
-                    "relevant_versions": [v["version_number"]] + [x["version_number"] for x in versions[:versions.index(v)]],
-                    "query_time": v["timestamp"],
-                    "type": "summary",
-                })
+                query_pairs.append(
+                    {
+                        "query": "What are the patient's current diagnoses?",
+                        "patient_id": str(patient_id),
+                        "relevant_versions": [v["version_number"]]
+                        + [x["version_number"] for x in versions[: versions.index(v)]],
+                        "query_time": v["timestamp"],
+                        "type": "summary",
+                    }
+                )
 
             if vitals:
-                query_pairs.append({
-                    "query": f"What was the BP and heart rate at this visit?",
-                    "patient_id": str(patient_id),
-                    "relevant_versions": [v["version_number"]],
-                    "query_time": v["timestamp"],
-                    "type": "vitals",
-                })
+                query_pairs.append(
+                    {
+                        "query": "What was the BP and heart rate at this visit?",
+                        "patient_id": str(patient_id),
+                        "relevant_versions": [v["version_number"]],
+                        "query_time": v["timestamp"],
+                        "type": "vitals",
+                    }
+                )
 
         # Trend queries (span multiple versions)
         for v in versions[2:]:
             prev = versions[versions.index(v) - 2]
-            query_pairs.append({
-                "query": f"Show me the BP trend over the last few visits",
-                "patient_id": str(patient_id),
-                "relevant_versions": [x["version_number"] for x in versions if x["version_number"] <= v["version_number"]],
-                "query_time": v["timestamp"],
-                "type": "trend",
-            })
+            query_pairs.append(
+                {
+                    "query": "Show me the BP trend over the last few visits",
+                    "patient_id": str(patient_id),
+                    "relevant_versions": [
+                        x["version_number"] for x in versions if x["version_number"] <= v["version_number"]
+                    ],
+                    "query_time": v["timestamp"],
+                    "type": "trend",
+                }
+            )
 
     # Trim to approximately 100 query pairs
     if len(query_pairs) > 100:
@@ -251,6 +268,7 @@ def generate_test_dataset(
 
 
 # ─── Retrieval Baselines ──────────────────────────────
+
 
 class BM25Baseline:
     """Simple BM25-like baseline for comparison (keyword overlap)."""
@@ -314,6 +332,7 @@ class BM25Baseline:
 
 # ─── Evaluation Metrics ───────────────────────────────
 
+
 def compute_recall_at_k(
     retrieved: List[int],
     relevant: List[int],
@@ -365,6 +384,7 @@ def compute_latency_stats(times: List[float]) -> Dict[str, float]:
 
 # ─── Full Evaluation Harness ──────────────────────────
 
+
 class EvaluationHarness:
     """Full evaluation harness for Feature A (Temporal Multimodal RAG).
 
@@ -395,7 +415,8 @@ class EvaluationHarness:
         )
         logger.info(
             "Generated test data: %d patients, %d query pairs",
-            len(self.test_data), len(self.query_pairs),
+            len(self.test_data),
+            len(self.query_pairs),
         )
         return self.test_data, self.query_pairs
 
@@ -508,15 +529,17 @@ class EvaluationHarness:
 
             dense_latencies.append(result["dense_only"]["time_ms"])
 
-            per_query_results.append({
-                "query_id": i,
-                "query": qp["query"][:100],
-                "type": qp.get("type", "unknown"),
-                "temporal_recall": temporal_recall,
-                "dense_recall": dense_recall,
-                "temporal_future_leak": temporal_leak,
-                "dense_future_leak": dense_leak,
-            })
+            per_query_results.append(
+                {
+                    "query_id": i,
+                    "query": qp["query"][:100],
+                    "type": qp.get("type", "unknown"),
+                    "temporal_recall": temporal_recall,
+                    "dense_recall": dense_recall,
+                    "temporal_future_leak": temporal_leak,
+                    "dense_future_leak": dense_leak,
+                }
+            )
 
         # Compute aggregate metrics
         report = {
@@ -540,10 +563,14 @@ class EvaluationHarness:
                 "total_patients": len(self.test_data),
                 "recall_improvement_pp": round(
                     (statistics.mean(temporal_recalls) - statistics.mean(dense_recalls)) * 100, 1
-                ) if temporal_recalls and dense_recalls else 0,
+                )
+                if temporal_recalls and dense_recalls
+                else 0,
                 "future_leak_reduction_pp": round(
                     (statistics.mean(dense_future_leaks) - statistics.mean(temporal_future_leaks)) * 100, 1
-                ) if temporal_future_leaks and dense_future_leaks else 0,
+                )
+                if temporal_future_leaks and dense_future_leaks
+                else 0,
                 "evaluated_at": datetime.now(timezone.utc).isoformat(),
                 "took_seconds": (datetime.now(timezone.utc) - start).total_seconds(),
             },
@@ -551,8 +578,7 @@ class EvaluationHarness:
         }
 
         logger.info(
-            "Evaluation complete: Recall@5 temporal=%.3f dense=%.3f | "
-            "Future-leak temporal=%.3f dense=%.3f",
+            "Evaluation complete: Recall@5 temporal=%.3f dense=%.3f | Future-leak temporal=%.3f dense=%.3f",
             report["temporal_rag"]["recall_at_5"],
             report["dense_only"]["recall_at_5"],
             report["temporal_rag"]["future_leak_rate"],

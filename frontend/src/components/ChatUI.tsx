@@ -120,7 +120,11 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
         if (lastMsg?.isStreaming) {
           updated[updated.length - 1] = {
             ...lastMsg,
-            content: text,
+            // useSSE hands us the INCREMENTAL chunk (see useSSE.ts — it calls
+            // onToken(data.text), not the accumulated string). Assigning here
+            // instead of appending made the bubble show only the final
+            // fragment as it streamed.
+            content: lastMsg.content + (text || ''),
           }
         }
         return updated

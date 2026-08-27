@@ -26,14 +26,13 @@ import numpy as np
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.database import async_session_maker
 from app.models import Doctor, Patient, RiskAlert
-from app.services.qdrant import qdrant_service
 from app.services.feature_e_clustering import (
-    compute_trajectory_embeddings,
     AnomalyDetector,
+    compute_trajectory_embeddings,
 )
+from app.services.qdrant import qdrant_service
 from app.services.redis import redis_service
 
 logger = logging.getLogger(__name__)
@@ -76,9 +75,7 @@ async def _gather_cohort(
     Returns (patient_vectors, vitals_history, patient_names) keyed by patient id.
     Vectors come from Qdrant; vitals + names come from Postgres version state.
     """
-    result = await session.execute(
-        select(Patient).where(Patient.doctor_id == UUID(doctor_id))
-    )
+    result = await session.execute(select(Patient).where(Patient.doctor_id == UUID(doctor_id)))
     patients = result.scalars().all()
 
     patient_vectors: Dict[str, List[np.ndarray]] = {}
@@ -179,20 +176,23 @@ async def scan_doctor(doctor_id: str) -> Dict[str, Any]:
             )
             session.add(row)
             await session.flush()  # get row.id
-            persisted.append({
-                "id": str(row.id),
-                "patient_id": a.patient_id,
-                "patient_name": patient_names.get(a.patient_id),
-                "kind": a.kind,
-                "severity": a.severity,
-                "message": a.message,
-                "detected_at": a.detected_at,
-            })
+            persisted.append(
+                {
+                    "id": str(row.id),
+                    "patient_id": a.patient_id,
+                    "patient_name": patient_names.get(a.patient_id),
+                    "kind": a.kind,
+                    "severity": a.severity,
+                    "message": a.message,
+                    "detected_at": a.detected_at,
+                }
+            )
         await session.commit()
 
     # Push new alerts to the doctor's live dashboard (outside the DB txn)
     if persisted:
         from app.routers.portal import ws_manager
+
         for alert in persisted:
             await ws_manager.notify_doctor(doctor_id, {"type": "risk_alert", "data": alert})
         logger.info("Risk scan for doctor %s: %d alerts pushed", doctor_id, len(persisted))

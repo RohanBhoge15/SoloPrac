@@ -13,21 +13,28 @@ Endpoints:
 
 from __future__ import annotations
 
-import uuid
 import logging
-from datetime import datetime, timezone, date, timedelta
+import uuid
+from datetime import date, datetime
 from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_doctor
-from app.models import Doctor, Patient, Appointment
+from app.models import Appointment, Doctor, Patient
 from app.services.calendar_service import (
-    find_available_slots, create_appointment, reschedule_appointment,
-    cancel_appointment, list_appointments, validate_working_hours,
-    parse_working_hours, DEFAULT_BUFFER_MINUTES, DEFAULT_DURATION_MINUTES,
+    DEFAULT_BUFFER_MINUTES,
+    DEFAULT_DURATION_MINUTES,
+    cancel_appointment,
+    create_appointment,
+    find_available_slots,
+    list_appointments,
+    reschedule_appointment,
+    validate_working_hours,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,10 +95,13 @@ async def create_new_appointment(
 
     try:
         result = await create_appointment(
-            db=db, doctor_id=doctor.id,
+            db=db,
+            doctor_id=doctor.id,
             patient_id=uuid.UUID(patient_id),
-            start_at=start_at, end_at=end_at,
-            reason=reason, source="manual",
+            start_at=start_at,
+            end_at=end_at,
+            reason=reason,
+            source="manual",
         )
         return result
     except ValueError as e:
@@ -121,9 +131,11 @@ async def reschedule_existing_appointment(
 
     try:
         result = await reschedule_appointment(
-            db=db, doctor_id=doctor.id,
+            db=db,
+            doctor_id=doctor.id,
             appointment_id=appointment_id,
-            new_start=new_start, new_end=new_end,
+            new_start=new_start,
+            new_end=new_end,
             reason=reason,
         )
         return result
@@ -142,7 +154,8 @@ async def cancel_existing_appointment(
     reason = body.get("reason", "")
     try:
         result = await cancel_appointment(
-            db=db, doctor_id=doctor.id,
+            db=db,
+            doctor_id=doctor.id,
             appointment_id=appointment_id,
             reason=reason,
         )
@@ -161,8 +174,10 @@ async def get_appointments(
 ):
     """List appointments within a date range."""
     appts = await list_appointments(
-        db=db, doctor_id=doctor.id,
-        date_from=date_from, date_to=date_to,
+        db=db,
+        doctor_id=doctor.id,
+        date_from=date_from,
+        date_to=date_to,
         status_filter=status,
     )
     return {"appointments": appts, "count": len(appts)}
@@ -185,12 +200,17 @@ async def get_appointment(
     if not apt:
         raise HTTPException(status_code=404, detail="Appointment not found")
 
-    # Get patient name
-    patient_name = "Unknown"
-    pat_result = await db.execute(select(Patient).where(Patient.id == apt.patient_id))
+    # Get patient name — pull from head_version.state_jsonb.demographics.name.
+    # Falls back to "Patient <id[:8]>" when the head version or name is missing.
+    patient_name = f"Patient {str(apt.patient_id)[:8]}"
+    pat_result = await db.execute(
+        select(Patient).options(selectinload(Patient.head_version)).where(Patient.id == apt.patient_id)
+    )
     patient = pat_result.scalar_one_or_none()
-    if patient:
-        patient_name = str(apt.patient_id)[:8]
+    if patient and patient.head_version:
+        demo_name = (patient.head_version.state_jsonb or {}).get("demographics", {}).get("name")
+        if demo_name:
+            patient_name = demo_name
 
     return {
         "id": str(apt.id),
@@ -255,14 +275,17 @@ async def update_working_hours(
     if "max_bookings_per_window" in body:
         mb = body["max_bookings_per_window"]
         if mb is not None:
-            if not isinstance(mb, int) or mb < 1 or mb > 100:
-                raise HTTPException(status_code=400, detail="max_bookings_per_window must be 1-100")
+            if not isinstance(mb, int) or mb < 0 or mb > 100:
+                raise HTTPException(status_code=400, detail="max_bookings_per_window must be 0-100 (0 = unlimited)")
         settings["max_bookings_per_window"] = mb
 
     doc.settings = settings
     await db.commit()
 
-    return {"status": "ok", "working_hours_json": settings.get("working_hours_json", {}),
-            "buffer_minutes": settings.get("buffer_minutes_between_consults", DEFAULT_BUFFER_MINUTES),
-            "default_duration": settings.get("default_consult_duration", DEFAULT_DURATION_MINUTES),
-            "max_bookings_per_window": settings.get("max_bookings_per_window")}
+    return {
+        "status": "ok",
+        "working_hours_json": settings.get("working_hours_json", {}),
+        "buffer_minutes": settings.get("buffer_minutes_between_consults", DEFAULT_BUFFER_MINUTES),
+        "default_duration": settings.get("default_consult_duration", DEFAULT_DURATION_MINUTES),
+        "max_bookings_per_window": settings.get("max_bookings_per_window"),
+    }

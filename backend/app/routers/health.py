@@ -3,9 +3,10 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.schemas import HealthCheck
-from app.database import get_db
+
 from app.config import get_settings
+from app.database import get_db
+from app.schemas import HealthCheck
 from app.services.qdrant import qdrant_service
 from app.services.redis import redis_service
 
@@ -39,6 +40,7 @@ async def check_langfuse() -> str:
         if not settings.LANGFUSE_PUBLIC_KEY or not settings.LANGFUSE_SECRET_KEY:
             return "not_configured"
         import httpx
+
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.LANGFUSE_HOST}/api/public/health")
             return "up" if resp.status_code == 200 else "degraded"

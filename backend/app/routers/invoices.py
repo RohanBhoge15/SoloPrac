@@ -247,7 +247,7 @@ async def create_invoice(
             meta={
                 "resource_type": "invoice",
                 "resource_id": str(inv.id),
-                "pdf_url": f"/api/v1/invoices/{inv.id}/pdf" if pdf_path else None,
+                "pdf_url": f"/api/v1/patients/{patient_id}/invoices/{inv.id}/pdf" if pdf_path else None,
             },
             patient_name=patient_name,
             amount=f"₹{total:,}",

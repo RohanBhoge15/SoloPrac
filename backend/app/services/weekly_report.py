@@ -15,18 +15,17 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 import logging
-import uuid
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+import math
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Patient, PatientVersion, ImageComparison
 from app.agents.synthesizer import MaverickSynthesizer
+from app.models import ImageComparison, Patient, PatientVersion
 
 logger = logging.getLogger(__name__)
 
@@ -40,32 +39,9 @@ TAU: Dict[str, int] = {
     "demographics": 365,
 }
 
-# Clinical significance tier weights
-TIER_WEIGHTS: Dict[str, float] = {
-    "new_diagnosis": 1.0,
-    "medication_change": 0.9,
-    "abnormal_lab": 0.8,
-    "critical_vitals": 0.8,
-    "deterioration": 0.9,
-    "improvement": 0.6,
-    "routine_visit": 0.3,
-    "missed_appointment": 0.5,
-    "referral": 0.7,
-    "follow_up": 0.4,
-}
-
-# Default weights if tag is unknown
-TIER_WEIGHTS_DEFAULT = 0.5
+from app.services.clinical_significance import clinical_significance_from_tags
 
 REPORT_LAYOUTS = ["executive", "clinical", "family_friendly"]
-
-
-def clinical_significance_from_tags(tags: List[str]) -> float:
-    """Map tags to clinical significance weight (max across tags)."""
-    if not tags:
-        return TIER_WEIGHTS_DEFAULT
-    weights = [TIER_WEIGHTS.get(t, TIER_WEIGHTS_DEFAULT) for t in tags]
-    return max(weights)
 
 
 def temporal_decay_weight(
@@ -86,6 +62,7 @@ def temporal_decay_weight(
 
 
 # ─── 5-Component Significance Scorer ──────────────────────
+
 
 def compute_significance(
     clinical_significance: float,
@@ -121,15 +98,13 @@ class WeeklyReportService:
         patient_id: UUID,
         days: int = 7,
     ) -> List[Dict[str, Any]]:
-        """Get patient versions from the last N days."""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        """Get patient versions from the last N days. days=0 → full history (no cutoff)."""
+        where_clauses = [PatientVersion.patient_id == patient_id]
+        if days and days > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            where_clauses.append(PatientVersion.timestamp >= cutoff)
         result = await db.execute(
-            select(PatientVersion)
-            .where(
-                PatientVersion.patient_id == patient_id,
-                PatientVersion.timestamp >= cutoff,
-            )
-            .order_by(PatientVersion.timestamp.desc())
+            select(PatientVersion).where(*where_clauses).order_by(PatientVersion.timestamp.desc())
         )
         versions = result.scalars().all()
         return [
@@ -199,18 +174,20 @@ class WeeklyReportService:
             # Composite score
             score = compute_significance(cs, info_gain, novelty, trend_strength, recency)
 
-            scored.append({
-                **v,
-                "score_components": {
-                    "clinical_significance": round(cs, 3),
-                    "information_gain": round(info_gain, 3),
-                    "novelty": round(novelty, 3),
-                    "trend_strength": round(trend_strength, 3),
-                    "recency": round(recency, 3),
-                },
-                "significance_score": round(score, 3),
-                "tier": self._score_tier(score),
-            })
+            scored.append(
+                {
+                    **v,
+                    "score_components": {
+                        "clinical_significance": round(cs, 3),
+                        "information_gain": round(info_gain, 3),
+                        "novelty": round(novelty, 3),
+                        "trend_strength": round(trend_strength, 3),
+                        "recency": round(recency, 3),
+                    },
+                    "significance_score": round(score, 3),
+                    "tier": self._score_tier(score),
+                }
+            )
 
         # Sort by significance (highest first)
         scored.sort(key=lambda x: -x["significance_score"])
@@ -233,14 +210,16 @@ class WeeklyReportService:
 
         sections = []
         for v in significant[:7]:
-            sections.append({
-                "date": self._fmt_date(v.get("created_at")),
-                "summary": v.get("summary", ""),
-                "tier": v["tier"],
-                "score": v["significance_score"],
-                "components": v["score_components"],
-                "tags": v.get("tags", []),
-            })
+            sections.append(
+                {
+                    "date": self._fmt_date(v.get("created_at")),
+                    "summary": v.get("summary", ""),
+                    "tier": v["tier"],
+                    "score": v["significance_score"],
+                    "components": v["score_components"],
+                    "tags": v.get("tags", []),
+                }
+            )
 
         return {
             "layout": "executive",
@@ -257,17 +236,19 @@ class WeeklyReportService:
         """Clinical layout — all metrics, full detail."""
         sections = []
         for v in scored_versions:
-            sections.append({
-                "date": self._fmt_date(v.get("created_at")),
-                "version": v.get("version_number"),
-                "summary": v.get("summary", ""),
-                "tier": v["tier"],
-                "score": v["significance_score"],
-                "components": v["score_components"],
-                "tags": v.get("tags", []),
-                "edit_type": v.get("edit_type", "manual"),
-                "state_preview": self._state_preview(v.get("state_jsonb", {})),
-            })
+            sections.append(
+                {
+                    "date": self._fmt_date(v.get("created_at")),
+                    "version": v.get("version_number"),
+                    "summary": v.get("summary", ""),
+                    "tier": v["tier"],
+                    "score": v["significance_score"],
+                    "components": v["score_components"],
+                    "tags": v.get("tags", []),
+                    "edit_type": v.get("edit_type", "manual"),
+                    "state_preview": self._state_preview(v.get("state_jsonb", {})),
+                }
+            )
 
         # Group by tier
         critical = [s for s in sections if s["tier"] == "critical"]
@@ -297,11 +278,13 @@ class WeeklyReportService:
             tags = v.get("tags", [])
             plain_summary = self._to_plain_language(summary, tags)
 
-            sections.append({
-                "date": self._fmt_date(v.get("created_at")),
-                "summary": plain_summary,
-                "tier": v["tier"],
-            })
+            sections.append(
+                {
+                    "date": self._fmt_date(v.get("created_at")),
+                    "summary": plain_summary,
+                    "tier": v["tier"],
+                }
+            )
 
         return {
             "layout": "family_friendly",
@@ -331,17 +314,17 @@ class WeeklyReportService:
         }
 
     async def _fetch_patient_images(self, db: AsyncSession, patient_id: UUID, days: int = 7) -> List[Dict[str, str]]:
-        """Fetch patient images from the last N days for inclusion in weekly report."""
+        """Fetch patient images from the last N days. days=0 → full history (no cutoff)."""
         from sqlalchemy import desc
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        where_clauses = [PatientVersion.patient_id == patient_id]
+        if days and days > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            where_clauses.append(ImageComparison.created_at >= cutoff)
         result = await db.execute(
             select(ImageComparison)
             .join(PatientVersion, PatientVersion.id == ImageComparison.version_id)
-            .where(
-                PatientVersion.patient_id == patient_id,
-                ImageComparison.created_at >= cutoff,
-            )
+            .where(*where_clauses)
             .order_by(desc(ImageComparison.created_at))
             .limit(6)
         )
@@ -350,15 +333,19 @@ class WeeklyReportService:
         images = []
         for c in comparisons:
             if c.current_image_path:
-                images.append({
-                    "url": c.current_image_path,
-                    "caption": f"Clinical image ({c.created_at.strftime('%b %d') if c.created_at else ''})",
-                })
+                images.append(
+                    {
+                        "url": c.current_image_path,
+                        "caption": f"Clinical image ({c.created_at.strftime('%b %d') if c.created_at else ''})",
+                    }
+                )
             if c.matched_image_path and c.matched_image_path != c.current_image_path:
-                images.append({
-                    "url": c.matched_image_path,
-                    "caption": f"Prior comparison ({c.created_at.strftime('%b %d') if c.created_at else ''})",
-                })
+                images.append(
+                    {
+                        "url": c.matched_image_path,
+                        "caption": f"Prior comparison ({c.created_at.strftime('%b %d') if c.created_at else ''})",
+                    }
+                )
 
         return images[:6]
 
@@ -419,9 +406,7 @@ class WeeklyReportService:
         patient_age = None
         patient_gender = None
         if patient.head_version_id:
-            vr = await db.execute(
-                select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-            )
+            vr = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
             head = vr.scalar_one_or_none()
             if head and head.state_jsonb:
                 demo = head.state_jsonb.get("demographics", {})
@@ -461,12 +446,14 @@ class WeeklyReportService:
             report = self.build_clinical_layout(patient_name, scored)
 
         # Add patient metadata and images to all layouts
-        report.update({
-            "patient_name": patient_name,
-            "patient_age": patient_age,
-            "patient_gender": patient_gender,
-            "images": images,
-        })
+        report.update(
+            {
+                "patient_name": patient_name,
+                "patient_age": patient_age,
+                "patient_gender": patient_gender,
+                "images": images,
+            }
+        )
 
         return report
 
@@ -569,4 +556,3 @@ def build_likert_study(
             "Overall significance scoring expected >= 4.0."
         ),
     }
-

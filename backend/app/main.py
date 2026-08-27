@@ -1,5 +1,15 @@
 # Main FastAPI Application — with security middleware, rate limiting, audit log
 
+# Docling model compilation must be disabled before any docling import:
+# CPU-only torch in the containers can't JIT-compile the CUDA kernels the
+# compile_model path tries to emit, and the compile happens on the first
+# conversion (torch._dynamo) which 500s the OCR request. The env var is
+# read by pydantic-settings at module import time, so it has to be set
+# here, before app.routers (which transitively imports document_parser).
+import os as _os
+
+_os.environ.setdefault("DOCLING_INFERENCE_COMPILE_TORCH_MODELS", "false")
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI

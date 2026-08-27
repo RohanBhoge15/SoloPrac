@@ -1,9 +1,9 @@
 """Redis service client — cache + arq worker queue for async tasks."""
 
 import json
+from typing import Any, Optional
+
 import redis.asyncio as redis
-from typing import Any, Optional, List, Dict
-from contextlib import asynccontextmanager
 
 from app.config import settings
 

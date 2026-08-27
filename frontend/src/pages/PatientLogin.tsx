@@ -44,7 +44,17 @@ export function PatientLogin() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 p-4">
-      <Card className="w-full max-w-sm">
+      <div className="w-full max-w-sm">
+        {/* Logo */}
+        <div className="text-center mb-6">
+          <Link to="/" className="inline-flex items-center gap-2 text-2xl font-bold text-primary-600 dark:text-primary-400">
+            <User className="h-8 w-8" />
+            SoloPrac AI
+          </Link>
+          <p className="mt-2 text-gray-500 dark:text-gray-400">Patient portal</p>
+        </div>
+
+        <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-2">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary-600">
@@ -94,6 +104,7 @@ export function PatientLogin() {
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }

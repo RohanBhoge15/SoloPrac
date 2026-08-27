@@ -16,21 +16,21 @@ isolation — because the risk is the plumbing, not the helper.
 from __future__ import annotations
 
 import json
+
 import pytest
 
-from app.services.pii import strip_pii, pseudonymize_id
-
+from app.services.pii import pseudonymize_id, strip_pii
 
 # A realistic patient context carrying every kind of PII we care about.
 PATIENT_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 PII_VALUES = [
-    "Rohan Bhoge",            # name
-    "+91-9876543210",         # phone
-    "rohan@example.com",      # email
-    "12 MG Road, Pune",       # address
-    "1234-5678-9012",         # aadhaar
-    "1996-05-15",             # date_of_birth
-    PATIENT_ID,               # patient_id
+    "Rohan Bhoge",  # name
+    "+91-9876543210",  # phone
+    "rohan@example.com",  # email
+    "12 MG Road, Pune",  # address
+    "1234-5678-9012",  # aadhaar
+    "1996-05-15",  # date_of_birth
+    PATIENT_ID,  # patient_id
 ]
 
 
@@ -83,9 +83,7 @@ class _CaptureClient:
             return _Resp()
 
         # Mirror the openai client shape: client.chat.completions.create(...)
-        self.chat = type(
-            "Chat", (), {"completions": type("C", (), {"create": staticmethod(_create)})()}
-        )()
+        self.chat = type("Chat", (), {"completions": type("C", (), {"create": staticmethod(_create)})()})()
 
 
 def _assert_no_pii(blob: str):
@@ -156,9 +154,7 @@ async def test_no_pii_in_streaming_payload_sent_to_llm():
     synth._client = capture
 
     ctx = _patient_context()
-    async for _ in synth.synthesize_stream(
-        query="Summarize", context=ctx, patient_context=ctx["patient_context"]
-    ):
+    async for _ in synth.synthesize_stream(query="Summarize", context=ctx, patient_context=ctx["patient_context"]):
         pass
 
     assert "messages" in captured, "streaming LLM was never called"

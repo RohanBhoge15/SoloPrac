@@ -15,18 +15,19 @@ Usage:
 
 from __future__ import annotations
 
-import os
-import io
-import uuid
-import logging
+import base64
 import hashlib
+import io
+import logging
+import os
+import uuid
 from typing import Optional, Tuple
+
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import base64
-
 from sqlalchemy import text
+
 from app.config import settings
 from app.models import AuditLog
 
@@ -87,7 +88,7 @@ class ImageSecurityService:
                 return Fernet(derived)
             else:
                 # Use raw key
-                key_bytes = key.encode()[:32].ljust(32, b'\0')
+                key_bytes = key.encode()[:32].ljust(32, b"\0")
                 fernet_key = base64.urlsafe_b64encode(key_bytes)
                 return Fernet(fernet_key)
         except Exception as exc:
@@ -133,6 +134,7 @@ class ImageSecurityService:
         # 4. Check image dimensions via PIL (catches corrupt/empty images)
         try:
             from PIL import Image
+
             img = Image.open(io.BytesIO(content))
             img.verify()  # lightweight verify
             width, height = img.size
@@ -177,9 +179,7 @@ class ImageSecurityService:
             logger.error("Cannot encrypt: file not found %s", input_path)
             return None
 
-        output_dir = output_dir or os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "uploads", "encrypted"
-        )
+        output_dir = output_dir or os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", "encrypted")
         os.makedirs(output_dir, exist_ok=True)
 
         with open(input_path, "rb") as f:
@@ -193,7 +193,9 @@ class ImageSecurityService:
         with open(encrypted_path, "wb") as f:
             f.write(ciphertext)
 
-        logger.info("Encrypted image: %s -> %s (%d bytes)", os.path.basename(input_path), encrypted_path, len(ciphertext))
+        logger.info(
+            "Encrypted image: %s -> %s (%d bytes)", os.path.basename(input_path), encrypted_path, len(ciphertext)
+        )
         return encrypted_path
 
     async def decrypt_image(self, encrypted_path: str) -> Optional[bytes]:
@@ -276,9 +278,7 @@ class ImageSecurityService:
         for table in tables:
             try:
                 # Check RLS is enabled
-                row = await db_session.execute(
-                    text(f"SELECT relrowsecurity FROM pg_class WHERE relname = '{table}'")
-                )
+                row = await db_session.execute(text(f"SELECT relrowsecurity FROM pg_class WHERE relname = '{table}'"))
                 rls_enabled = row.scalar()
                 results[table] = {
                     "rls_enabled": bool(rls_enabled),

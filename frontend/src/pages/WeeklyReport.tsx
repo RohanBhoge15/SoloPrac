@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
+import { toast } from '@/components/ui/Toast'
 import { AlertTriangle, Activity, ChevronDown, ChevronUp, Loader2, FileText, Download } from 'lucide-react'
 
 type Layout = 'executive' | 'clinical' | 'family_friendly'
@@ -63,7 +64,11 @@ export function WeeklyReport() {
     try {
       const res = await apiClient.get('/patients')
       setPatients(res.data || [])
-    } catch {}
+    } catch (err) {
+      // R-8: surface load failure instead of leaving picker mysteriously empty.
+      console.error('[WeeklyReport] failed to load patients:', err)
+      toast.error('Failed to load patient list')
+    }
   }
 
   const handleGenerate = async () => {
@@ -92,19 +97,40 @@ export function WeeklyReport() {
         params: { layout, days },
       })
       setAiSummary(res.data?.ai_summary?.summary || 'AI summary not available')
-    } catch {}
+    } catch (err) {
+      // R-8: surface AI summary failure.
+      console.error('[WeeklyReport] AI summary failed:', err)
+      toast.error('Failed to generate AI summary')
+    }
     setLoadingSummary(false)
   }
 
-  const handleDownload = () => {
-    if (!report) return
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `weekly-report-${report.patient_name}-${layout}.json`
-    a.click()
-    URL.revokeObjectURL(url)
+  // D-12: The download button previously produced a raw JSON dump of the
+  // report state. Users expect a PDF (which the backend already renders via
+  // /patients/{id}/weekly-report/pdf). Mirror the pattern used in
+  // PatientDetail.handleDownloadWeeklyReport: request the endpoint with
+  // responseType: 'blob' and trigger a browser download of the PDF blob.
+  const handleDownload = async () => {
+    if (!report || !selectedPatient) return
+    try {
+      const res = await apiClient.get(`/patients/${selectedPatient}/weekly-report/pdf`, {
+        params: { layout, days },
+        responseType: 'blob',
+      })
+      const blob = new Blob([res.data], { type: 'application/pdf' })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      const yyyymmdd = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const safeName = (report.patient_name || selectedPatient).replace(/[^\w.-]+/g, '_')
+      link.download = `weekly-report-${safeName}-${yyyymmdd}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch {
+      setError('Failed to download PDF')
+    }
   }
 
   const renderSection = (s: ReportSection, idx: number) => (
@@ -177,15 +203,21 @@ export function WeeklyReport() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Lookback (days)</label>
-              <input
-                type="number"
-                min={1}
-                max={90}
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Lookback</label>
+              {/* Backend accepts days=0 as sentinel for "no cutoff, full patient history".
+                  We surface a few common presets + "Full history" instead of raw number entry
+                  — users kept asking for a full-history option and 90 days was arbitrary. */}
+              <select
                 value={days}
                 onChange={e => setDays(Number(e.target.value))}
                 className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
-              />
+              >
+                <option value={7}>Last 7 days</option>
+                <option value={14}>Last 14 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={90}>Last 90 days</option>
+                <option value={0}>Full history</option>
+              </select>
             </div>
           </div>
           <div className="flex items-center gap-2">

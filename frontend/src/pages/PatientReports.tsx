@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { apiClient } from '@/services/api'
+import { openPdfViaBlob } from '@/utils/helpers'
+import { toast } from '@/components/ui/Toast'
 import { FileText, Loader2, Receipt, FileBadge, Download, Calendar } from 'lucide-react'
 
 export function PatientReports() {
@@ -54,7 +56,8 @@ export function PatientReports() {
       window.URL.revokeObjectURL(url)
     } catch (err) {
       console.error('Failed to download weekly report:', err)
-      alert('Failed to generate weekly report. Please try again.')
+      // Toast rollout: replace native alert() with the global toast.
+      toast.error('Failed to generate weekly report. Please try again.')
     } finally {
       setReportDownloading(false)
     }
@@ -118,8 +121,9 @@ export function PatientReports() {
                   <span className="text-sm">{new Date(r.created_at).toLocaleDateString()}</span>
                   <div className="flex items-center gap-2">
                     <Badge variant={r.has_pdf ? 'default' : 'secondary'} className="text-xs">{r.has_pdf ? 'PDF' : 'No PDF'}</Badge>
+                    {/* R-6: fetch through apiClient (auth cookies + baseURL) and open as blob. */}
                     {r.has_pdf && (
-                      <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/patient/me/prescriptions/${r.id}/pdf`, '_blank')}>
+                      <Button variant="ghost" size="sm" onClick={() => openPdfViaBlob(`/patient/me/prescriptions/${r.id}/pdf`).catch(() => toast.error('Failed to open prescription PDF'))}>
                         <Download className="h-3 w-3" />
                       </Button>
                     )}
@@ -144,8 +148,9 @@ export function PatientReports() {
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge variant={i.status === 'paid' ? 'default' : 'secondary'} className="text-xs">{i.status}</Badge>
+                    {/* R-6: fetch through apiClient (auth cookies + baseURL) and open as blob. */}
                     {i.has_pdf && (
-                      <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/patient/me/invoices/${i.id}/pdf`, '_blank')}>
+                      <Button variant="ghost" size="sm" onClick={() => openPdfViaBlob(`/patient/me/invoices/${i.id}/pdf`).catch(() => toast.error('Failed to open invoice PDF'))}>
                         <Download className="h-3 w-3" />
                       </Button>
                     )}
@@ -167,8 +172,9 @@ export function PatientReports() {
                   <span className="text-sm">{c.cert_type.replace('_', ' ')}</span>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-400">{c.verification_code}</span>
+                    {/* R-6: fetch through apiClient (auth cookies + baseURL) and open as blob. */}
                     {c.has_pdf && (
-                      <Button variant="ghost" size="sm" onClick={() => window.open(`/api/v1/patient/me/certificates/${c.id}/pdf`, '_blank')}>
+                      <Button variant="ghost" size="sm" onClick={() => openPdfViaBlob(`/patient/me/certificates/${c.id}/pdf`).catch(() => toast.error('Failed to open certificate PDF'))}>
                         <Download className="h-3 w-3" />
                       </Button>
                     )}

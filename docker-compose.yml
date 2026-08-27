@@ -127,6 +127,9 @@ services:
       - POSTGRES_SERVER=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-soloprac}
+      # Runtime role — RLS-enforced (must match app/migrations/rls_setup.sql).
+      - APP_DB_USER=${APP_DB_USER:-soloprac_app}
+      - APP_DB_PASSWORD=${APP_DB_PASSWORD:-soloprac_app_dev_password_change_me}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-soloprac_redis_dev_password}
@@ -139,7 +142,7 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - NIM_API_KEY=${NIM_API_KEY:-}
-      - MAVERICK_MODEL=${MAVERICK_MODEL:-meta/llama-3.2-1b-instruct}
+      - MAVERICK_MODEL=${MAVERICK_MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
       - MAVERICK_STRUCTURED_OUTPUT=${MAVERICK_STRUCTURED_OUTPUT:-true}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       # MinIO S3 storage
@@ -209,7 +212,9 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      # VITE_API_URL removed — frontend/src/services/api.ts hardcodes "/api/v1"
+      # and never reads import.meta.env.VITE_API_URL. The Vite dev proxy uses
+      # VITE_PROXY_TARGET, which is the one that actually matters.
       - VITE_PROXY_TARGET=http://backend:8000
     depends_on:
       - backend
@@ -277,6 +282,9 @@ services:
       - POSTGRES_SERVER=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-soloprac}
+      # Runtime role — RLS-enforced (must match app/migrations/rls_setup.sql).
+      - APP_DB_USER=${APP_DB_USER:-soloprac_app}
+      - APP_DB_PASSWORD=${APP_DB_PASSWORD:-soloprac_app_dev_password_change_me}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-soloprac_redis_dev_password}
@@ -289,8 +297,18 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - NIM_API_KEY=${NIM_API_KEY:-}
+      - MAVERICK_MODEL=${MAVERICK_MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
+      - MAVERICK_STRUCTURED_OUTPUT=${MAVERICK_STRUCTURED_OUTPUT:-true}
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      # MinIO — parse_document_job / generate_weekly_report_job / compare_images_job
+      # download from S3 and upload PDFs. Without these the worker falls back to
+      # config's `localhost:9000` default (the container itself) and every async
+      # OCR/PDF job fails with "Could not connect to the endpoint URL".
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-soloprac}
       # Share the same HuggingFace cache as the backend (see backend service).
       - HF_HOME=/hf_cache
       - HF_TOKEN=${HF_TOKEN:-}
@@ -319,6 +337,14 @@ services:
         condition: service_healthy
       langfuse:
         condition: service_healthy
+    # Worker has no HTTP port and the image has no curl/ps/wget — so check the
+    # arq process itself via /proc/1/cmdline instead of the Dockerfile's
+    # curl-based HEALTHCHECK (which always failed: "curl: not found").
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qa arq /proc/1/cmdline || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - soloprac-network

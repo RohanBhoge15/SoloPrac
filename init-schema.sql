@@ -232,60 +232,96 @@ CREATE TABLE image_comparisons (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Enable Row-Level Security on all patient-bearing tables
-ALTER TABLE doctors ENABLE ROW LEVEL SECURITY;
-ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
-ALTER TABLE patient_versions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE prescription_boxes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE certificates ENABLE ROW LEVEL SECURITY;
-ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE risk_alerts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE patient_notifications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
-ALTER TABLE image_comparisons ENABLE ROW LEVEL SECURITY;
+-- ── Row-Level Security ───────────────────────────────────────────────────
+-- The authoritative, idempotent RLS bootstrap (roles, grants, FORCE ROW
+-- LEVEL SECURITY, dual tenant_isolation + patient_self_access policies, and
+-- the sanctioned SECURITY DEFINER helpers) lives in
+-- backend/app/migrations/rls_setup.sql, which init_db() applies on EVERY
+-- backend boot. The block below mirrors it for fresh installs so the schema
+-- is correct even before the backend first starts.
 
--- RLS Policy: Tenant Isolation
--- All queries must have app.current_doctor_id set
-CREATE POLICY tenant_isolation ON doctors
-  USING (id = current_setting('app.current_doctor_id')::uuid);
+-- doctors: public directory (login lookup, patient search) — RLS disabled.
+ALTER TABLE doctors DISABLE ROW LEVEL SECURITY;
+
+-- certificates: public QR verification by design — RLS disabled.
+ALTER TABLE certificates DISABLE ROW LEVEL SECURITY;
+
+-- Patient-bearing tables: RLS on + FORCE + dual policies (doctor + user scope).
+ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patients FORCE ROW LEVEL SECURITY;
+ALTER TABLE patient_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patient_versions FORCE ROW LEVEL SECURITY;
+ALTER TABLE prescription_boxes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE prescription_boxes FORCE ROW LEVEL SECURITY;
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments FORCE ROW LEVEL SECURITY;
+ALTER TABLE risk_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE risk_alerts FORCE ROW LEVEL SECURITY;
+ALTER TABLE patient_notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patient_notifications FORCE ROW LEVEL SECURITY;
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
+ALTER TABLE image_comparisons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE image_comparisons FORCE ROW LEVEL SECURITY;
+-- consent_records / doctor_notifications / report_verifications are created by
+-- SQLAlchemy create_all / Alembic; rls_setup.sql covers them on first boot.
 
 CREATE POLICY tenant_isolation ON patients
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON patients
+  USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
 CREATE POLICY tenant_isolation ON patient_versions
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON patient_versions
+  USING (patient_id IN (SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid));
 
 CREATE POLICY tenant_isolation ON prescription_boxes
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON prescription_boxes
+  USING (patient_id IN (SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid));
 
 CREATE POLICY tenant_isolation ON invoices
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
-
-CREATE POLICY tenant_isolation ON certificates
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON invoices
+  USING (patient_id IN (SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid));
 
 CREATE POLICY tenant_isolation ON appointments
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON appointments
+  USING (patient_id IN (SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid));
 
 CREATE POLICY tenant_isolation ON risk_alerts
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON risk_alerts
+  USING (patient_id IN (SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid));
 
 CREATE POLICY tenant_isolation ON patient_notifications
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON patient_notifications
+  USING (patient_id IN (SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid));
 
 CREATE POLICY tenant_isolation ON audit_log
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
 
 CREATE POLICY tenant_isolation ON image_comparisons
-  USING (doctor_id = current_setting('app.current_doctor_id')::uuid);
+  USING (doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid);
+CREATE POLICY patient_self_access ON image_comparisons
+  USING (patient_id IN (SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid));
 
--- patient_time_preferences uses patient_id (not doctor_id) so we use a
--- subquery to verify the patient belongs to the current doctor
+-- patient_time_preferences uses patient_id (not doctor_id) so both scopes
+-- use a subquery to verify the patient belongs to the current identity.
 ALTER TABLE patient_time_preferences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patient_time_preferences FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON patient_time_preferences
   USING (patient_id IN (
-    SELECT id FROM patients WHERE doctor_id = current_setting('app.current_doctor_id')::uuid
+    SELECT id FROM patients WHERE doctor_id = NULLIF(current_setting('app.current_doctor_id', true), '')::uuid
+  ));
+CREATE POLICY patient_self_access ON patient_time_preferences
+  USING (patient_id IN (
+    SELECT id FROM patients WHERE user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
   ));
 
 -- Performance Indexes
@@ -316,11 +352,19 @@ CREATE INDEX IF NOT EXISTS idx_risk_alerts_doctor_ack ON risk_alerts (doctor_id,
 CREATE INDEX IF NOT EXISTS idx_notifications_patient_read ON patient_notifications (patient_id, read, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_appointments_doctor_status ON appointments (doctor_id, status, start_at);
 
--- Grant permissions for application role
-CREATE ROLE soloprac_app NOLOGIN;
+-- Grant permissions for application role.
+-- The app connects as soloprac_app (LOGIN, non-owner, non-superuser) so RLS
+-- actually applies; connecting as the table owner would bypass every policy.
+-- app/migrations/rls_setup.sql (run by init_db on every boot) re-applies this
+-- idempotently, including ALTERing the role to LOGIN if it already exists.
+CREATE ROLE soloprac_app LOGIN PASSWORD 'soloprac_app_dev_password_change_me';
 GRANT USAGE ON SCHEMA public TO soloprac_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO soloprac_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO soloprac_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO soloprac_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO soloprac_app;
 
 -- For audit_log: revoke DELETE to make it append-only
 REVOKE DELETE ON audit_log FROM soloprac_app;

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
-import { Upload, ImageIcon, ArrowLeftRight, Loader2, Save, CheckCircle, AlertCircle, SlidersHorizontal, Percent, GitCompare, Activity } from 'lucide-react'
+import { Upload, ImageIcon, ArrowLeftRight, Loader2, Save, CheckCircle, AlertCircle, Percent, GitCompare, Activity } from 'lucide-react'
 
 interface ComparisonMetrics {
   area_change_pct?: number
@@ -41,7 +41,7 @@ export function ImageComparison({ patientId, onSaveToRecord }: ImageComparisonPr
   const [uploading, setUploading] = useState(false)
   const [result, setResult] = useState<ComparisonResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [opacity, setOpacity] = useState(50)
+  // D-8: opacity slider was removed — overlay is a pre-composited image, not two stacked layers.
   const [activePanel, setActivePanel] = useState<'previous' | 'current' | 'overlay'>('overlay')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -180,22 +180,11 @@ export function ImageComparison({ patientId, onSaveToRecord }: ImageComparisonPr
                   <img src={preview || result.current_image.path} alt="Current visit" className="w-full h-full object-contain" style={{ maxHeight: 400 }} />
                 )}
                 {activePanel === 'overlay' && result.overlay_path && (
-                  <>
-                    <img src={result.overlay_path} alt="Overlay" className="w-full h-full object-contain" style={{ maxHeight: 400 }} />
-                    {/* Opacity slider */}
-                    <div className="absolute bottom-3 left-3 right-3 flex items-center gap-2 bg-black/60 rounded-lg px-3 py-2">
-                      <SlidersHorizontal className="h-4 w-4 text-white shrink-0" />
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        value={opacity}
-                        onChange={(e) => setOpacity(Number(e.target.value))}
-                        className="flex-1 accent-primary-500"
-                      />
-                      <span className="text-xs text-white w-8 text-right">{opacity}%</span>
-                    </div>
-                  </>
+                  // D-8: Overlay is a single server-composited image (result.overlay_path),
+                  // not two stacked layers, so an opacity slider has nothing to blend against.
+                  // The slider previously updated state that was never applied to any element.
+                  // Removed the slider entirely rather than pretend to work.
+                  <img src={result.overlay_path} alt="Overlay" className="w-full h-full object-contain" style={{ maxHeight: 400 }} />
                 )}
                 {activePanel === 'overlay' && !result.overlay_path && (
                   <div className="flex items-center justify-center h-[300px] text-gray-400">

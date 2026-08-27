@@ -22,14 +22,18 @@ Architecture:
   └──────────────┘
 """
 
-from app.agents.state import AgentState, AgentIntent, AgentToolCall
-from app.agents.router import IntentRouter
-from app.agents.tools import tool_registry
 from app.agents.graph import AgentGraph
+from app.agents.router import IntentRouter
+from app.agents.state import AgentIntent, AgentState, AgentToolCall
 from app.agents.synthesizer import MaverickSynthesizer
+from app.agents.tools import tool_registry
 
 __all__ = [
-    "AgentState", "AgentIntent", "AgentToolCall",
-    "IntentRouter", "tool_registry",
-    "AgentGraph", "MaverickSynthesizer",
+    "AgentState",
+    "AgentIntent",
+    "AgentToolCall",
+    "IntentRouter",
+    "tool_registry",
+    "AgentGraph",
+    "MaverickSynthesizer",
 ]

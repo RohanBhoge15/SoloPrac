@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
-import logging
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
+from uuid import UUID
+
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from uuid import UUID
 
 from app.config import settings
 from app.database import async_session_maker
@@ -69,7 +70,12 @@ async def audit_log_middleware(request: Request, call_next: Callable[[Request], 
 
     # Skip audit for non-tracked paths
     path = request.url.path
-    if path in ("/api/v1/health", "/api/v1/health/ready", "/api/v1/health/live", "/") or path.startswith("/docs") or path.startswith("/redoc") or path.startswith("/openapi.json"):
+    if (
+        path in ("/api/v1/health", "/api/v1/health/ready", "/api/v1/health/live", "/")
+        or path.startswith("/docs")
+        or path.startswith("/redoc")
+        or path.startswith("/openapi.json")
+    ):
         return await call_next(request)
 
     response: Response = await call_next(request)
@@ -96,6 +102,7 @@ async def audit_log_middleware(request: Request, call_next: Callable[[Request], 
     if doctor_id and action in ("write", "read"):
         try:
             from app.database import _current_doctor_id
+
             log_entry = AuditLog(
                 doctor_id=doctor_id,
                 patient_id=patient_id,
@@ -137,53 +144,56 @@ async def audit_log_middleware(request: Request, call_next: Callable[[Request], 
 
 async def doctor_identity_middleware(request: Request, call_next):
     """
-    Extracts doctor identity from JWT and stores it in a context variable
-    for RLS enforcement. The actual set_config call happens in get_db()
-    on the session the route handler uses.
-    """
-    from app.database import _current_doctor_id
+    Extracts doctor AND patient identity from JWT and stores them in context
+    variables for RLS enforcement. The actual set_config call happens in
+    get_db() on the session the route handler uses.
 
-    # Try to extract doctor from Authorization header
+    Doctor tokens (type access/refresh) -> app.current_doctor_id
+    Patient tokens (type patient)       -> app.current_user_id
+    """
+    from app.database import _current_doctor_id, _current_user_id
+
     doctor_id = None
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        token = auth[7:]
+    user_id = None
+
+    def _consume_token(token: str):
+        nonlocal doctor_id, user_id
         try:
-            from jose import jwt, JWTError
+            from jose import JWTError, jwt
+
             payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-            # Only accept doctor-type tokens (reject patient tokens to avoid ID collision)
             token_type = payload.get("type", "access")
+            sub = payload.get("sub")
+            if not sub:
+                return
             if token_type in ("access", "refresh"):
-                doctor_id = payload.get("sub")
-                if doctor_id:
-                    request.state.doctor_id = UUID(doctor_id)
-                    # Store decoded payload to avoid double-decode in get_current_doctor
-                    request.state.token_payload = payload
+                doctor_id = sub
+                request.state.doctor_id = UUID(sub)
+                # Store decoded payload to avoid double-decode in get_current_doctor
+                request.state.token_payload = payload
+            elif token_type == "patient":
+                user_id = sub
+                request.state.user_id = UUID(sub)
         except JWTError:
             pass
 
-    # Fallback: try to extract doctor from HttpOnly cookie
-    if not doctor_id:
-        token = request.cookies.get("access_token")
-        if token:
-            try:
-                from jose import jwt, JWTError
-                payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-                token_type = payload.get("type", "access")
-                if token_type in ("access", "refresh"):
-                    doctor_id = payload.get("sub")
-                    if doctor_id:
-                        request.state.doctor_id = UUID(doctor_id)
-                        request.state.token_payload = payload
-            except JWTError:
-                pass
+    # Authorization header first, HttpOnly cookies as fallback
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        _consume_token(auth[7:])
+    if not doctor_id and not user_id:
+        _consume_token(request.cookies.get("access_token", ""))
+    if not doctor_id and not user_id:
+        _consume_token(request.cookies.get("patient_token", ""))
 
-    # Store doctor_id in context var so get_db() can set it on the actual session
-    token = _current_doctor_id.set(doctor_id)
+    # Store identity in context vars so get_db() can set them on the session
+    did_token = _current_doctor_id.set(doctor_id)
+    uid_token = _current_user_id.set(user_id)
 
     try:
         response = await call_next(request)
     finally:
-        _current_doctor_id.reset(token)
+        _current_doctor_id.reset(did_token)
+        _current_user_id.reset(uid_token)
 
     return response

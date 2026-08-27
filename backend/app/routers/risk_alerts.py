@@ -49,9 +49,7 @@ async def list_risk_alerts(
     patient_ids = {a.patient_id for a in alerts}
     names: dict[uuid.UUID, str] = {}
     if patient_ids:
-        prows = await db.execute(
-            select(Patient).where(Patient.id.in_(patient_ids))
-        )
+        prows = await db.execute(select(Patient).where(Patient.id.in_(patient_ids)))
         for p in prows.scalars().all():
             head = p.head_version
             demo = (head.state_jsonb or {}).get("demographics") if head else None
@@ -83,6 +81,7 @@ async def trigger_scan(
     scheduled arq cron covers the periodic case.
     """
     from app.services.risk_scan import scan_doctor
+
     return await scan_doctor(str(doctor.id))
 
 

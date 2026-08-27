@@ -20,19 +20,17 @@ Usage (async via arq):
     await redis.enqueue_job("index_version_job", version_id=str(v.id))
 """
 
-import uuid
-import json
 import logging
-from typing import Optional, Dict, Any
+import uuid
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import PatientVersion, Patient
+from app.models import Patient, PatientVersion
 from app.services.embeddings import embedding_service
+from app.services.pii import strip_pii
 from app.services.qdrant import qdrant_service
 from app.services.redis import redis_service
-from app.services.pii import strip_pii
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +109,7 @@ async def index_version(
         # Step 1: Generate MedCPT embedding (768d, clinical text)
         logger.info("Encoding MedCPT for version %s (patient %s)", version_id, patient.id)
         medcpt_vectors = await embedding_service.encode_medcpt([search_text])
-        medcpt_embedding = medcpt_vectors[0].tolist() if hasattr(medcpt_vectors[0], 'tolist') else medcpt_vectors[0]
+        medcpt_embedding = medcpt_vectors[0].tolist() if hasattr(medcpt_vectors[0], "tolist") else medcpt_vectors[0]
     except Exception as exc:
         logger.warning("MedCPT encoding failed for version %s: %s (proceeding without)", version_id, exc)
         medcpt_embedding = []
@@ -137,25 +135,27 @@ async def index_version(
     try:
         # Step 3: Upsert to Qdrant
         logger.info("Indexing version %s to Qdrant", version_id)
-        point_id = await qdrant_service.upsert_version({
-            "version_id": version_id,
-            "patient_id": str(patient.id),
-            "doctor_id": str(doctor_id),
-            "version_number": version.version_number,
-            "timestamp": version.timestamp.isoformat() if version.timestamp else None,
-            "modality": "text",
-            "version_hash": version.version_hash,
-            "author": version.author,
-            "edit_type": version.edit_type,
-            "summary": version.summary,
-            "tags": version.tags or [],
-            "clinical_significance": version.clinical_significance or 0.0,
-            "medical_text_embedding": medcpt_embedding,
-            "hybrid_embedding": hybrid_embedding,
-            "sparse_indices": sparse_indices,
-            "sparse_values": sparse_values,
-            "image_embedding": [],  # No image data at version creation
-        })
+        point_id = await qdrant_service.upsert_version(
+            {
+                "version_id": version_id,
+                "patient_id": str(patient.id),
+                "doctor_id": str(doctor_id),
+                "version_number": version.version_number,
+                "timestamp": version.timestamp.isoformat() if version.timestamp else None,
+                "modality": "text",
+                "version_hash": version.version_hash,
+                "author": version.author,
+                "edit_type": version.edit_type,
+                "summary": version.summary,
+                "tags": version.tags or [],
+                "clinical_significance": version.clinical_significance or 0.0,
+                "medical_text_embedding": medcpt_embedding,
+                "hybrid_embedding": hybrid_embedding,
+                "sparse_indices": sparse_indices,
+                "sparse_values": sparse_values,
+                "image_embedding": [],  # No image data at version creation
+            }
+        )
     except Exception as exc:
         logger.error("Qdrant upsert failed for version %s: %s", version_id, exc)
         raise
@@ -179,13 +179,17 @@ async def index_version(
 
     logger.info(
         "Indexed version %s v%d to Qdrant (point=%s, medcpt=%d dims, hybrid=%d dims)",
-        version_id, version.version_number, point_id,
-        len(medcpt_embedding), len(hybrid_embedding),
+        version_id,
+        version.version_number,
+        point_id,
+        len(medcpt_embedding),
+        len(hybrid_embedding),
     )
     return point_id
 
 
 # ─── Arq Job Functions ────────────────────────────
+
 
 async def index_version_job(ctx, version_id: str):
     """Arq job: index a version by ID.
@@ -197,20 +201,21 @@ async def index_version_job(ctx, version_id: str):
     Usage:
         await redis.enqueue_job("index_version_job", version_id=str(version.id))
     """
-    from app.database import async_session_maker
+    from app.database import async_session_maker, resolve_doctor_id, set_rls_context
 
     async with async_session_maker() as db:
-        result = await db.execute(
-            select(PatientVersion).where(PatientVersion.id == uuid.UUID(version_id))
-        )
+        # Resolve the owning doctor via the SECURITY DEFINER helper (RLS would
+        # hide the version from an un-scoped session), then scope the session.
+        doctor_id = await resolve_doctor_id(db, version_id=version_id)
+        if doctor_id:
+            await set_rls_context(db, doctor_id=doctor_id)
+        result = await db.execute(select(PatientVersion).where(PatientVersion.id == uuid.UUID(version_id)))
         version = result.scalar_one_or_none()
         if not version:
             logger.error("index_version_job: version %s not found", version_id)
             return {"status": "error", "detail": "version not found"}
 
-        result = await db.execute(
-            select(Patient).where(Patient.id == version.patient_id)
-        )
+        result = await db.execute(select(Patient).where(Patient.id == version.patient_id))
         patient = result.scalar_one_or_none()
         if not patient:
             logger.error("index_version_job: patient %s not found", version.patient_id)
@@ -222,12 +227,13 @@ async def index_version_job(ctx, version_id: str):
 
 async def reindex_patient_job(ctx, patient_id: str):
     """Arq job: reindex all versions for a patient (for backfill or recovery)."""
-    from app.database import async_session_maker
+    from app.database import async_session_maker, resolve_doctor_id, set_rls_context
 
     async with async_session_maker() as db:
-        result = await db.execute(
-            select(Patient).where(Patient.id == uuid.UUID(patient_id))
-        )
+        doctor_id = await resolve_doctor_id(db, patient_id=patient_id)
+        if doctor_id:
+            await set_rls_context(db, doctor_id=doctor_id)
+        result = await db.execute(select(Patient).where(Patient.id == uuid.UUID(patient_id)))
         patient = result.scalar_one_or_none()
         if not patient:
             return {"status": "error", "detail": "patient not found"}
@@ -263,8 +269,10 @@ async def reindex_patient_job(ctx, patient_id: str):
 
 # ─── Arq Worker Settings ──────────────────────────
 
+
 class WorkerSettings:
     """Arq worker configuration for embedding/indexing jobs."""
+
     functions = [index_version_job, reindex_patient_job]
     max_burst_jobs = 10
     keep_result_seconds = 3600

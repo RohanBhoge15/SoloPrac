@@ -37,32 +37,49 @@ export function PatientSearch({
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
-  const debounceRef = useRef<NodeJS.Timeout | null>(null)
+  // ReturnType<typeof setTimeout>, not NodeJS.Timeout — this is browser code and
+  // must not depend on @types/node being present in the tree.
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fetchPatients = useCallback(async (searchQuery: string) => {
     if (!searchQuery.trim()) {
       setResults([])
+      setIsOpen(false)
       return
     }
     setLoading(true)
     try {
       const res = await apiClient.get('/patients/search', { params: { q: searchQuery, limit: 15 } })
+      // Backend returns a FLAT shape: {id, name, initials, age, gender, phone,
+      // head_version_id, updated_at}. Older code tried to read
+      // `head_version.state_jsonb.demographics.name` — that path only exists on
+      // a different endpoint's shape (patients list). We prefer the flat fields
+      // and fall back to the nested path only for defensive backward-compat.
       const patients = (res.data ?? []).map((p: any) => {
         const demo = p.head_version?.state_jsonb?.demographics ?? {}
-        const name = demo.name ?? `Patient ${p.id.slice(0, 8)}`
+        const name = p.name || demo.name || `Patient ${String(p.id).slice(0, 8)}`
+        const initials =
+          p.initials ||
+          name.split(/\s+/).filter(Boolean).map((n: string) => n[0]?.toUpperCase() ?? '').slice(0, 2).join('') ||
+          'P'
         return {
           id: p.id,
-          initials: name.split(' ').map((n: string) => n[0]).join(''),
+          initials,
           name,
-          age: demo.age,
-          gender: demo.gender,
+          age: p.age ?? demo.age,
+          gender: p.gender ?? demo.gender,
           lastVisit: p.updated_at ? new Date(p.updated_at).toLocaleDateString() : undefined,
         }
       })
       setResults(patients)
+      // Open the dropdown as soon as results arrive. Prior code only opened it
+      // on re-focus, so new results appeared invisible until the user clicked
+      // the input again — fixes D-10 in AUDIT.md.
+      setIsOpen(patients.length > 0)
     } catch (e) {
       console.error('Patient search failed:', e)
       setResults([])
+      setIsOpen(false)
     } finally {
       setLoading(false)
     }

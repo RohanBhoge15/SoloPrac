@@ -74,7 +74,7 @@ repos:
     hooks:
       - id: gitleaks
         args: [--staged]
-        exclude: ^(.env\.example|backend/pyproject\.toml|docs/)$
+        exclude: ^(.env\.example|backend/pyproject\.toml|docs/|.secrets.baseline)$
 
   # ─── PII Privacy Guard ───
   # Fails loud if strip_pii wiring is broken and patient data reaches the LLM.

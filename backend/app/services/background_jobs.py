@@ -30,6 +30,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from app.config import settings
+from app.services.clinical_significance import clinical_significance_from_tags
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 _arq_pool = None
 _pool_broken = False
+_pool_retry_after = 0.0
 
 
 async def get_arq_pool():
@@ -45,10 +47,18 @@ async def get_arq_pool():
 
     Returns None if arq/Redis isn't reachable — callers must handle that
     gracefully (do the work inline as a last resort, or return 503).
+
+    A failed creation is NOT permanently latched: the pool is retried after
+    a short cooldown so a transient startup failure (e.g. the lifespan
+    warm-up task being cancelled during a reload/restart) does not disable
+    background jobs for the rest of the process lifetime.
     """
-    global _arq_pool, _pool_broken
-    if _pool_broken:
+    global _arq_pool, _pool_broken, _pool_retry_after
+    import time as _time
+
+    if _pool_broken and _time.monotonic() < _pool_retry_after:
         return None
+    _pool_broken = False  # cooldown expired — allow a retry
     if _arq_pool is not None:
         return _arq_pool
     try:
@@ -65,7 +75,9 @@ async def get_arq_pool():
         logger.info("background_jobs: arq pool ready")
         return _arq_pool
     except Exception as exc:
-        logger.warning("background_jobs: failed to build arq pool (%s) — falling back", exc)
+        _pool_broken = True
+        _pool_retry_after = _time.monotonic() + 15.0
+        logger.warning("background_jobs: failed to build arq pool (%s) — falling back, will retry", exc)
         _pool_broken = True
         return None
 
@@ -167,7 +179,11 @@ async def parse_document_job(
     version_id: Optional[str] = None
     if patient_id:
         try:
+            from app.database import set_rls_context
+
             async with async_session_maker() as db:
+                # Scope the worker session to this doctor so RLS admits the row.
+                await set_rls_context(db, doctor_id=doctor_id)
                 pat_row = await db.execute(
                     select(Patient).where(
                         Patient.id == uuid.UUID(patient_id),
@@ -198,7 +214,7 @@ async def parse_document_job(
                         author=f"doctor:{doctor_id}",
                         summary=f"Document uploaded: {filename} ({result.get('doc_type', 'unknown')})",
                         tags=["document", result.get("doc_type", "general")],
-                        clinical_significance=0.5,
+                        clinical_significance=clinical_significance_from_tags(["document"]),
                     )
                     version_id = str(version.id)
 
@@ -255,14 +271,20 @@ async def parse_document_job(
         except Exception as exc:
             logger.warning("parse_document_job: attach to patient failed: %s", exc)
 
+    # Return the SAME shape the sync /documents/parse response returns, so the
+    # frontend has a single contract regardless of which path served the file.
+    # Previously we stripped this to a summary dict — the "Extracted Text"
+    # section is filtered by `f.result?.raw_text`, so users saw the file card
+    # but never the extracted text, and the eye/save buttons on the extracted
+    # card never rendered.
     return {
+        **result,
         "status": "done",
         "doc_id": doc_id,
         "version_id": version_id,
-        "doc_type": result.get("doc_type"),
-        "doc_format": result.get("doc_format"),
-        "confidence": result.get("confidence"),
-        "text_length": len(result.get("raw_text", "")),
+        # Defensive defaults so the frontend never divides undefined for NaN.
+        "confidence": result.get("confidence", 0.0),
+        "took_ms": result.get("took_ms", 0.0),
     }
 
 
@@ -297,7 +319,10 @@ async def index_version_job(ctx, version_id: str, patient_id: str, doctor_id: st
     from app.services.indexer import index_version
 
     try:
+        from app.database import set_rls_context
+
         async with async_session_maker() as db:
+            await set_rls_context(db, doctor_id=doctor_id)
             v_row = await db.execute(
                 __import__("sqlalchemy").select(PatientVersion).where(PatientVersion.id == uuid.UUID(version_id))
             )
@@ -361,8 +386,15 @@ async def generate_weekly_report_job(
     from app.services.weekly_report import WeeklyReportService
 
     try:
+        from app.database import resolve_doctor_id, set_rls_context
+
         svc = WeeklyReportService()
         async with async_session_maker() as db:
+            # Only the patient id is known here — resolve the owning doctor
+            # via the SECURITY DEFINER helper, then scope the session.
+            doctor_id = await resolve_doctor_id(db, patient_id=patient_id)
+            if doctor_id:
+                await set_rls_context(db, doctor_id=doctor_id)
             report = await svc.generate_report(db, uuid.UUID(patient_id), layout, days)
             if include_ai_summary:
                 summary = await svc.generate_ai_summary(report)
@@ -488,9 +520,16 @@ async def flush_audit_log_job(ctx) -> Dict[str, Any]:
         if not entries:
             return {"status": "empty"}
 
+        from app.database import set_rls_context
+
         async with async_session_maker() as db:
+            # Rows may span many doctors — scope the session per doctor so the
+            # tenant policy admits each INSERT.
             for e in entries:
                 try:
+                    e_did = e.get("doctor_id")
+                    if e_did:
+                        await set_rls_context(db, doctor_id=e_did)
                     row = AuditLog(
                         doctor_id=uuid.UUID(e["doctor_id"]) if e.get("doctor_id") else None,
                         patient_id=uuid.UUID(e["patient_id"]) if e.get("patient_id") else None,

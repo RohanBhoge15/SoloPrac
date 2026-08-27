@@ -80,6 +80,13 @@ export default defineConfig({
     // from the host machine it's `localhost` / `127.0.0.1`. `true` disables the check
     // — safe for a dev-only server that is never exposed publicly.
     allowedHosts: true,
+    // Windows-host + Linux-container filesystem events don't propagate through
+    // Docker Desktop reliably. Poll instead so HMR catches edits without a restart.
+    // 300ms is a fine trade-off: barely noticeable CPU, sub-second HMR.
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
     proxy: {
       '/api': {
         target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000',

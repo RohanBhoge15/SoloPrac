@@ -13,11 +13,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import torch
-from typing import Optional, Dict, Any
-from enum import Enum
-from dataclasses import dataclass
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Optional
+
+import torch
 
 from app.config import settings
 
@@ -155,8 +156,8 @@ class GPUOptimizer:
 
     async def _load_medgemma(self, model_info: ModelInfo) -> None:
         """Load MedGemma-4B-IT model."""
-        from transformers import AutoModelForCausalLM, AutoProcessor
         import torch
+        from transformers import AutoModelForCausalLM, AutoProcessor
 
         model_info.model_obj = AutoModelForCausalLM.from_pretrained(
             model_info.path,
@@ -165,9 +166,7 @@ class GPUOptimizer:
             trust_remote_code=True,
             low_cpu_mem_usage=True,
         )
-        model_info.processor = AutoProcessor.from_pretrained(
-            model_info.path, trust_remote_code=True
-        )
+        model_info.processor = AutoProcessor.from_pretrained(model_info.path, trust_remote_code=True)
 
     async def _load_whisper(self, model_info: ModelInfo) -> None:
         """Load faster-whisper large-v3 model."""
@@ -192,8 +191,8 @@ class GPUOptimizer:
 
     async def _load_parler_tts(self, model_info: ModelInfo) -> None:
         """Load Indic-Parler-TTS model."""
-        from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
         model_info.model_obj = AutoModelForCausalLM.from_pretrained(
             model_info.path,
@@ -218,6 +217,7 @@ class GPUOptimizer:
 
         # Force garbage collection and clear CUDA cache
         import gc
+
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -258,9 +258,7 @@ class GPUOptimizer:
             "vram_total_gb": round(self._vram_total_gb, 2),
             "vram_available_gb": round(self.vram_available_gb, 2),
             "current_model": self._current_model.value if self._current_model else None,
-            "loaded_models": [
-                m.name.value for m in self._models.values() if m.loaded
-            ],
+            "loaded_models": [m.name.value for m in self._models.values() if m.loaded],
         }
 
 

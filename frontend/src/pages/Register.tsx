@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Card } from '@/components/ui/Card'
+import { MapPicker } from '@/components/MapPicker'
 import { Stethoscope, Mail, Lock, User, Phone, MapPin, Building, Loader2, AlertCircle } from 'lucide-react'
 
 export function Register() {
@@ -15,6 +16,8 @@ export function Register() {
     clinic_address: '',
     password: '',
     confirmPassword: '',
+    latitude: null as number | null,
+    longitude: null as number | null,
   })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -35,10 +38,14 @@ export function Register() {
       setError('Password must be at least 8 characters')
       return
     }
+    if (form.latitude === null || form.longitude === null) {
+      setError('Please pin your clinic location on the map so patients can find you')
+      return
+    }
 
     setLoading(true)
     try {
-      const { confirmPassword, ...payload } = form
+      const { confirmPassword: _ignored, ...payload } = form
       const res = await fetch('/api/v1/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -61,7 +68,7 @@ export function Register() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 px-4 py-8">
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-xl">
         {/* Logo */}
         <div className="text-center mb-8">
           <Link to="/" className="inline-flex items-center gap-2 text-2xl font-bold text-primary-600 dark:text-primary-400">
@@ -161,6 +168,29 @@ export function Register() {
                   disabled={loading}
                 />
               </div>
+            </div>
+
+            {/* Geo-pin the clinic on a map so patients can find it via location search.
+                Captured at signup because a doctor account is useless in patient search
+                without coordinates. */}
+            <div>
+              <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300">
+                <MapPin className="h-4 w-4 text-primary-500" />
+                Pin your clinic on the map
+              </label>
+              <p className="mt-0.5 mb-2 text-xs text-gray-500 dark:text-gray-400">
+                Click the map or search an address. Patients search by distance from your pin.
+              </p>
+              <MapPicker
+                latitude={form.latitude}
+                longitude={form.longitude}
+                onChange={(lat, lng) => setForm(prev => ({ ...prev, latitude: lat, longitude: lng }))}
+              />
+              {form.latitude !== null && form.longitude !== null && (
+                <p className="mt-1 text-[10px] text-green-600 dark:text-green-400">
+                  ✓ Pinned at {form.latitude.toFixed(5)}, {form.longitude.toFixed(5)}
+                </p>
+              )}
             </div>
 
             <div>

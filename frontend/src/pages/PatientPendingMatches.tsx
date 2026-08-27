@@ -6,8 +6,9 @@
 // tie-break themselves (the same pattern Google Photos uses for face
 // grouping). Zero cost to the doctor's time.
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Check, X, Building2, Stethoscope, CalendarClock } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState, useCallback } from 'react'
+import { Loader2, Check, X, Building2, Stethoscope, CalendarClock, AlertCircle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { apiClient } from '@/services/api'
@@ -40,14 +41,47 @@ export function PatientPendingMatches() {
     qc.invalidateQueries({ queryKey: ['patient', 'profile'] })
   }
 
-  const claim = useMutation({
-    mutationFn: (pid: string) => apiClient.post(`/patient/me/claim/${pid}`),
-    onSuccess: invalidate,
-  })
-  const reject = useMutation({
-    mutationFn: (pid: string) => apiClient.post(`/patient/me/reject/${pid}`),
-    onSuccess: invalidate,
-  })
+  // D-14: Previously a single shared boolean (`claim.isPending || reject.isPending`)
+  // disabled the buttons on every row while any one mutation was in flight.
+  // Track per-row pending status via a Set of patient_ids, plus per-row error
+  // messages that auto-clear after a few seconds.
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set())
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
+
+  const addPending = (pid: string) =>
+    setPendingIds((prev) => {
+      const next = new Set(prev)
+      next.add(pid)
+      return next
+    })
+  const removePending = (pid: string) =>
+    setPendingIds((prev) => {
+      const next = new Set(prev)
+      next.delete(pid)
+      return next
+    })
+
+  const showRowError = useCallback((pid: string, msg: string) => {
+    setRowErrors((prev) => ({ ...prev, [pid]: msg }))
+    setTimeout(() => {
+      setRowErrors((prev) => {
+        const { [pid]: _drop, ...rest } = prev
+        return rest
+      })
+    }, 4000)
+  }, [])
+
+  const runAction = async (pid: string, kind: 'claim' | 'reject') => {
+    addPending(pid)
+    try {
+      await apiClient.post(`/patient/me/${kind}/${pid}`)
+      invalidate()
+    } catch {
+      showRowError(pid, kind === 'claim' ? 'Could not claim record — please try again' : 'Could not reject record — please try again')
+    } finally {
+      removePending(pid)
+    }
+  }
 
   if (isLoading) {
     return (
@@ -83,7 +117,9 @@ export function PatientPendingMatches() {
         </Card>
       ) : (
         matches.map((m) => {
-          const pending = claim.isPending || reject.isPending
+          // D-14: pending is per-row, keyed by this patient_id.
+          const pending = pendingIds.has(m.patient_id)
+          const rowError = rowErrors[m.patient_id]
           return (
             <Card key={m.patient_id} className="overflow-hidden">
               <CardContent className="p-4 space-y-3">
@@ -131,7 +167,7 @@ export function PatientPendingMatches() {
                     variant="outline"
                     className="flex-1"
                     disabled={pending}
-                    onClick={() => reject.mutate(m.patient_id)}
+                    onClick={() => runAction(m.patient_id, 'reject')}
                   >
                     <X className="h-4 w-4 mr-1" />
                     Not me
@@ -139,12 +175,23 @@ export function PatientPendingMatches() {
                   <Button
                     className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
                     disabled={pending}
-                    onClick={() => claim.mutate(m.patient_id)}
+                    onClick={() => runAction(m.patient_id, 'claim')}
                   >
-                    <Check className="h-4 w-4 mr-1" />
+                    {pending ? (
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
+                      <Check className="h-4 w-4 mr-1" />
+                    )}
                     This is me
                   </Button>
                 </div>
+
+                {rowError && (
+                  <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
+                    <AlertCircle className="h-3 w-3 shrink-0" />
+                    <span>{rowError}</span>
+                  </div>
+                )}
               </CardContent>
             </Card>
           )

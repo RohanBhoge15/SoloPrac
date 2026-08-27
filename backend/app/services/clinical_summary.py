@@ -17,15 +17,17 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
-from app.config import settings
 from app.agents.synthesizer import MaverickSynthesizer
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # ─── Structured Output Schema ───
 
+
 class ClinicalSummary(BaseModel):
     """Structured clinical summary for wound/skin comparison."""
+
     area_change_pct: Optional[float] = None
     edge_convergence_score: Optional[float] = None
     color_histogram_shift: Optional[float] = None
@@ -44,6 +46,7 @@ class SummaryResponse(BaseModel):
 
 
 # ─── Clinical Summary Generator ───
+
 
 class ClinicalSummaryGenerator:
     """Generates clinical summaries from image comparison metrics using Maverick."""
@@ -212,6 +215,7 @@ Generate the clinical summary JSON as specified."""
 
 
 # ─── Convenience Function ───
+
 
 async def generate_summary(
     metrics: Dict[str, Any],

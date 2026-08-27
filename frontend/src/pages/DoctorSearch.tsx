@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
-import { Search, Clock, Stethoscope, Loader2, AlertCircle, CheckCircle } from 'lucide-react'
+import { Search, Clock, Stethoscope, Loader2, AlertCircle, CheckCircle, Locate } from 'lucide-react'
 import { ResponsiveAvatar } from '@/components/ui/ResponsiveAvatar'
 
 // Indian pincode: 6 digits, first digit 1-9 (0 isn't a valid postal region).
@@ -27,6 +27,80 @@ export function DoctorSearch() {
   const [patientId, setPatientId] = useState<string>('')
   const [telemedicineConsent, setTelemedicineConsent] = useState(false)
 
+  // ── Location-based discovery ──
+  const [lat, setLat] = useState<number | null>(null)
+  const [lng, setLng] = useState<number | null>(null)
+  const [radius, setRadius] = useState(10)
+  const [usingGeo, setUsingGeo] = useState(false)
+  const [geoStatus, setGeoStatus] = useState<string | null>(null)
+
+  // Fallback centre = where the demo doctors are (Bengaluru) so the demo always
+  // returns results even if the browser denies geolocation.
+  const DEFAULT_LOCATION = { lat: 12.9716, lng: 77.5946 }
+  const RADIUS_STEPS = [10, 25, 50, 100]
+
+  const fetchDoctors = async (params: any) => {
+    const res = await apiClient.get('/public/doctors/search', { params })
+    return res.data?.doctors || []
+  }
+
+  const runLocationSearch = async (la: number, ln: number, allowDefaultFallback = true) => {
+    setUsingGeo(true)
+    try {
+      for (const r of RADIUS_STEPS) {
+        setRadius(r)
+        setGeoStatus(`Searching within ${r} km…`)
+        const docs = await fetchDoctors({
+          lat: la, lng: ln, radius_km: r,
+          speciality: speciality || undefined,
+          q: query || undefined,
+        })
+        if (docs.length) {
+          setDoctors(docs)
+          setGeoStatus(`Showing ${docs.length} doctor(s) within ${r} km of your location`)
+          return
+        }
+      }
+      if (allowDefaultFallback) {
+        setGeoStatus('No doctors near you — showing the demo area instead')
+        await runLocationSearch(DEFAULT_LOCATION.lat, DEFAULT_LOCATION.lng, false)
+      } else {
+        setDoctors([])
+        setGeoStatus('No doctors found nearby. Try searching by name or speciality.')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const searchAtRadius = async (r: number) => {
+    if (lat == null || lng == null) return
+    setRadius(r)
+    setGeoStatus(`Searching within ${r} km…`)
+    const docs = await fetchDoctors({ lat, lng, radius_km: r, speciality: speciality || undefined, q: query || undefined })
+    setDoctors(docs)
+    setGeoStatus(docs.length ? `Showing ${docs.length} doctor(s) within ${r} km` : `No doctors within ${r} km`)
+  }
+
+  const useMyLocation = () => {
+    setLoading(true)
+    const fallback = () => {
+      setLat(DEFAULT_LOCATION.lat); setLng(DEFAULT_LOCATION.lng)
+      setGeoStatus('Location unavailable — showing doctors near the demo area')
+      runLocationSearch(DEFAULT_LOCATION.lat, DEFAULT_LOCATION.lng)
+    }
+    if (!('geolocation' in navigator)) { fallback(); return }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLat(pos.coords.latitude); setLng(pos.coords.longitude)
+        setGeoStatus('Using your location')
+        runLocationSearch(pos.coords.latitude, pos.coords.longitude)
+      },
+      () => fallback(),
+      { enableHighAccuracy: false, timeout: 10000 },
+    )
+  }
+
   // Fetch patient ID from profile endpoint on mount
   useEffect(() => {
     apiClient.get('/patient/me/profile')
@@ -43,6 +117,8 @@ export function DoctorSearch() {
   }, [])
 
   const loadDoctors = async () => {
+    setUsingGeo(false)
+    setGeoStatus(null)
     setLoading(true)
     setError(null)
     try {
@@ -168,6 +244,27 @@ export function DoctorSearch() {
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Search'}
             </Button>
           </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3">
+            <Button variant="outline" size="sm" onClick={useMyLocation}>
+              <Locate className="h-4 w-4 mr-1" /> Use my location
+            </Button>
+            {usingGeo && (
+              <div className="flex items-center gap-2 text-xs text-muted-fg">
+                <span>Radius:</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={100}
+                  value={radius}
+                  onChange={(e) => searchAtRadius(Number(e.target.value))}
+                  className="accent-primary-600"
+                />
+                <span className="tnum w-16">{radius} km</span>
+              </div>
+            )}
+            {geoStatus && <span className="text-xs text-muted-fg">{geoStatus}</span>}
+          </div>
         </CardContent>
       </Card>
 
@@ -197,7 +294,14 @@ export function DoctorSearch() {
                       )}
                     </div>
                   </div>
-                  <Badge variant="outline">{doc.clinic_address?.split(',')[0] || 'Available'}</Badge>
+                  <div className="flex items-center gap-2">
+                    {doc.distance_km != null && (
+                      <Badge className="bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
+                        {doc.distance_km} km away
+                      </Badge>
+                    )}
+                    <Badge variant="outline">{doc.clinic_address?.split(',')[0] || 'Available'}</Badge>
+                  </div>
                 </div>
               </CardContent>
             </Card>

@@ -13,9 +13,9 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, Optional, Type
+
 from pydantic import BaseModel, Field, ValidationError
 
 from app.agents.synthesizer import MaverickSynthesizer
@@ -25,13 +25,17 @@ logger = logging.getLogger(__name__)
 
 # ─── Pydantic Schemas ───
 
+
 class PrescriptionOutput(BaseModel):
     diagnosis: str = Field("", description="Short diagnosis (≤120 chars)")
-    medications: list[dict] = Field(default_factory=list, description="List of medications with drug/strength/dose/frequency/duration/instructions")
+    medications: list[dict] = Field(
+        default_factory=list, description="List of medications with drug/strength/dose/frequency/duration/instructions"
+    )
     investigations: list[str] = Field(default_factory=list)
     lifestyle_advice: list[str] = Field(default_factory=list)
     follow_up: str = Field("", description="Follow-up instructions")
     doctor_notes: str = Field("", description="Additional notes")
+
 
 class InvoiceOutput(BaseModel):
     items: list[dict] = Field(default_factory=list, description="Line items with description/qty/rate/amount")
@@ -39,6 +43,7 @@ class InvoiceOutput(BaseModel):
     tax: float = 0.0
     total: float = 0.0
     notes: str = ""
+
 
 class CertificateOutput(BaseModel):
     body: str = Field("", description="Certificate body text")
@@ -113,6 +118,7 @@ Output:"""
 
 
 # ─── Medical Formatter ───
+
 
 class MedicalFormatter:
     """Generates structured medical documents using Maverick LLM."""

@@ -16,12 +16,11 @@ Usage:
 
 from __future__ import annotations
 
-import time
-import json
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+import time
 from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from app.models import AuditLog
@@ -29,6 +28,7 @@ from app.models import AuditLog
 logger = logging.getLogger(__name__)
 
 # ─── RAG Audit Service ──────────────────────────────
+
 
 class RAGAuditService:
     """Logs every RAG retrieval call with query details, results, and latency.
@@ -92,8 +92,7 @@ class RAGAuditService:
             )
             db_session.add(entry)
             await db_session.commit()
-            logger.debug("RAG audit logged: query=%s results=%d leak=%d",
-                         query[:60], num_results, future_leak_count)
+            logger.debug("RAG audit logged: query=%s results=%d leak=%d", query[:60], num_results, future_leak_count)
         except Exception as exc:
             logger.warning("RAG audit log write failed (non-blocking): %s", exc)
             await db_session.rollback()
@@ -133,6 +132,7 @@ class RAGAuditService:
 
 
 # ─── LLM Rate Limiter ───────────────────────────────
+
 
 class LLMRateLimiter:
     """Per-doctor rate limiter for LLM API calls.
@@ -203,6 +203,7 @@ class LLMRateLimiter:
 
 # ─── Future-Leak Data Validation ────────────────────
 
+
 def validate_no_future_leak(
     results: List[Dict[str, Any]],
     query_time: datetime,
@@ -228,12 +229,14 @@ def validate_no_future_leak(
         try:
             ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             if ts > query_time:
-                leaked.append({
-                    "version_id": r.get("version_id", ""),
-                    "version_number": r.get("version_number", 0),
-                    "timestamp": ts_str,
-                    "diff_seconds": (ts - query_time).total_seconds(),
-                })
+                leaked.append(
+                    {
+                        "version_id": r.get("version_id", ""),
+                        "version_number": r.get("version_number", 0),
+                        "timestamp": ts_str,
+                        "diff_seconds": (ts - query_time).total_seconds(),
+                    }
+                )
         except (ValueError, TypeError):
             pass
 

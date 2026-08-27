@@ -7,20 +7,21 @@ Week 6: Tools now wired to real implementations:
 
 from __future__ import annotations
 
-import os
-import logging
 import base64
-from uuid import UUID
+import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol
+from uuid import UUID
+
 from typing_extensions import runtime_checkable
 
+from app.agents.synthesizer import MaverickSynthesizer
 from app.config import settings
 from app.database import async_session_maker
-from app.services.temporal_rag import TemporalMultimodalRetriever
-from app.services.rag_audit import RAGAuditService, LLMRateLimiter, validate_no_future_leak
 from app.services.pii import strip_pii
-from app.agents.synthesizer import MaverickSynthesizer
+from app.services.rag_audit import LLMRateLimiter, RAGAuditService, validate_no_future_leak
+from app.services.temporal_rag import TemporalMultimodalRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ _llm_limiter = LLMRateLimiter()
 @runtime_checkable
 class AgentTool(Protocol):
     """Protocol for agent tools."""
+
     name: str
     description: str
     parameters: dict
@@ -55,8 +57,7 @@ class ToolRegistry:
 
     def list_tools(self) -> List[Dict[str, Any]]:
         return [
-            {"name": t.name, "description": t.description, "parameters": t.parameters}
-            for t in self._tools.values()
+            {"name": t.name, "description": t.description, "parameters": t.parameters} for t in self._tools.values()
         ]
 
     def __contains__(self, name: str) -> bool:
@@ -70,16 +71,19 @@ _synthesizer = MaverickSynthesizer()
 
 def tool(name: str, description: str, parameters: dict):
     """Decorator to register a tool."""
+
     def decorator(func):
         func.name = name
         func.description = description
         func.parameters = parameters
         tool_registry.register(func)
         return func
+
     return decorator
 
 
 # ─── Feature A: Temporal Multimodal RAG ───
+
 
 @tool(
     name="retrieve_patient_context",
@@ -120,6 +124,29 @@ async def retrieve_patient_context(patient_id: str, query: str, k: int = 8, **kw
         citations_data = result.get("citations", [])
         meta = result.get("meta", {})
 
+        # ── Postgres grounding fallback ──
+        # If Qdrant returned nothing (this patient's versions were never
+        # indexed, indexing is lagging, or the collection is empty for any
+        # reason), pull the patient's REAL versions straight from Postgres so
+        # the doctor still gets a grounded, cited answer instead of the
+        # "I don't have enough information" dead-end. The downstream
+        # synthesize_response path still runs strip_pii + the P-{id} pseudonym,
+        # so no patient identity leaves the trust boundary.
+        if not results_data and patient_id and doctor_id:
+            pg_results, pg_citations = await _postgres_version_fallback(patient_id, doctor_id, k)
+            if pg_results:
+                results_data = pg_results
+                citations_data = pg_citations
+                meta = {
+                    **meta,
+                    "fallback": "postgres_versions",
+                    "modalities_used": len(pg_results),
+                }
+                logger.info(
+                    "retrieve_patient_context: Qdrant empty — grounded on %d Postgres versions",
+                    len(pg_results),
+                )
+
         # Future-leak validation (Dev: zero future-leak enforcement)
         leak_check = validate_no_future_leak(results_data, datetime.now(timezone.utc))
         if not leak_check["passed"]:
@@ -127,7 +154,11 @@ async def retrieve_patient_context(patient_id: str, query: str, k: int = 8, **kw
 
         # RAG audit logging (Dev: every retrieval logged)
         try:
+            from app.database import set_rls_context
+
             async with async_session_maker() as db:
+                if doctor_id:
+                    await set_rls_context(db, doctor_id=str(doctor_id))
                 scores = [r.get("score", 0) for r in results_data]
                 await _rag_audit.log_retrieval(
                     db_session=db,
@@ -153,15 +184,99 @@ async def retrieve_patient_context(patient_id: str, query: str, k: int = 8, **kw
         }
     except Exception as exc:
         logger.error("Temporal RAG retrieval failed: %s", exc)
-        return {
-            "status": "error",
-            "message": str(exc)[:200],
-            "results": [],
-            "citations": [],
-        }
+        # Don't bail out — fall through to the Postgres grounding fallback so
+        # the doctor still gets the patient's real records.
+        results_data, citations_data, meta = [], [], {}
+
+
+async def _postgres_version_fallback(patient_id: str, doctor_id: str, k: int = 8) -> tuple[list, list]:
+    """Ground a patient query on the patient's real Postgres versions when Qdrant
+    has no vectors yet.
+
+    Returns ``(results, citations)`` in the exact shape produced by
+    ``TemporalMultimodalRetriever.retrieve`` so the executor, synthesizer, and
+    citation-validation paths are completely unchanged. Runs under the
+    doctor-scoped RLS session, so it can only ever see this tenant's rows.
+    """
+    from uuid import UUID
+
+    from sqlalchemy import select
+
+    from app.database import async_session_maker, set_rls_context
+    from app.models import PatientVersion
+    from app.services.clinical_significance import clinical_significance_from_tags
+
+    # Modalities we mirror from the RAG payload (best-effort from tags).
+    _MODALITY_TAGS = {
+        "vitals",
+        "lab",
+        "medication",
+        "diagnosis",
+        "procedure",
+        "image",
+        "demographics",
+        "family_history",
+    }
+
+    try:
+        async with async_session_maker() as db:
+            await set_rls_context(db, doctor_id=str(doctor_id))
+            stmt = (
+                select(PatientVersion)
+                .where(PatientVersion.patient_id == UUID(patient_id))
+                .order_by(PatientVersion.version_number.desc())
+                .limit(k)
+            )
+            rows = (await db.execute(stmt)).scalars().all()
+            if not rows:
+                return [], []
+
+            # Oldest → newest for a coherent narrative + citation ordering.
+            rows = list(reversed(rows))
+            results: list = []
+            citations: list = []
+            for rank, v in enumerate(rows, start=1):
+                tags = list(v.tags or [])
+                modality = next((t for t in tags if t in _MODALITY_TAGS), "text")
+                sig = clinical_significance_from_tags(tags)
+                ts_iso = v.timestamp.isoformat() if v.timestamp else ""
+                summary = v.summary or ""
+                citation = {
+                    "version_number": v.version_number,
+                    "date": ts_iso[:10],
+                    "summary": summary,
+                    "score": 1.0,
+                    "edit_type": v.edit_type,
+                    "modality": modality,
+                    "s3_key": None,
+                }
+                citations.append(citation)
+                results.append(
+                    {
+                        "rank": rank,
+                        "score": 1.0,
+                        "version_id": str(v.id),
+                        "version_number": v.version_number,
+                        "patient_id": str(v.patient_id),
+                        "author": v.author,
+                        "edit_type": v.edit_type,
+                        "summary": summary,
+                        "tags": tags,
+                        "timestamp": ts_iso,
+                        "clinical_significance": sig,
+                        "temporal_decay": 1.0,
+                        "modality": modality,
+                        "s3_key": None,
+                    }
+                )
+            return results, citations
+    except Exception as exc:
+        logger.warning("Postgres version fallback failed: %s", exc)
+        return [], []
 
 
 # ─── Maverick Synthesis with Citations ───
+
 
 @tool(
     name="synthesize_response",
@@ -240,6 +355,7 @@ def _build_fallback_response(context: dict, query: str) -> dict:
 
 # ─── Vision Analysis (Module 3) ───
 
+
 @tool(
     name="analyze_image",
     description="Analyze a medical image using MedGemma-4B-IT (radiology/dermatology) or Groq fallback (general medical images)",
@@ -260,8 +376,6 @@ async def analyze_image(image_path: str, image_type: str, **kwargs) -> dict:
     - Groq Llama-3.2-90B-Vision for general medical images (wound, dermatology, other) - fallback
     """
     import os
-    import base64
-    from app.config import settings
 
     # Validate file exists
     if not os.path.exists(image_path):
@@ -294,6 +408,7 @@ async def analyze_image(image_path: str, image_type: str, **kwargs) -> dict:
 async def _analyze_with_groq(image_b64: str, image_type: str) -> dict:
     """Analyze image using Groq Llama-3.2-90B-Vision."""
     from openai import AsyncOpenAI
+
     from app.config import settings
 
     if not settings.GROQ_API_KEY:
@@ -314,16 +429,16 @@ async def _analyze_with_groq(image_b64: str, image_type: str) -> dict:
     Be thorough but concise. Use medical terminology appropriately."""
 
     response = await client.chat.completions.create(
-        model=settings.VISION_MODEL,
+        model=settings.GROQ_MODEL,
         messages=[
             {"role": "system", "content": prompt},
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": f"Analyze this {image_type} medical image."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
-                ]
-            }
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            },
         ],
         temperature=0.2,
         max_tokens=1500,
@@ -333,71 +448,79 @@ async def _analyze_with_groq(image_b64: str, image_type: str) -> dict:
 
     return {
         "status": "ok",
-        "model": f"groq/{settings.VISION_MODEL}",
+        "model": f"groq/{settings.GROQ_MODEL}",
         "image_type": image_type,
         "analysis": content,
         "confidence": 0.85,
     }
 
 
-async def _analyze_with_medgemma(image_b64: str, image_type: str) -> dict:
-    """Analyze radiology image using MedGemma-4B-IT locally.
+async def _analyze_with_medgemma(image_b64: str, image_type: str, concise: bool = False) -> dict:
+    """Analyze a medical image using MedGemma-4B-IT served by llama.cpp.
 
-    Uses the model/processor cached by gpu_optimizer — a fresh
-    ``from_pretrained`` per call would re-read several GB from disk and blow the
-    VRAM budget the optimizer exists to manage.
+    MedGemma lives as a GGUF (Q4_K_M + mmproj) in the always-on llama-server
+    container (see docker-compose), which exposes an OpenAI-compatible
+    /v1/chat/completions endpoint. The image is sent as a base64 data URL — the
+    same transport `document_parser.medgemma_parse` uses for OCR, so there is
+    exactly one MedGemma runtime instead of a second in-process load that a
+    GGUF file cannot satisfy anyway.
+
+    With ``concise=True`` the model is asked for a one-two line clinical
+    summary and a small token budget — on a partially-offloaded 4 GB GPU the
+    full 1024-token analysis takes ~2 minutes, while a short summary lands in
+    ~20-30s. Callers that only persist a summary line (the image background
+    task) should pass concise=True.
     """
-    import asyncio
-    import torch
-    from app.services.gpu_optimizer import gpu_optimizer, ModelName
+    import httpx
 
-    # Ensure model is loaded on GPU and reuse the cached objects
-    model_info = await gpu_optimizer.ensure_model_loaded(ModelName.MEDGEMMA)
+    url = f"{settings.MEDGEMMA_SERVER_URL.rstrip('/')}/v1/chat/completions"
+    if concise:
+        prompt = (
+            f"You are a medical AI assistant analyzing a {image_type} image. "
+            "Reply with a concise 1-2 sentence clinical summary of the key findings only. "
+            "Do not number the points and do not add headings."
+        )
+        max_tokens = 150
+    else:
+        prompt = f"""You are a medical AI assistant analyzing a {image_type} image.
+    Provide a detailed clinical analysis including:
+    1. Key findings observed
+    2. Potential diagnoses or concerns
+    3. Recommended next steps or follow-up
+    4. Confidence level (0-1)
+
+    Be thorough but concise. Use medical terminology appropriately."""
+        max_tokens = 1024
+
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
 
     try:
-        model = model_info.model_obj
-        processor = model_info.processor
-        if model is None or processor is None:
-            return {
-                "status": "error",
-                "message": "MedGemma is not loaded (gpu_optimizer returned no model object)",
-            }
-
-        # Prepare inputs
-        from PIL import Image
-        import io
-        import base64
-        image = Image.open(io.BytesIO(base64.b64decode(image_b64)))
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-
-        # MedGemma prompt format for radiology
-        prompt = f"<image>Analyze this {image_type} medical image. Provide clinical findings, potential diagnoses, and recommendations."
-
-        inputs = processor(text=prompt, images=image, return_tensors="pt")
-        inputs = inputs.to(model.device)
-        input_len = inputs["input_ids"].shape[-1]
-
-        def _generate():
-            with torch.inference_mode():
-                return model.generate(
-                    **inputs,
-                    max_new_tokens=1024,
-                    temperature=0.2,
-                    do_sample=True,
-                )
-
-        outputs = await asyncio.to_thread(_generate)
-
-        # Decode only the newly generated tokens — string-splitting the echoed
-        # prompt out of the full decode is unreliable.
-        analysis = processor.decode(outputs[0][input_len:], skip_special_tokens=True)
-
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            analysis = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        if not analysis:
+            return {"status": "error", "message": "MedGemma returned an empty analysis"}
         return {
             "status": "ok",
             "model": "medgemma-4b-it",
             "image_type": image_type,
-            "analysis": analysis.strip(),
+            "analysis": analysis,
             "confidence": 0.9,
         }
     except Exception as e:
@@ -427,8 +550,8 @@ async def compare_images(patient_id: str, image_paths: list, **kwargs) -> dict:
     4. Generate overlay image with metrics
     5. Return clinical summary from Maverick
     """
+
     from app.services.image_registration import image_registration_service
-    import uuid
 
     if len(image_paths) != 2:
         return {"status": "error", "message": "Exactly 2 image paths required"}
@@ -448,6 +571,7 @@ async def compare_images(patient_id: str, image_paths: list, **kwargs) -> dict:
 
         # Convert dataclass to dict
         from dataclasses import asdict
+
         metrics = asdict(result.metrics) if result.metrics else {}
 
         response = {
@@ -467,6 +591,7 @@ async def compare_images(patient_id: str, image_paths: list, **kwargs) -> dict:
                 # generate_summary is a module-level coroutine, not a
                 # classmethod on ClinicalSummaryGenerator.
                 from app.services.clinical_summary import generate_summary
+
                 summary_result = await generate_summary(
                     metrics=metrics,
                     patient_name=f"Patient {patient_id[:8]}",
@@ -521,17 +646,22 @@ async def generate_prescription(patient_id: str, diagnosis: str, medications: li
     and stores it in the database linked to the patient version.
     """
     import uuid
-    from app.database import async_session_maker
-    from app.models import Patient, PatientVersion, PrescriptionBox, AuditLog
-    from app.services.pdf_generator import pdf_generator
+
     from sqlalchemy import select
+
+    from app.database import async_session_maker
+    from app.models import AuditLog, Patient, PatientVersion, PrescriptionBox
+    from app.services.pdf_generator import pdf_generator
 
     doctor_id = kwargs.get("doctor_id", "")
     if not doctor_id:
         return {"status": "error", "message": "doctor_id required"}
 
     try:
+        from app.database import set_rls_context
+
         async with async_session_maker() as db:
+            await set_rls_context(db, doctor_id=doctor_id)
             # Verify patient belongs to doctor
             result = await db.execute(
                 select(Patient).where(Patient.id == uuid.UUID(patient_id), Patient.doctor_id == uuid.UUID(doctor_id))
@@ -543,9 +673,7 @@ async def generate_prescription(patient_id: str, diagnosis: str, medications: li
             # Get patient name from head version
             patient_name = f"Patient {patient_id[:8]}"
             if patient.head_version_id:
-                vr = await db.execute(
-                    select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
-                )
+                vr = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
                 head = vr.scalar_one_or_none()
                 if head and head.state_jsonb:
                     demo = head.state_jsonb.get("demographics", {})

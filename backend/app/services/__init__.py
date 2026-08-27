@@ -8,9 +8,9 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.services.redis import RedisService
     from app.services.embeddings import EmbeddingService
     from app.services.qdrant import QdrantService
+    from app.services.redis import RedisService
 
 
 class _LazyModule:
@@ -64,14 +64,14 @@ def __getattr__(name: str):
         "WeeklyReportSchema": ("app.services.sanitizer", "WeeklyReportSchema"),
         "TemporalMultimodalRetriever": ("app.services.temporal_rag", "TemporalMultimodalRetriever"),
         "temporal_decay": ("app.services.temporal_rag", "temporal_decay"),
-        "clinical_significance_from_tags": ("app.services.temporal_rag", "clinical_significance_from_tags"),
+        "clinical_significance_from_tags": ("app.services.clinical_significance", "clinical_significance_from_tags"),
+        "TIER_WEIGHTS": ("app.services.clinical_significance", "TIER_WEIGHTS"),
         "ALPHA": ("app.services.temporal_rag", "ALPHA"),
         "BETA": ("app.services.temporal_rag", "BETA"),
         "GAMMA": ("app.services.temporal_rag", "GAMMA"),
         "DELTA": ("app.services.temporal_rag", "DELTA"),
         "EPSILON": ("app.services.temporal_rag", "EPSILON"),
         "TAU": ("app.services.temporal_rag", "TAU"),
-        "TIER_WEIGHTS": ("app.services.temporal_rag", "TIER_WEIGHTS"),
         "EvaluationHarness": ("app.services.evaluation", "EvaluationHarness"),
         "generate_test_dataset": ("app.services.evaluation", "generate_test_dataset"),
         "compute_recall_at_k": ("app.services.evaluation", "compute_recall_at_k"),
@@ -152,4 +152,4 @@ def __getattr__(name: str):
 
 # Eagerly import only non-problematic, frequently-used services
 # (these don't trigger the circular chain)
-from app.services.redis import redis_service, RedisService  # noqa: F401, E402
+from app.services.redis import RedisService, redis_service  # noqa: F401, E402

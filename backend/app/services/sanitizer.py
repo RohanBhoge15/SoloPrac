@@ -17,11 +17,12 @@ Usage:
 
 from __future__ import annotations
 
-import re
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Type
-from pydantic import BaseModel, ValidationError, create_model
+
+from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +34,22 @@ MAX_SINGLE_LINE_LENGTH = 10_000
 # Suspicious patterns that indicate prompt injection attempts
 INJECTION_PATTERNS: List[re.Pattern] = [
     # System instruction override attempts
-    re.compile(r"(?i)(ignore|disregard|override|forget)\s+(all\s+)?(previous|above|system|instruction|prompt)", re.IGNORECASE),
-    re.compile(r"(?i)(you are|act as|pretend to be|from now on)\s+(a\s+)?(different|free|unrestricted|chatgpt|gpt)", re.IGNORECASE),
+    re.compile(
+        r"(?i)(ignore|disregard|override|forget)\s+(all\s+)?(previous|above|system|instruction|prompt)", re.IGNORECASE
+    ),
+    re.compile(
+        r"(?i)(you are|act as|pretend to be|from now on)\s+(a\s+)?(different|free|unrestricted|chatgpt|gpt)",
+        re.IGNORECASE,
+    ),
     # Role-playing escape
     re.compile(r"(?i)(new\s+)?(role|identity|persona|character):\s*(admin|developer|hacker|root)", re.IGNORECASE),
     # Command injection
     re.compile(r"(?i)(run|execute|eval|exec)\s*(`|'|\"|\[|\(|system|cmd|shell|bash)", re.IGNORECASE),
     # Data extraction attempts
-    re.compile(r"(?i)(reveal|spill|leak|dump|show)\s*(your|the)\s*(my capabilities|my capabilities|instructions|system|prompt|config|API key|password|secret)", re.IGNORECASE),
+    re.compile(
+        r"(?i)(reveal|spill|leak|dump|show)\s*(your|the)\s*(my capabilities|my capabilities|instructions|system|prompt|config|API key|password|secret)",
+        re.IGNORECASE,
+    ),
     # Delimiter breaking
     re.compile(r"(?i)(ignore|disregard)\s*(all\s+)?(above|previous|instructions|text|content)", re.IGNORECASE),
     # Hidden text / white-on-white
@@ -59,6 +68,7 @@ HIGH_RISK_PATTERNS: List[re.Pattern] = [
 
 
 # ─── OCR Sanitization ───
+
 
 def sanitize_ocr_text(text: str, max_length: int = MAX_OCR_TEXT_LENGTH) -> str:
     """Sanitize OCR-extracted text before passing to an LLM.
@@ -170,6 +180,7 @@ def strip_suspicious_content(text: str) -> str:
 
 # ─── Structured Output Validation ───
 
+
 def validate_structured_output(
     data: Dict[str, Any],
     schema_model: Type[BaseModel],
@@ -237,6 +248,7 @@ def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
 
 
 # ─── Schema Definitions ───
+
 
 # Prescription output schema
 class PrescriptionSchema(BaseModel):

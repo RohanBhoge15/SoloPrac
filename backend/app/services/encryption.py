@@ -21,9 +21,9 @@ Key Management:
     until re-encrypted (pgp_sym_decrypt takes the passphrase, not a key ID).
 """
 
-import uuid
 import logging
 from typing import Optional
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,9 +62,7 @@ async def encrypt_value(
     """
     passphrase = key or settings.ENCRYPTION_KEY
     if not passphrase:
-        raise ValueError(
-            "ENCRYPTION_KEY not configured. Set it in .env or environment variables."
-        )
+        raise ValueError("ENCRYPTION_KEY not configured. Set it in .env or environment variables.")
 
     try:
         result = await db.execute(
@@ -110,9 +108,7 @@ async def decrypt_value(
 
     passphrase = key or settings.ENCRYPTION_KEY
     if not passphrase:
-        raise ValueError(
-            "ENCRYPTION_KEY not configured. Set it in .env or environment variables."
-        )
+        raise ValueError("ENCRYPTION_KEY not configured. Set it in .env or environment variables.")
 
     try:
         result = await db.execute(

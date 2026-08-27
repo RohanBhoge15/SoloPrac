@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -10,17 +11,65 @@ import { MapPicker } from '@/components/MapPicker'
 import { ImageCropModal } from '@/components/ImageCropModal'
 import { User, Bell, Shield, Calendar, CreditCard, MapPin, Camera, Loader2, CheckCircle, AlertCircle, Star } from 'lucide-react'
 
+// C-9 (Piece 6): validate the ?tab= deep-link. Without this the notification
+// popover's "Manage notification preferences →" link always drops the user
+// on the Profile tab.
+const VALID_TABS = ['profile', 'notifications', 'schedule', 'security', 'billing'] as const
+
+// Metadata for the currently-active tab header — icon, title, subtitle.
+// Keeping it colocated so adding a new section is a one-line change.
+const TAB_META: Record<
+  typeof VALID_TABS[number],
+  { icon: React.ComponentType<{ className?: string }>; title: string; subtitle: string }
+> = {
+  profile: { icon: User, title: 'Profile', subtitle: 'Your public profile and clinic details' },
+  notifications: { icon: Bell, title: 'Notifications', subtitle: 'Choose which events reach you and how' },
+  schedule: { icon: Calendar, title: 'Schedule', subtitle: 'Working hours and slot availability' },
+  security: { icon: Shield, title: 'Security', subtitle: 'Password, sessions, and account safety' },
+  billing: { icon: CreditCard, title: 'Billing', subtitle: 'Plan, invoices, and payment method' },
+}
+
+// Local override of TabsTrigger styling — the shared component uses
+// background/foreground CSS variables that on the dark theme render the
+// active tab almost invisibly. Bumping to a primary-tinted pill so the
+// doctor can see at a glance which section they're on, without changing
+// the shared component (other pages may prefer the subtler look).
+const ACTIVE_TAB_CLASSES =
+  'data-[state=active]:bg-primary-600 data-[state=active]:text-white data-[state=active]:shadow ' +
+  'data-[state=inactive]:hover:bg-gray-200 data-[state=inactive]:dark:hover:bg-gray-700 ' +
+  'transition-colors'
+
 export function Settings() {
-  const [activeTab, setActiveTab] = useState('profile')
+  const [searchParams] = useSearchParams()
+  const initialTab = (() => {
+    const q = searchParams.get('tab')
+    return q && (VALID_TABS as readonly string[]).includes(q) ? q : 'profile'
+  })()
+  const [activeTab, setActiveTab] = useState(initialTab)
+  const current = TAB_META[activeTab as typeof VALID_TABS[number]] ?? TAB_META.profile
+  const CurrentIcon = current.icon
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-      <TabsList className="grid w-full grid-cols-5">
-        <TabsTrigger value="profile"><User className="h-4 w-4 mr-2" />Profile</TabsTrigger>
-        <TabsTrigger value="notifications"><Bell className="h-4 w-4 mr-2" />Notifications</TabsTrigger>
-        <TabsTrigger value="schedule"><Calendar className="h-4 w-4 mr-2" />Schedule</TabsTrigger>
-        <TabsTrigger value="security"><Shield className="h-4 w-4 mr-2" />Security</TabsTrigger>
-        <TabsTrigger value="billing"><CreditCard className="h-4 w-4 mr-2" />Billing</TabsTrigger>
+      {/* Section header — repeats the active tab's title / subtitle so the
+          doctor always has an anchor telling them where they are, even after
+          scrolling past the tab bar. */}
+      <div className="mb-4 flex items-start gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300">
+          <CurrentIcon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold text-gray-900 dark:text-white">Settings — {current.title}</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400">{current.subtitle}</p>
+        </div>
+      </div>
+
+      <TabsList className="grid w-full grid-cols-5 h-11 p-1">
+        <TabsTrigger value="profile" className={ACTIVE_TAB_CLASSES}><User className="h-4 w-4 mr-2" />Profile</TabsTrigger>
+        <TabsTrigger value="notifications" className={ACTIVE_TAB_CLASSES}><Bell className="h-4 w-4 mr-2" />Notifications</TabsTrigger>
+        <TabsTrigger value="schedule" className={ACTIVE_TAB_CLASSES}><Calendar className="h-4 w-4 mr-2" />Schedule</TabsTrigger>
+        <TabsTrigger value="security" className={ACTIVE_TAB_CLASSES}><Shield className="h-4 w-4 mr-2" />Security</TabsTrigger>
+        <TabsTrigger value="billing" className={ACTIVE_TAB_CLASSES}><CreditCard className="h-4 w-4 mr-2" />Billing</TabsTrigger>
       </TabsList>
 
       <TabsContent value="profile" className="space-y-6 mt-6">

@@ -134,6 +134,14 @@ export function CameraCaptureModal({ open, onClose, onCapture, onFallback }: Cam
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [facing])
 
+  // Modal ESC rollout: close on Escape key.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
   // ── Capture + retake ──
   const handleCapture = useCallback(() => {
     const video = videoRef.current

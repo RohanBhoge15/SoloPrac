@@ -59,6 +59,13 @@ logs/
 node_modules/
 dist/
 build/
+
+## Environment (real secrets — never commit)
+# `.env` was committed early in the project's history; the real fix is to
+# rotate every value that was ever in it (JWT_SECRET_KEY, ENCRYPTION_KEY,
+# NIM_API_KEY, GROQ_API_KEY, LANGFUSE_*, POSTGRES_PASSWORD) and then use
+# `.env.example` as the tracked template. See AUDIT.md § Severity 5.
+.env
 .env.local
 .env.development.local
 .env.test.local
@@ -150,3 +157,7 @@ scripts/verify_openi_qdrant.py
 /backend/ui_pending_matches.py
 /backend/upsert_openi_to_qdrant.py
 /backend/verify_openi_qdrant.py
+
+## Local tool artifacts (not part of the project)
+.freebuff/
+frontend/test-results/

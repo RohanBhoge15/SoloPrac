@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, WebSocke
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import async_session_maker, get_db
 from app.dependencies import get_current_user
 from app.models import (
     Appointment,
@@ -40,6 +40,7 @@ from app.models import (
     User,
 )
 from app.services.calendar_service import create_appointment, find_available_slots
+from app.services.clinical_significance import clinical_significance_from_tags
 from app.services.storage import storage_service
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,15 @@ class ConnectionManager:
 
     async def connect(self, patient_id: str, websocket: WebSocket):
         await websocket.accept()
+        self.register(patient_id, websocket)
+
+    def register(self, patient_id: str, websocket: WebSocket):
+        """Add an ALREADY-accepted socket to a patient stream.
+
+        Split out from connect() because one portal socket subscribes to several
+        keys at once (the user id plus every clinic patient row it owns), and
+        websocket.accept() may only be called once per connection.
+        """
         self._patient_connections.setdefault(patient_id, []).append(websocket)
         logger.info(
             "WebSocket connected: patient=%s (%d active)", patient_id, len(self._patient_connections[patient_id])
@@ -306,14 +316,63 @@ async def patient_websocket(patient_id: str, websocket: WebSocket, token: str = 
         await websocket.close(code=4001, reason="Unauthorized")
         return
 
-    # Verify the patient_id matches the token's subject (user_id).
-    # The patient_id URL param is used for routing notifications to the correct
-    # connection. If the token has a patient_id claim, it must match.
-    token_patient_id = payload.get("patient_id")
-    if token_patient_id and str(token_patient_id) != patient_id:
+    # Resolve which notification streams this socket may subscribe to.
+    #
+    # The URL param is historically named `patient_id`, but the portal only ever
+    # knows the logged-in User id (`/patient/me/profile` returns the user row) —
+    # a User owns MANY Patient rows, one per clinic they visit. Meanwhile the
+    # SENDER keys events by Patient id (notification_generator.notify_patient).
+    #
+    # So we accept either form and always subscribe to the *set* of patient row
+    # ids owned by this user:
+    #   - user id  → every Patient row with user_id == sub
+    #   - patient id → that row, but only if it is owned by sub
+    #
+    # Previously the endpoint required a `patient_id` JWT claim that
+    # create_user_token never sets, so every handshake closed 4001 (a 403 in the
+    # browser) — and even had it passed, the frontend subscribes with the user
+    # id while the sender publishes to patient ids, so no event could ever be
+    # delivered. Both halves are fixed here.
+    try:
+        _req_uuid = uuid.UUID(patient_id)
+    except ValueError:
         await websocket.close(code=4001, reason="Unauthorized")
         return
-    await ws_manager.connect(patient_id, websocket)
+
+    try:
+        async with async_session_maker() as _s:
+            from app.database import set_rls_context
+
+            # WebSockets bypass the HTTP middleware — set the user identity so
+            # the patient_self_access RLS policy admits this user's rows.
+            await set_rls_context(_s, user_id=str(user_id))
+            _owned = (
+                (await _s.execute(select(Patient.id).where(Patient.user_id == uuid.UUID(str(user_id))))).scalars().all()
+            )
+            owned_ids = {str(pid) for pid in _owned}
+
+            if str(_req_uuid) in owned_ids:
+                # Subscribed by a specific patient row this user owns.
+                keys = {str(_req_uuid)}
+            elif str(_req_uuid) == str(user_id):
+                # Subscribed by user id — fan out over every clinic record.
+                keys = set(owned_ids)
+            else:
+                # Neither their own user id nor a row they own → reject.
+                await websocket.close(code=4001, reason="Unauthorized")
+                return
+    except Exception as _exc:
+        logger.warning("WS auth ownership lookup failed for %s: %s", patient_id, _exc)
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    # Always register the user id too, so events published before the first
+    # clinic record exists (and any user-scoped events) still arrive.
+    keys.add(str(user_id))
+
+    await websocket.accept()
+    for k in keys:
+        ws_manager.register(k, websocket)
     try:
         while True:
             data = await websocket.receive_text()
@@ -321,10 +380,12 @@ async def patient_websocket(patient_id: str, websocket: WebSocket, token: str = 
             if msg.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
-        await ws_manager.disconnect(patient_id, websocket)
+        for k in keys:
+            await ws_manager.disconnect(k, websocket)
     except Exception as exc:
         logger.warning("WebSocket error for patient %s: %s", patient_id, exc)
-        await ws_manager.disconnect(patient_id, websocket)
+        for k in keys:
+            await ws_manager.disconnect(k, websocket)
 
 
 # ─── Public: Patient Auth ────────────────────────────
@@ -391,13 +452,59 @@ async def patient_register(
     # Backfill any pre-existing walk-in Patient rows whose phone matches this
     # user, so a doctor's manual entry auto-connects on signup.
     linked_count = 0
+    matched_doctor_ids: set = set()
     try:
+        # C-9 (Piece 5.2): peek at every candidate walk-in BEFORE the strong
+        # linker mutates the DB so we can notify the doctors whose walk-ins
+        # matched (both strong-linked and weak/pending). Dedup by doctor_id.
+        try:
+            from app.services.linking import find_candidates_for_user
+
+            candidates = await find_candidates_for_user(db, user)
+            matched_doctor_ids = {c.patient.doctor_id for c in candidates if c.patient and c.patient.doctor_id}
+        except Exception as exc:
+            logger.debug("candidate scan for doctor notify failed: %s", exc)
+
         linked_count = await _link_walkins_to_user(db, user)
         if linked_count:
             await db.commit()
     except Exception as exc:
         logger.warning("Walk-in auto-link failed for user %s: %s", user.id, exc)
         await db.rollback()
+
+    # C-9 (Piece 5.2): dispatch pending_matches_available to each matched
+    # doctor (deduped). Never re-raise — a notification failure must not
+    # sink the user's registration.
+    if matched_doctor_ids:
+        try:
+            from app.services.notification_generator import dispatch_doctor_event
+
+            for did in matched_doctor_ids:
+                try:
+                    await dispatch_doctor_event(
+                        db,
+                        event_type="pending_matches_available",
+                        doctor_id=did,
+                        subject="New account matches your patient record",
+                        body=(
+                            f"A new user ({user.name}) just registered with a phone "
+                            f"number that matches one of your walk-in patient records. "
+                            f"Review pending matches in the patient portal."
+                        ),
+                        meta={
+                            "resource_type": "pending_matches",
+                            "user_id": str(user.id),
+                            "patient_name": user.name,
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "dispatch_doctor_event(pending_matches_available) doctor=%s failed: %s",
+                        did,
+                        exc,
+                    )
+        except Exception as exc:
+            logger.warning("pending_matches notification batch failed: %s", exc)
 
     from app.dependencies import create_user_token
 
@@ -578,14 +685,13 @@ async def search_doctors(
     query = select(Doctor).where(Doctor.verification_status == "verified")
 
     if lat is not None and lng is not None:
-        # PostGIS geography distance query
-        # location is stored as GEOGRAPHY(Point, 4326)
-        try:
-            patient_point = text(f"ST_SetSRID(ST_MakePoint({lng}, {lat}), 4326)::geography")
-            distance_col = func.ST_Distance(Doctor.location, patient_point).label("distance")
-            query = query.add_columns(distance_col).order_by(distance_col)
-        except Exception:
-            pass
+        # PostGIS geography distance query (ST_Distance returns metres)
+        patient_point = text(f"ST_SetSRID(ST_MakePoint({lng}, {lat}), 4326)::geography")
+        distance_col = func.ST_Distance(Doctor.location, patient_point).label("distance_m")
+        query = query.add_columns(distance_col)
+        # Only return doctors within the requested radius (metres)
+        query = query.where(func.ST_DWithin(Doctor.location, patient_point, radius_km * 1000))
+        query = query.order_by(distance_col)
 
     if speciality:
         query = query.where(Doctor.speciality.ilike(f"%{speciality}%"))
@@ -611,7 +717,8 @@ async def search_doctors(
     for row in rows:
         if has_distance:
             doc = row[0]
-            distance = row[1] if len(row) > 1 else None
+            distance_m = row[1] if len(row) > 1 else None
+            distance = round(float(distance_m) / 1000.0, 2) if distance_m is not None else None
         else:
             doc = row
             distance = None
@@ -630,7 +737,7 @@ async def search_doctors(
             "years_experience": (datetime.now().year - doc.year_of_registration) if doc.year_of_registration else None,
         }
         if distance is not None:
-            d["distance_km"] = round(float(distance), 2)
+            d["distance_km"] = distance
         doctors.append(d)
 
     # Sort by distance if available
@@ -669,7 +776,7 @@ async def get_doctor_detail(
         "speciality": doc.speciality,
         "clinic_name": doc.clinic_name,
         "clinic_address": doc.clinic_address,
-        "location": doc.location,
+        "location": str(doc.location) if doc.location else None,
         "phone": doc.phone,
         "registration_number": doc.registration_number,
         "verification_status": doc.verification_status,
@@ -839,7 +946,7 @@ async def patient_book_appointment(
                 edit_type="manual",
                 summary="Auto-created on first booking",
                 tags=["demographics"],
-                clinical_significance=0.0,
+                clinical_significance=clinical_significance_from_tags(["demographics"]),
             )
             db.add(version)
             await db.flush()
@@ -874,6 +981,29 @@ async def patient_book_appointment(
             send_notification=True,
             telemedicine_consent=body.get("telemedicine_consent", False),
         )
+        # C-9 (Piece 5.1): tell the doctor a patient just booked. Wrapped so
+        # a notification failure never rolls back the booking itself.
+        try:
+            from app.services.notification_generator import dispatch_doctor_event
+
+            appt_id = apt.get("id") if isinstance(apt, dict) else getattr(apt, "id", None)
+            start_fmt = start_at.strftime("%a %b %d, %I:%M %p")
+            await dispatch_doctor_event(
+                db,
+                event_type="appointment_booked_by_patient",
+                doctor_id=doctor_uuid,
+                subject=f"New booking from {user.name}",
+                body=(f"{user.name} booked an appointment for {start_fmt}. Reason: {reason or 'not specified'}."),
+                meta={
+                    "resource_type": "appointment",
+                    "resource_id": str(appt_id) if appt_id else None,
+                    "patient_name": user.name,
+                    "appointment_time": start_at.isoformat(),
+                },
+                patient_id=patient.id,
+            )
+        except Exception as exc:  # noqa: BLE001 — never break booking on notif failure
+            logger.warning("dispatch_doctor_event(appointment_booked_by_patient) failed: %s", exc)
         return apt
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -902,8 +1032,15 @@ async def get_patient_profile(
     except Exception as exc:
         logger.debug("pending_matches_count failed: %s", exc)
 
+    # Historical note: four patient pages (DoctorSearch, PatientReports,
+    # PatientAppointments, PatientInbox) read `user_id`, one reads `id ?? user_id`,
+    # and this router originally returned only `id`. That silently broke every
+    # `user_id`-reading page — `patientId` stayed empty and the page showed
+    # "Please log in" to authenticated users. Emit BOTH keys so all callers work
+    # without a coordinated frontend deploy.
     return {
         "id": str(user.id),
+        "user_id": str(user.id),
         "email": user.email,
         "name": user.name,
         "phone": user.phone,
@@ -1256,6 +1393,141 @@ async def patient_appointments(
     ]
 
 
+@patient_router.post("/me/appointments/{appointment_id}/cancel")
+async def patient_cancel_appointment(
+    appointment_id: uuid.UUID,
+    body: dict = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Patient cancels their own appointment. The doctor's calendar updates live."""
+    patient_ids = await _get_user_patient_ids(db, user.id)
+    if not patient_ids:
+        raise HTTPException(status_code=404, detail="No patient record found")
+
+    result = await db.execute(
+        select(Appointment).where(
+            Appointment.id == appointment_id,
+            Appointment.patient_id.in_(patient_ids),
+        )
+    )
+    apt = result.scalar_one_or_none()
+    if not apt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    if apt.status == "cancelled":
+        return {"id": str(apt.id), "status": "cancelled"}
+
+    reason = (body or {}).get("reason") or "Cancelled by patient"
+    # Allow the appointment update under RLS by setting the clinic context.
+    await db.execute(
+        text("SELECT set_config('app.current_doctor_id', :did, true)"),
+        {"did": str(apt.doctor_id)},
+    )
+    from app.services import calendar_service
+
+    await calendar_service.cancel_appointment(
+        db,
+        doctor_id=apt.doctor_id,
+        appointment_id=apt.id,
+        reason=reason,
+        notify_patient=True,
+    )
+
+    # Notify the doctor explicitly (inbox + bell), not just a silent calendar change.
+    try:
+        from app.services.notification_generator import dispatch_doctor_event
+
+        start_fmt = apt.start_at.strftime("%a %b %d, %I:%M %p")
+        await dispatch_doctor_event(
+            db,
+            event_type="appointment_cancelled_by_patient",
+            doctor_id=apt.doctor_id,
+            subject=f"Cancellation from {user.name}",
+            body=f"{user.name} cancelled their appointment scheduled for {start_fmt}.",
+            meta={"resource_type": "appointment", "resource_id": str(apt.id)},
+            patient_id=apt.patient_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — never break cancel on notif failure
+        logger.warning("dispatch_doctor_event(appointment_cancelled_by_patient) failed: %s", exc)
+
+    return {"id": str(apt.id), "status": "cancelled"}
+
+
+@patient_router.post("/me/appointments/{appointment_id}/reschedule")
+async def patient_reschedule_appointment(
+    appointment_id: uuid.UUID,
+    body: dict = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Patient reschedules (postpone/prepone) to a new slot from doctor availability."""
+    start_at_s = (body or {}).get("start_at")
+    end_at_s = (body or {}).get("end_at")
+    if not all([start_at_s, end_at_s]):
+        raise HTTPException(status_code=400, detail="start_at and end_at required")
+    try:
+        new_start = datetime.fromisoformat(start_at_s)
+        new_end = datetime.fromisoformat(end_at_s)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid datetime format")
+
+    patient_ids = await _get_user_patient_ids(db, user.id)
+    if not patient_ids:
+        raise HTTPException(status_code=404, detail="No patient record found")
+
+    result = await db.execute(
+        select(Appointment).where(
+            Appointment.id == appointment_id,
+            Appointment.patient_id.in_(patient_ids),
+        )
+    )
+    apt = result.scalar_one_or_none()
+    if not apt:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    if apt.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Cannot reschedule a cancelled appointment")
+
+    await db.execute(
+        text("SELECT set_config('app.current_doctor_id', :did, true)"),
+        {"did": str(apt.doctor_id)},
+    )
+    from app.services import calendar_service
+
+    await calendar_service.reschedule_appointment(
+        db,
+        doctor_id=apt.doctor_id,
+        appointment_id=apt.id,
+        new_start=new_start,
+        new_end=new_end,
+        reason="Rescheduled by patient",
+        notify_patient=True,
+    )
+
+    # Notify the doctor explicitly (inbox + bell) about the patient-initiated move.
+    try:
+        from app.services.notification_generator import dispatch_doctor_event
+
+        start_fmt = new_start.strftime("%a %b %d, %I:%M %p")
+        await dispatch_doctor_event(
+            db,
+            event_type="appointment_rescheduled_by_patient",
+            doctor_id=apt.doctor_id,
+            subject=f"Reschedule from {user.name}",
+            body=f"{user.name} moved their appointment to {start_fmt}.",
+            meta={"resource_type": "appointment", "resource_id": str(apt.id)},
+            patient_id=apt.patient_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — never break reschedule on notif failure
+        logger.warning("dispatch_doctor_event(appointment_rescheduled_by_patient) failed: %s", exc)
+
+    return {
+        "id": str(apt.id),
+        "start_at": new_start.isoformat(),
+        "end_at": new_end.isoformat(),
+        "status": apt.status,
+    }
+
+
 # ─── Pending matches (walk-in disambiguation) ───
 
 
@@ -1279,18 +1551,17 @@ async def patient_pending_matches(
     if not weak:
         return []
 
-    doctor_ids = {m.patient.doctor_id for m in weak}
+    doctor_ids = {uuid.UUID(m.patient.doctor_id) for m in weak}
     doctor_rows = await db.execute(select(Doctor).where(Doctor.id.in_(doctor_ids)))
     doctor_map = {d.id: d for d in doctor_rows.scalars().all()}
 
     out = []
     for m in weak:
-        d = doctor_map.get(m.patient.doctor_id)
-        head = m.patient.head_version
-        demo = (head.state_jsonb or {}).get("demographics", {}) if head else {}
+        d = doctor_map.get(uuid.UUID(m.patient.doctor_id))
+        demo = m.patient.head_demo or {}
         out.append(
             {
-                "patient_id": str(m.patient.id),
+                "patient_id": m.patient.id,
                 "clinic_name": d.clinic_name if d else None,
                 "doctor_name": d.name if d else None,
                 "doctor_speciality": d.speciality if d else None,
@@ -1319,23 +1590,23 @@ async def patient_claim_walkin(
     """
     from app.services.linking import find_candidates_for_user
 
-    result = await db.execute(select(Patient).where(Patient.id == patient_id))
-    patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    if patient.user_id is not None:
-        raise HTTPException(status_code=409, detail="Already claimed")
-
     # Verify eligibility via the same matcher — cheap, and prevents any bypass.
+    # (The walk-in row itself is invisible under RLS — user_id IS NULL — so the
+    # claim update runs through the sanctioned SECURITY DEFINER helper.)
     matches = await find_candidates_for_user(db, user)
     eligible = {m.patient.id for m in matches}
-    if patient.id not in eligible:
+    if str(patient_id) not in eligible:
         raise HTTPException(status_code=403, detail="Not eligible to claim this record")
 
-    patient.user_id = user.id
-    await db.commit()
-    logger.info("User %s manually claimed walk-in %s", user.id, patient.id)
-    return {"status": "ok", "patient_id": str(patient.id)}
+    res = await db.execute(
+        text("SELECT public.claim_walkin(:pid, :uid)"),
+        {"pid": str(patient_id), "uid": str(user.id)},
+    )
+    claimed = res.scalar()
+    if not claimed:
+        raise HTTPException(status_code=409, detail="Already claimed")
+    logger.info("User %s manually claimed walk-in %s", user.id, patient_id)
+    return {"status": "ok", "patient_id": str(patient_id)}
 
 
 @patient_router.post("/me/reject/{patient_id}")
@@ -1347,21 +1618,16 @@ async def patient_reject_walkin(
     """Patient says 'no, that walk-in isn't me'. Adds this user to the
     patient's rejected list so we never re-surface it to them.
     """
-    result = await db.execute(select(Patient).where(Patient.id == patient_id))
-    patient = result.scalar_one_or_none()
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
-    if patient.user_id is not None:
-        # Already claimed by someone (possibly this same user); nothing to do.
-        return {"status": "ok", "patient_id": str(patient.id)}
-
-    existing = list(patient.link_rejected_by_user_ids or [])
-    if user.id not in existing:
-        existing.append(user.id)
-        patient.link_rejected_by_user_ids = existing
-        await db.commit()
-    logger.info("User %s rejected walk-in %s", user.id, patient.id)
-    return {"status": "ok", "patient_id": str(patient.id)}
+    # The row is invisible under RLS (user_id IS NULL) — the append runs via
+    # the sanctioned SECURITY DEFINER helper, which also no-ops on already-
+    # claimed walk-ins and is idempotent per user.
+    res = await db.execute(
+        text("SELECT public.reject_walkin(:pid, :uid)"),
+        {"pid": str(patient_id), "uid": str(user.id)},
+    )
+    if res.scalar():
+        logger.info("User %s rejected walk-in %s", user.id, patient_id)
+    return {"status": "ok", "patient_id": str(patient_id)}
 
 
 @patient_router.get("/me/weekly-report/pdf")
@@ -1399,11 +1665,19 @@ async def patient_weekly_report_pdf(
 
     # Generate QR verification code for the patient report
     try:
+        from app.config import settings as _settings
         from app.services.pdf_security import PDFSecurityService
 
         pss = PDFSecurityService()
         verification_code = f"WR-{uuid.uuid4().hex[:8].upper()}-{datetime.now(timezone.utc).strftime('%Y%m')}"
-        verify_url = f"http://{('localhost')}/api/v1/certificates/verify/{verification_code}"
+        # Prior URL had TWO bugs: (1) hardcoded `http://localhost/...` — a QR
+        # scanned outside the dev machine would resolve to the scanner's own
+        # localhost; (2) it pointed at `/certificates/verify/{code}` but the
+        # code is WR-prefixed (weekly report). The doctor-side weekly-report
+        # router already uses the correct pattern — mirror it.
+        _domain = _settings.DOMAIN or "localhost"
+        _port = _settings.PORT
+        verify_url = f"http://{_domain}:{_port}/api/v1/weekly-report/verify/{verification_code}"
         qr_path = await pss.generate_qr_code(verify_url, size=80)
         import base64
 
@@ -1477,6 +1751,11 @@ async def doctor_websocket(doctor_id: str, websocket: WebSocket, token: str = Qu
 
     Auth: reads JWT from `?token=` query param OR the `access_token` HttpOnly cookie
     (same cookie that the HTTP APIs use).
+
+    C-9: this socket is also the delivery channel for doctor-side notifications
+    dispatched by app.services.notification_generator.dispatch_doctor_event.
+    Auth here rejects patient JWTs (type=="patient") and enforces sub==doctor_id
+    so one doctor can't subscribe to another's stream.
 
     Registers with ws_manager so background jobs (Feature E risk scan) can
     push alerts here via ws_manager.notify_doctor.

@@ -165,11 +165,14 @@ async def _resolve_patient_email(ctx, patient_id: str) -> Optional[str]:
         # We'll use the standard async_session_maker pattern
         from sqlalchemy import select
 
-        from app.database import async_session_maker
+        from app.database import async_session_maker, resolve_doctor_id, set_rls_context
         from app.models import Patient
         from app.services.encryption import decrypt_value
 
         async with async_session_maker() as session:
+            doctor_id = await resolve_doctor_id(session, patient_id=str(patient_id))
+            if doctor_id:
+                await set_rls_context(session, doctor_id=doctor_id)
             result = await session.execute(select(Patient).where(Patient.id == patient_id))
             patient = result.scalar_one_or_none()
             if not patient:
@@ -223,6 +226,8 @@ async def run_appointment_reminders(ctx):
     processed = 0
     errors = 0
 
+    from app.database import set_rls_context
+
     async with async_session_maker() as db:
         # Get all verified doctors
         doc_result = await db.execute(select(Doctor).where(Doctor.verification_status == "verified"))
@@ -230,6 +235,8 @@ async def run_appointment_reminders(ctx):
 
         for doctor in doctors:
             doc_id = doctor.id
+            # Scope this session to the doctor so RLS admits their rows.
+            await set_rls_context(db, doctor_id=str(doc_id))
             settings = doctor.settings or {}
             notify_prefs = settings.get("notification_preferences", {})
             reminder_config = notify_prefs.get("appointment_reminder", {})

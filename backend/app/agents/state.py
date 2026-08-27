@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Optional, List, Dict, Any, TypedDict, Annotated
-from uuid import UUID
-from datetime import datetime, timezone, timezone
+from datetime import datetime, timezone
 from enum import Enum
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
+from uuid import UUID
 
 
 class AgentIntent(str, Enum):
     """Known intent types the router can classify."""
+
     PATIENT_QA = "patient_qa"
     IMAGE_ANALYSIS = "image_analysis"
     IMAGE_COMPARE = "image_compare"
@@ -24,6 +25,7 @@ class AgentIntent(str, Enum):
 
 class AgentToolCall(TypedDict):
     """A tool call emitted by the planner node."""
+
     tool_name: str
     tool_args: Dict[str, Any]
     result: Optional[Any]

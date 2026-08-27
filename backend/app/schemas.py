@@ -93,7 +93,7 @@ class PatientRead(BaseModel):
 # ─── Patient Version ──────────────────────────
 class PatientVersionBase(BaseModel):
     state_jsonb: Dict[str, Any]
-    edit_type: str = Field(..., pattern=r"^(manual|voice|ocr|ai_suggestion|revert)$")
+    edit_type: str = Field(..., pattern=r"^(manual|voice|ocr|ai_suggestion|revert|status_update)$")
     summary: Optional[str] = Field(None, max_length=500)
     tags: List[str] = Field(default_factory=list)
     clinical_significance: Optional[float] = Field(None, ge=0.0, le=1.0)
@@ -358,6 +358,10 @@ class DoctorRegister(BaseModel):
     clinic_name: str = Field(..., min_length=1, max_length=255)
     clinic_address: str = Field(..., min_length=1)
     speciality: Optional[str] = Field(None, max_length=100)
+    # Optional geo-coords captured from the map picker on the register form.
+    # Both must be provided together (or neither) — the router enforces that.
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
 
 
 class DoctorLogin(BaseModel):

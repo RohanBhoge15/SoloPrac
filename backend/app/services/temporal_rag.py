@@ -43,6 +43,7 @@ from qdrant_client.models import (
     SparseVector,
 )
 
+from app.services.clinical_significance import clinical_significance_from_tags
 from app.services.embeddings import embedding_service
 from app.services.qdrant import PATIENT_VERSION_COLLECTION, qdrant_service
 
@@ -53,8 +54,101 @@ logger = logging.getLogger(__name__)
 ALPHA = 0.30  # MedCPT text similarity weight
 BETA = 0.25  # BGE-M3 hybrid (dense + sparse) weight
 GAMMA = 0.20  # BiomedCLIP image similarity weight
-DELTA = 0.15  # Temporal decay weight
+DELTA = 0.15  # Temporal decay weight (fallback; per-query δ overrides)
 EPSILON = 0.10  # Clinical significance weight
+
+# ─── Query-conditional δ (paper Section IV-C) ───
+# The paper's ablation showed uniform δ=0.15 crashes R@1 to 14% (score-scale
+# mismatch: δ·D swamps the RRF term). Winner: per-query δ chosen from the
+# temporal intent of the query. Values taken verbatim from the paper.
+INTENT_TO_DELTA: Dict[str, float] = {
+    "current": 0.03,
+    "historical": 0.0,
+    "trend": 0.015,
+}
+
+# Keyword heuristics mirroring the paper's trained classifier (BGE-M3 + LR,
+# 0.910 acc) — deterministic and dependency-free for the live path. The
+# exact classifier weights live in eval_feature_a_v2.py; this is a faithful
+# lightweight approximation using the same query vocabulary.
+_INTENT_HISTORICAL = (
+    "initial",
+    "first",
+    "original",
+    "baseline",
+    "when was",
+    "when did",
+    "ever started",
+    "ever prescribed",
+    "ever",
+    "started",
+    "began",
+    "begun",
+    "initiated",
+    "introduced",
+    "first recorded",
+    "first-ever",
+    "first mentioned",
+    "originally",
+    "first noted",
+    "on file",
+)
+_INTENT_TREND = (
+    "trend",
+    "around",
+    "mid",
+    "middle",
+    "midpoint",
+    "mid-way",
+    "months ago",
+    "earlier this year",
+    "during",
+    "phase",
+    "progression",
+    "over time",
+    "6 months",
+    "100 days",
+    "history",
+)
+_INTENT_CURRENT = (
+    "current",
+    "latest",
+    "most recent",
+    "newest",
+    "recent",
+    "recently",
+    "present",
+    "now",
+    "right now",
+    "currently",
+    "still",
+    "last",
+    "recent",
+)
+
+
+def classify_temporal_intent(query: str) -> str:
+    """Classify query into current/historical/trend for per-query δ.
+
+    Mirror of the paper's BGE-M3+LR intent classifier (Section IV-C).
+    Historical terms win ties (e.g. "initial dose" reads as historical even
+    though "dose" is neutral); trend terms beat generic current terms only
+    when a temporal-window phrase is present.
+    """
+    q = (query or "").lower()
+    hist = sum(1 for k in _INTENT_HISTORICAL if k in q)
+    trend = sum(1 for k in _INTENT_TREND if k in q)
+    curr = sum(1 for k in _INTENT_CURRENT if k in q)
+    # Historical is the most specific signal (asks about the first/earliest
+    # version), so it wins ties against trend/current.
+    if hist > 0 and hist >= trend and hist >= curr:
+        return "historical"
+    if trend > 0 and trend >= curr:
+        return "trend"
+    if curr > 0:
+        return "current"
+    return "current"  # neutral default: mild recency prior
+
 
 # ─── Temporal Decay Constants (τ in days, per modality) ───
 # Vitals decay fast (7 days), diagnoses slow (90 days), family history slowest (365 days)
@@ -70,17 +164,6 @@ TAU: Dict[str, float] = {
     "text": 30.0,  # default for general text
     "hybrid": 30.0,  # default for hybrid
     "default": 30.0,
-}
-
-# ─── Clinical Significance Tier Weights (Feature F, reused here) ───
-TIER_WEIGHTS: Dict[str, float] = {
-    "new_diagnosis": 1.0,
-    "medication_change": 0.9,
-    "abnormal_lab": 0.8,
-    "ai_risk_alert": 0.75,
-    "missed_appointment": 0.5,
-    "routine_visit": 0.2,
-    "vitals_in_range": 0.05,
 }
 
 # ─── Retrieval Constants ───
@@ -101,22 +184,6 @@ def temporal_decay(days_elapsed: float, modality: str = "default") -> float:
         days_elapsed = 0.0
     tau = TAU.get(modality, TAU["default"])
     return math.exp(-days_elapsed / tau)
-
-
-def clinical_significance_from_tags(tags: List[str]) -> float:
-    """Compute clinical significance score from version tags.
-
-    Uses the highest-weighted tag found in the version's tags.
-    Returns 0.0 if no tags match known tiers.
-    """
-    if not tags:
-        return 0.0
-    best = 0.0
-    for tag in tags:
-        weight = TIER_WEIGHTS.get(tag.lower(), 0.0)
-        if weight > best:
-            best = weight
-    return best
 
 
 # ─── Scoring Functions ───
@@ -255,6 +322,12 @@ class TemporalMultimodalRetriever:
 
         start = datetime.now(timezone.utc)
 
+        # ── Query-conditional δ (paper Section IV-C) ──────────────────────
+        # Classify the query's temporal intent once, use the per-query δ in
+        # scoring AND in the cache key so different intents never collide.
+        q_intent = classify_temporal_intent(query)
+        q_delta = INTENT_TO_DELTA.get(q_intent, self.delta)
+
         # ── P3.31 — Redis cache lookup ─────────────────────────────────────
         # Key = (doctor, patient, query, k, image?, scoring hyperparams).
         # We bucket query_time to the minute so back-to-back questions inside
@@ -262,12 +335,13 @@ class TemporalMultimodalRetriever:
         # edits. The alpha/beta/gamma/delta/epsilon knobs MUST be part of the
         # key — otherwise ablations (e.g. delta=0 vs delta=0.15) collide on
         # the same key and return each other's cached results, which silently
-        # broke Feature A eval before this fix.
+        # broke Feature A eval before this fix. The per-query δ is included
+        # so current/historical/trend intents never share a cached answer.
         import hashlib as _hashlib
 
         _bucket = query_time.replace(second=0, microsecond=0).isoformat()
-        _hp = f"a={self.alpha}|b={self.beta}|g={self.gamma}" f"|d={self.delta}|e={self.epsilon}"
-        _cache_seed = f"{doctor_id}|{patient_id}|{query}|k={k}" f"|img={bool(image_path)}|t={_bucket}|{_hp}"
+        _hp = f"a={self.alpha}|b={self.beta}|g={self.gamma}|d={q_delta}|e={self.epsilon}"
+        _cache_seed = f"{doctor_id}|{patient_id}|{query}|k={k}|img={bool(image_path)}|t={_bucket}|{_hp}"
         _cache_key = "trag:" + _hashlib.sha256(_cache_seed.encode("utf-8")).hexdigest()[:32]
         _cached = await self._cached_retrieve_get(_cache_key)
         if _cached is not None:
@@ -451,9 +525,8 @@ class TemporalMultimodalRetriever:
             rrf_score = point.score
 
             # Enhanced score: combine RRF + temporal + clinical significance
-            enhanced_score = (
-                (1.0 - self.delta - self.epsilon) * rrf_score + self.delta * decay + self.epsilon * sig_score
-            )
+            # Uses the per-query δ (q_delta) from the intent classifier.
+            enhanced_score = (1.0 - q_delta - self.epsilon) * rrf_score + q_delta * decay + self.epsilon * sig_score
             point.score = enhanced_score
 
         # Re-sort by enhanced score
@@ -531,7 +604,8 @@ class TemporalMultimodalRetriever:
                 "alpha": self.alpha,
                 "beta": self.beta,
                 "gamma": self.gamma,
-                "delta": self.delta,
+                "delta": q_delta,
+                "intent": q_intent,
                 "epsilon": self.epsilon,
                 "cache": "miss",
             },

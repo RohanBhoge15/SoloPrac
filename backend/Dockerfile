@@ -25,6 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 RUN pip install "torch>=2.4.0" --index-url https://download.pytorch.org/whl/cpu \
     && pip install -e "."
+# torchvision MUST use the CPU custom-op build. The default PyPI wheel fails with
+# "operator torchvision::nms does not exist" under the CPU torch wheel, which breaks
+# MedCPT/BGE-M3 embeddings (and thus Qdrant indexing + vector RAG). Installing the
+# +cpu build explicitly keeps it pinned across image rebuilds.
+RUN pip install "torchvision==0.28.0+cpu" --index-url https://download.pytorch.org/whl/cpu
 
 # Install spacy model for misaki (Kokoro G2P)
 RUN python -m spacy download en_core_web_sm
@@ -37,8 +42,10 @@ COPY . .
 
 EXPOSE 8000
 
+# curl is NOT installed in python:3.11-slim, so use urllib (same check the
+# backend service overrides with in docker-compose.yml).
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=30s \
-    CMD curl -f http://localhost:8000/api/v1/health/live || exit 1
+    CMD python -c "import urllib.request; exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live').status == 200 else 1)"
 
 # Production CMD: 4 workers + uvloop + httptools for real multi-tenant concurrency.
 # With 4 workers, 30 doctors can be served in parallel without one long request

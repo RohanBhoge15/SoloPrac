@@ -24,7 +24,11 @@ function useRealtimeSocket(role: 'patient' | 'doctor', id: string | null) {
 
   const connect = useCallback(() => {
     if (!id) return
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    const current = wsRef.current
+    // Skip while a socket is already OPEN *or still CONNECTING* — without the
+    // CONNECTING check, React StrictMode's effect double-mount (mount → cleanup
+    // → mount) could race a second connect() in before the first socket settles.
+    if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/${role}/${id}`
@@ -32,6 +36,12 @@ function useRealtimeSocket(role: 'patient' | 'doctor', id: string | null) {
     try {
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
+
+      // Set by disconnect() before it closes a socket that is still CONNECTING.
+      // Chrome fires `error` when a connecting socket is aborted; React
+      // StrictMode's cleanup does exactly that, and without this flag every
+      // page load logged "[DoctorWS] Error: Event" to the console.
+      let intentionallyClosed = false
 
       ws.onopen = () => {
         console.log(`${tag} Connected`)
@@ -58,8 +68,9 @@ function useRealtimeSocket(role: 'patient' | 'doctor', id: string | null) {
       ws.onclose = () => {
         console.log(`${tag} Disconnected`)
         setIsConnected(false)
-        wsRef.current = null
+        if (wsRef.current === ws) wsRef.current = null
         clearPing()
+        if (intentionallyClosed) return
         if (reconnectAttempts.current < maxReconnectAttempts) {
           const delay = Math.min(1000 * 2 ** reconnectAttempts.current, 30000)
           reconnectAttempts.current++
@@ -68,6 +79,7 @@ function useRealtimeSocket(role: 'patient' | 'doctor', id: string | null) {
       }
 
       ws.onerror = (error) => {
+        if (intentionallyClosed) return
         console.error(`${tag} Error:`, error)
       }
     } catch (e) {
@@ -81,8 +93,13 @@ function useRealtimeSocket(role: 'patient' | 'doctor', id: string | null) {
       reconnectTimeoutRef.current = null
     }
     clearPing()
-    if (wsRef.current) {
-      wsRef.current.close()
+    const ws = wsRef.current
+    if (ws) {
+      // Detach handlers BEFORE close() so an abort of a still-CONNECTING
+      // socket (React StrictMode effect-cleanup) can't fire onerror / onclose
+      // and can't schedule a reconnect.
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null
+      try { ws.close() } catch { /* already closed */ }
       wsRef.current = null
     }
     setIsConnected(false)

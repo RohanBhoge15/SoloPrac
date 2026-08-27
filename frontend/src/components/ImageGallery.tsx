@@ -20,6 +20,60 @@ interface ImageGalleryProps {
   patientId: string
 }
 
+// D-13 Part A: previously the thumbnail column always showed a static <ImageIcon>
+// placeholder. This component lazily fetches the actual image bytes via the
+// same /images/file endpoint used by handleView (which follows the 307 to a
+// presigned S3 URL) and renders a small <img>. Clicking the thumbnail opens
+// the full viewer via the same onView flow.
+function ImageThumbnail({
+  patientId,
+  s3Key,
+  onClick,
+}: {
+  patientId: string
+  s3Key: string
+  onClick: () => void
+}) {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    let createdUrl: string | null = null
+    ;(async () => {
+      try {
+        const res = await apiClient.get(`/patients/${patientId}/images/file`, {
+          params: { s3_key: s3Key },
+          responseType: 'blob',
+        })
+        if (cancelled) return
+        createdUrl = URL.createObjectURL(res.data)
+        setThumbUrl(createdUrl)
+      } catch {
+        // Fall back to placeholder icon
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (createdUrl) URL.revokeObjectURL(createdUrl)
+    }
+  }, [patientId, s3Key])
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="View image"
+      className="shrink-0 w-16 h-16 rounded-md bg-gray-200 dark:bg-gray-700 flex items-center justify-center overflow-hidden focus:outline-none focus:ring-2 focus:ring-primary-500"
+    >
+      {thumbUrl ? (
+        <img src={thumbUrl} alt="thumbnail" className="w-full h-full object-cover" />
+      ) : (
+        <ImageIcon className="h-6 w-6 text-gray-400" />
+      )}
+    </button>
+  )
+}
+
 export function ImageGallery({ patientId }: ImageGalleryProps) {
   const [images, setImages] = useState<ImageVersion[]>([])
   const [loading, setLoading] = useState(true)
@@ -67,13 +121,20 @@ export function ImageGallery({ patientId }: ImageGalleryProps) {
 
   const handleView = async (img: ImageVersion) => {
     setViewingImage(img)
+    setViewerUrl(null)
     try {
+      // D-13 Part B: Previously the code set maxRedirects:0 and tried to read
+      // res.headers.location from a 307 response. Browsers hide the Location
+      // header on cross-origin responses unless the server exposes it via CORS
+      // (which main.py does not), so viewerUrl was always null.
+      // Fix: let axios follow the redirect to the presigned S3 URL and fetch
+      // the bytes as a blob, then wrap in an object URL for the <img> tag.
       const res = await apiClient.get(`/patients/${patientId}/images/file`, {
         params: { s3_key: img.s3_key },
-        maxRedirects: 0,
-        validateStatus: (s) => s >= 300 && s < 400,
+        responseType: 'blob',
       })
-      setViewerUrl(res.headers.location || null)
+      const blobUrl = URL.createObjectURL(res.data)
+      setViewerUrl(blobUrl)
     } catch {
       setViewerUrl(null)
     }
@@ -105,9 +166,11 @@ export function ImageGallery({ patientId }: ImageGalleryProps) {
             <div className="space-y-3">
               {images.map((img) => (
                 <div key={img.version_id} className="flex items-start gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
-                  <div className="shrink-0 w-16 h-16 rounded-md bg-gray-200 dark:bg-gray-700 flex items-center justify-center overflow-hidden">
-                    <ImageIcon className="h-6 w-6 text-gray-400" />
-                  </div>
+                  <ImageThumbnail
+                    patientId={patientId}
+                    s3Key={img.s3_key}
+                    onClick={() => handleView(img)}
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-sm text-gray-900 dark:text-white truncate">{img.filename}</span>
@@ -161,12 +224,12 @@ export function ImageGallery({ patientId }: ImageGalleryProps) {
       {viewingImage && (
         <div
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => { setViewingImage(null); setViewerUrl(null) }}
+          onClick={() => { setViewingImage(null); if (viewerUrl) URL.revokeObjectURL(viewerUrl); setViewerUrl(null) }}
         >
           <div className="bg-white dark:bg-gray-900 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
               <span className="font-medium text-sm">{viewingImage.filename}</span>
-              <Button variant="ghost" size="icon" onClick={() => { setViewingImage(null); setViewerUrl(null) }}>
+              <Button variant="ghost" size="icon" onClick={() => { setViewingImage(null); if (viewerUrl) URL.revokeObjectURL(viewerUrl); setViewerUrl(null) }}>
                 <X className="h-5 w-5" />
               </Button>
             </div>

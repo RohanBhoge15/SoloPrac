@@ -23,12 +23,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Patient, User
+from app.models import User
 from app.services.encryption import decrypt_value
 from app.utils.phone import normalize_phone, phones_match
 
@@ -80,20 +81,45 @@ def _names_compatible(a: Optional[str], b: Optional[str]) -> bool:
 
 
 @dataclass
+class PatientInfo:
+    """Lightweight view of an unlinked walk-in (no ORM lazy-loads).
+
+    Populated from public.list_unlinked_walkins() — a SECURITY DEFINER helper
+    that bypasses RLS because unlinked walk-ins are invisible to every policy
+    (user_id IS NULL, and the user has no doctor context yet). This is the
+    sanctioned cross-clinic discovery path for the patient portal.
+    """
+
+    id: str
+    doctor_id: str
+    phone_enc: bytes | None
+    created_at: datetime | None
+    link_rejected_by_user_ids: list
+    head_demo: dict
+
+    @classmethod
+    def from_row(cls, row) -> "PatientInfo":
+        return cls(
+            id=str(row.id),
+            doctor_id=str(row.doctor_id),
+            phone_enc=row.phone_enc,
+            created_at=row.created_at,
+            link_rejected_by_user_ids=list(row.link_rejected_by_user_ids or []),
+            head_demo=dict(row.head_demo or {}),
+        )
+
+
+@dataclass
 class MatchResult:
-    patient: Patient
+    patient: PatientInfo
     plaintext_phone: str  # decrypted phone from Patient.phone_enc
     strong: bool  # True iff we should auto-link this row
 
 
-def _walkin_demographics(patient: Patient) -> dict:
+def _walkin_demographics(patient: PatientInfo) -> dict:
     """Best-effort extract of the walk-in's demographics from its head version."""
-    try:
-        state = getattr(patient.head_version, "state_jsonb", None) or {}
-        demo = state.get("demographics") or {}
-        return demo if isinstance(demo, dict) else {}
-    except Exception:
-        return {}
+    demo = getattr(patient, "head_demo", None) or {}
+    return demo if isinstance(demo, dict) else {}
 
 
 def _dob_matches(walkin_demo: dict, user: User) -> bool:
@@ -137,8 +163,8 @@ async def find_candidates_for_user(db: AsyncSession, user: User) -> List[MatchRe
     if len(norm) != 10:
         return []
 
-    result = await db.execute(select(Patient).where(Patient.user_id.is_(None)))
-    candidates = result.scalars().all()
+    result = await db.execute(text("SELECT * FROM public.list_unlinked_walkins()"))
+    candidates = [PatientInfo.from_row(r) for r in result.fetchall()]
 
     out: List[MatchResult] = []
     for p in candidates:
@@ -173,9 +199,15 @@ async def strong_link_walkins_to_user(db: AsyncSession, user: User) -> int:
     for m in matches:
         if not m.strong:
             continue
-        m.patient.user_id = user.id
-        linked += 1
-        logger.info("Strong-linked walk-in %s to user %s", m.patient.id, user.id)
+        # claim_walkin is SECURITY DEFINER: the row is invisible under RLS
+        # (user_id IS NULL), so the update must run as the table owner.
+        res = await db.execute(
+            text("SELECT public.claim_walkin(:pid, :uid)"),
+            {"pid": m.patient.id, "uid": str(user.id)},
+        )
+        if res.scalar():
+            linked += 1
+            logger.info("Strong-linked walk-in %s to user %s", m.patient.id, user.id)
     if linked:
         await db.flush()
     return linked

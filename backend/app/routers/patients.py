@@ -1,6 +1,7 @@
 # Patients Router — Version-Controlled Patient Records
 # Each write mints an immutable version; the chain is content-addressed via SHA256.
 
+import copy
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from app.schemas import (
     PatientVersionRead,
     PatientVersionTimeline,
 )
+from app.services.clinical_significance import clinical_significance_from_tags
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +224,15 @@ async def list_patients(
     output = []
     for p in patients:
         head = None
+        # Promote the demographics fields most callers actually want to the
+        # top level so pages don't have to reach through `head_version.state_jsonb.demographics.*`
+        # every time. WeeklyReport picker, Scratchpad save dialog, and the
+        # dashboard's recent-patients list all read a flat `.name` — matches
+        # what `/patients/search` already returns.
+        top_name: str | None = None
+        top_phone: str | None = None
+        top_gender: str | None = None
+        top_age: int | None = None
         if p.head_version:
             head = {
                 "id": str(p.head_version.id),
@@ -231,6 +242,22 @@ async def list_patients(
                 "summary": p.head_version.summary,
                 "timestamp": p.head_version.timestamp.isoformat() if p.head_version.timestamp else None,
             }
+            state = p.head_version.state_jsonb or {}
+            demo = state.get("demographics") or {}
+            if isinstance(demo, dict):
+                top_name = demo.get("name")
+                top_phone = demo.get("phone")
+                top_gender = demo.get("gender")
+                dob_str = demo.get("dob")
+                if dob_str:
+                    try:
+                        from datetime import date as _date
+
+                        _dob = _date.fromisoformat(dob_str)
+                        _today = _date.today()
+                        top_age = _today.year - _dob.year - ((_today.month, _today.day) < (_dob.month, _dob.day))
+                    except (ValueError, TypeError):
+                        top_age = None
         output.append(
             {
                 "id": str(p.id),
@@ -240,6 +267,10 @@ async def list_patients(
                 "consent_for_share": p.consent_for_share,
                 "updated_at": p.updated_at.isoformat() if p.updated_at else None,
                 "created_at": p.created_at.isoformat() if p.created_at else None,
+                "name": top_name,
+                "phone": top_phone,
+                "gender": top_gender,
+                "age": top_age,
                 "head_version": head,
             }
         )
@@ -267,19 +298,22 @@ async def create_patient(
 
         normalized = normalize_phone(phone)
         if len(normalized) == 10:
-            # Search users by phone (iterate — no index on plaintext phone)
-            user_result = await db.execute(select(User))
-            for u in user_result.scalars().all():
-                if u.phone:
-                    from app.utils.phone import phones_match
+            # Narrow at the DB level to users whose plaintext phone ends with the
+            # normalized 10-digit tail (handles "+91-", "0" prefixes without a
+            # phone_hash lookup — signup stores phone_hash of the raw string, so
+            # normalized hashes don't align). Bounded to 500 rows as a hard cap
+            # so a bad wildcard can never scan the whole users table.
+            from app.utils.phone import phones_match
 
-                    if phones_match(u.phone, phone):
-                        existing_user_id = u.id
-                        logger.info(
-                            "Auto-linking walk-in patient to existing user %s (phone match)",
-                            u.id,
-                        )
-                        break
+            user_result = await db.execute(select(User).where(User.phone.like(f"%{normalized}")).limit(500))
+            for u in user_result.scalars().all():
+                if u.phone and phones_match(u.phone, phone):
+                    existing_user_id = u.id
+                    logger.info(
+                        "Auto-linking walk-in patient to existing user %s (phone match)",
+                        u.id,
+                    )
+                    break
 
     patient = Patient(
         id=uuid.uuid4(),
@@ -298,7 +332,9 @@ async def create_patient(
         author=f"doctor:{doctor.id}",
         summary=payload.summary or "Initial patient record",
         tags=payload.tags,
-        clinical_significance=payload.clinical_significance or 1.0,
+        clinical_significance=payload.clinical_significance
+        if payload.clinical_significance is not None
+        else clinical_significance_from_tags(payload.tags or []),
     )
     await db.refresh(version)
     return _build_version_number(version)
@@ -456,7 +492,7 @@ async def revert_patient_to_version(
         parent_version_id=patient.head_version_id,
         summary=f"Reverted to version {version_number}",
         tags=["revert"],
-        clinical_significance=0.5,
+        clinical_significance=clinical_significance_from_tags(["revert"]),
     )
     return _build_version_number(new_version)
 
@@ -530,8 +566,89 @@ async def patch_patient_fields(
         parent_version_id=head.id,
         summary=f"Updated {len(updated_fields)} field(s): {', '.join(updated_fields)}",
         tags=updated_fields,
-        clinical_significance=0.3,
+        clinical_significance=clinical_significance_from_tags(updated_fields),
     )
+
+    # Index the new version inline so it is immediately retrievable/groundable
+    # (the backend container has the embedding models; the arq worker may not).
+    try:
+        from app.services.indexer import index_version
+
+        await index_version(db, new_version, patient, doctor.id)
+    except Exception as exc:
+        logger.warning("Failed to index version %s: %s", new_version.id, exc)
+
+    return _build_version_number(new_version)
+
+
+@router.post("/{patient_id}/versions/note", response_model=PatientVersionRead)
+async def create_status_note_version(
+    patient_id: uuid.UUID,
+    payload: dict,
+    doctor=Depends(get_current_doctor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a new version that *inherits* the current head state and appends a
+    free-text clinical status note (e.g. "Patient recovered from hypertension").
+
+    This is the intended "New Version" action for clinical status changes — it
+    does NOT edit personal/demographic data. The note is injected into
+    ``state_jsonb`` (so it is embedded + retrievable for temporal RAG grounding)
+    and recorded in ``summary`` (so it shows in the version chain with a
+    citation). The new version carries forward the entire prior state, so a query
+    at the new version still sees the inherited history (e.g. prior diagnoses)
+    plus the new status.
+    """
+    note = (payload or {}).get("note", "")
+    if isinstance(note, str):
+        note = note.strip()
+    if not note:
+        raise HTTPException(status_code=422, detail="note (non-empty string) is required")
+
+    result = await db.execute(select(Patient).where(Patient.id == patient_id, Patient.doctor_id == doctor.id))
+    patient = result.scalar_one_or_none()
+    _check_patient_ownership(patient, doctor.id)
+
+    if not patient.head_version_id:
+        raise HTTPException(status_code=400, detail="Patient has no base version yet")
+
+    head_result = await db.execute(select(PatientVersion).where(PatientVersion.id == patient.head_version_id))
+    head = head_result.scalar_one_or_none()
+    if not head:
+        raise HTTPException(status_code=400, detail="Patient head version not found")
+
+    # Deep-copy the prior state so the new version inherits everything.
+    new_state = copy.deepcopy(head.state_jsonb or {})
+
+    # Maintain a provenance list of status notes + a "latest" pointer.
+    status_notes = list(new_state.get("status_notes") or [])
+    if not isinstance(status_notes, list):
+        status_notes = [str(status_notes)]
+    status_notes.append(note)
+    new_state["status_notes"] = status_notes
+    new_state["status_note"] = note
+
+    new_version = await _mint_version(
+        db,
+        patient,
+        doctor.id,
+        state=new_state,
+        edit_type="status_update",
+        author=f"doctor:{doctor.id}",
+        parent_version_id=head.id,
+        summary=note,
+        tags=["status_update"],
+        clinical_significance=0.0,
+    )
+
+    # Index the new version inline so it is immediately retrievable/groundable.
+    try:
+        from app.services.indexer import index_version
+
+        await index_version(db, new_version, patient, doctor.id)
+    except Exception as exc:
+        logger.warning("Failed to index status-note version %s: %s", new_version.id, exc)
+
     return _build_version_number(new_version)
 
 
@@ -640,7 +757,7 @@ async def create_patient_manual(
         edit_type="manual",
         summary=f"Manual registration: {name}",
         tags=["demographics"],
-        clinical_significance=0.0,
+        clinical_significance=clinical_significance_from_tags(["demographics"]),
     )
     db.add(version)
     await db.flush()

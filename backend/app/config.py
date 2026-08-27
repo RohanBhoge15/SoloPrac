@@ -18,8 +18,24 @@ class Settings(BaseSettings):
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "soloprac"
 
+    # Runtime DB role — a NON-OWNER, NON-SUPERUSER login subject to RLS.
+    # The RLS policies (see app/migrations/rls_setup.sql) filter every query
+    # through app.current_doctor_id / app.current_user_id; connecting as the
+    # table-owner superuser would silently bypass them.
+    APP_DB_USER: str = "soloprac_app"
+    APP_DB_PASSWORD: str = "soloprac_app_dev_password_change_me"
+
     @property
     def DATABASE_URL(self) -> str:
+        """Runtime connection — soloprac_app (RLS enforced)."""
+        return f"postgresql+asyncpg://{self.APP_DB_USER}:{self.APP_DB_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+
+    @property
+    def MIGRATION_DATABASE_URL(self) -> str:
+        """Privileged connection (table owner / superuser) for init_db() and
+        Alembic DDL. RLS does not apply to this role, which is correct for
+        schema migrations — but this URL must NEVER be used for runtime
+        sessions."""
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     DB_ECHO: bool = False
@@ -68,7 +84,7 @@ class Settings(BaseSettings):
     # NVIDIA NIM
     NIM_API_KEY: str = ""
     NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
-    MAVERICK_MODEL: str = "meta/llama-3.2-1b-instruct"
+    MAVERICK_MODEL: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
     LLAMA_8B_MODEL: str = "nvidia/llama-3.1-8b-instruct"
     # Some free-tier NIM models hang on `response_format=json_object`.
     # When False, structured outputs are still requested but the flag is
@@ -80,22 +96,26 @@ class Settings(BaseSettings):
     # Groq
     GROQ_API_KEY: str = ""
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    # Model used by the Groq fallback path. This is deliberately NOT
+    # VISION_MODEL (google/medgemma-4b-it) — that model does not exist on
+    # Groq and 404s; Groq serves its own llama-3.3-70b-versatile instead.
+    GROQ_MODEL: str = "llama-3.1-8b-instant"
     # Vision: MedGemma-4B-IT (local) for medical; fallback to Groq if needed
     VISION_MODEL: str = "google/medgemma-4b-it"
 
     # Local models
     MEDGEMMA_PATH: str = "/models/medgemma-gguf/medgemma-4b-it_Q4_K_M.gguf"
     MEDGEMMA_SERVER_URL: str = "http://llama-server:8080"
-    WHISPER_PATH: str = "/models/faster-whisper-large-v3"
-    INDIC_WHISPER_PATH: str = "/models/indic-whisper"
-    PARLER_TTS_PATH: str = "/models/parler-tts-mini-v1.1"
-    KOKORO_TTS_PATH: str = "/models/kokoro-onnx"
+    WHISPER_PATH: str = "/hf_cache/faster-whisper-large-v3"
+    INDIC_WHISPER_PATH: str = "/hf_cache/indic-whisper"
+    PARLER_TTS_PATH: str = "/hf_cache/parler-tts-mini-v1.1"
+    KOKORO_TTS_PATH: str = "/hf_cache/kokoro-onnx"
     KOKORO_TTS_VOICE: str = "af_bella"
-    MMS_TTS_PATH: str = "/models/mms-tts-hin"
-    MEDCPT_QUERY_PATH: str = "/models/MedCPT-Query-Encoder"
-    MEDCPT_ARTICLE_PATH: str = "/models/MedCPT-Article-Encoder"
-    BGE_M3_PATH: str = "/models/bge-m3"
-    BIOMEDCLIP_PATH: str = "/models/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    MMS_TTS_PATH: str = "/hf_cache/mms-tts-hin"
+    MEDCPT_QUERY_PATH: str = "/hf_cache/MedCPT-Query-Encoder"
+    MEDCPT_ARTICLE_PATH: str = "/hf_cache/MedCPT-Article-Encoder"
+    BGE_M3_PATH: str = "/hf_cache/bge-m3"
+    BIOMEDCLIP_PATH: str = "/hf_cache/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
     # OCR
     NANONETS_OCR_MODEL: str = "nanonets/Nanonets-OCR2-1.5B-exp"

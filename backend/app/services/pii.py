@@ -176,6 +176,7 @@ def reassociate_pseudonym(text: str, patient_name: str) -> str:
         'Compare Priya with Priya'
     """
     import re
+
     # Match P- followed by exactly 8 hex characters (word boundary or end of string)
     pattern = rf"{PSEUDONYM_PREFIX}[0-9a-fA-F]{{{PSEUDONYM_ID_LEN}}}(?=\b|$|[.,;:!?)\]])"
     return re.sub(pattern, patient_name, text)
@@ -191,7 +192,9 @@ async def get_patient_name_for_reassociation(patient_id: Any) -> Optional[str]:
     Lazy-imports DB modules to avoid circular imports at module load time.
     """
     from uuid import UUID
+
     from sqlalchemy import select
+
     from app.database import async_session_maker
     from app.models import Patient
 
@@ -199,16 +202,20 @@ async def get_patient_name_for_reassociation(patient_id: Any) -> Optional[str]:
         return None
 
     try:
+        from app.database import resolve_doctor_id, set_rls_context
+
         async with async_session_maker() as session:
-            result = await session.execute(
-                select(Patient).where(Patient.id == UUID(str(patient_id)))
-            )
+            doctor_id = await resolve_doctor_id(session, patient_id=str(patient_id))
+            if doctor_id:
+                await set_rls_context(session, doctor_id=doctor_id)
+            result = await session.execute(select(Patient).where(Patient.id == UUID(str(patient_id))))
             patient = result.scalar_one_or_none()
             if not patient or not patient.head_version_id:
                 return None
 
             # Load head version to get demographics.name
             from app.models import PatientVersion
+
             version_result = await session.execute(
                 select(PatientVersion).where(PatientVersion.id == patient.head_version_id)
             )
@@ -254,7 +261,7 @@ def validate_citations(text: str, valid_citations: list[dict]) -> str:
             valid_pairs.add((int(vn), str(date)[:10]))  # normalize to YYYY-MM-DD
 
     # Pattern: [v{number} · {date}]
-    citation_pattern = re.compile(r'\[v(\d+)\s*·\s*([\d-]+)\]')
+    citation_pattern = re.compile(r"\[v(\d+)\s*·\s*([\d-]+)\]")
 
     def _replace_invalid(match):
         vn = int(match.group(1))
@@ -268,10 +275,10 @@ def validate_citations(text: str, valid_citations: list[dict]) -> str:
     cleaned = citation_pattern.sub(_replace_invalid, text)
 
     # Also strip orphaned citations with no date (e.g., "[v3]")
-    orphan_pattern = re.compile(r'\[v(\d+)\](?!\s*·)')
+    orphan_pattern = re.compile(r"\[v(\d+)\](?!\s*·)")
     cleaned = orphan_pattern.sub("", cleaned)
 
     # Clean up double spaces left by removed citations
-    cleaned = re.sub(r'  +', ' ', cleaned).strip()
+    cleaned = re.sub(r"  +", " ", cleaned).strip()
 
     return cleaned

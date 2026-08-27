@@ -1,13 +1,26 @@
 import * as React from 'react'
 import { cn } from '@/utils/helpers'
 
-const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
-  ({ className, type, ...props }, ref) => {
+// Input re-themed to clinical tokens. Adds an `error` prop that flips the
+// left border + ring red — the old version had no clear error visual so
+// form failures had to be surfaced only via toast, which the user misses.
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  error?: boolean
+}
+
+const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, type, error, ...props }, ref) => {
     return (
       <input
         type={type}
+        aria-invalid={error || undefined}
         className={cn(
-          'flex h-10 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm placeholder:text-gray-400 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-white dark:placeholder:text-gray-500',
+          'flex h-10 w-full rounded-md border bg-surface-2 px-3 py-2 text-sm text-strong-fg',
+          'placeholder:text-muted-fg',
+          'focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-60',
+          error
+            ? 'border-severity-critical focus:ring-severity-critical/30 focus:border-severity-critical'
+            : 'border-border focus:border-primary-600 focus:ring-primary-600/25',
           className
         )}
         ref={ref}

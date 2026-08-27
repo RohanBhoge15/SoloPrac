@@ -27,15 +27,39 @@ interface ApprovalCardProps {
   onReview: () => void
   onCancel: () => void
   loading?: boolean
+  // D-4: per-row and bulk callbacks. When omitted, the corresponding UI is hidden
+  // instead of rendering interactive-looking but dead controls.
+  onApproveOne?: (moveId: string) => void
+  onRejectOne?: (moveId: string) => void
+  onApproveSelected?: (moveIds: string[]) => void
+  onRejectSelected?: (moveIds: string[]) => void
 }
 
 function fmt(d: string) {
   return new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
-export function ApprovalCard({ title, message, moves, onApproveAll, onReview, onCancel, loading }: ApprovalCardProps) {
+export function ApprovalCard({
+  title,
+  message,
+  moves,
+  onApproveAll,
+  onReview,
+  onCancel,
+  loading,
+  onApproveOne,
+  onRejectOne,
+  onApproveSelected,
+  onRejectSelected,
+}: ApprovalCardProps) {
   const [expanded, setExpanded] = useState(false)
   const [selected, setSelected] = useState<Record<string, boolean>>({})
+
+  // D-4: only show per-row Accept/Reject buttons when at least one callback is wired.
+  const showRowActions = Boolean(onApproveOne || onRejectOne)
+  // D-4: only show selection checkboxes when at least one bulk callback is wired,
+  // otherwise selection is a lie (no action can consume it).
+  const showSelection = Boolean(onApproveSelected || onRejectSelected)
 
   const toggleOne = (id: string) => {
     setSelected(prev => ({ ...prev, [id]: !prev[id] }))
@@ -74,7 +98,8 @@ export function ApprovalCard({ title, message, moves, onApproveAll, onReview, on
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-3">
-        {expanded && moves.length > 0 && (
+        {/* D-4: hide the "Select all" bar entirely when no bulk callback is provided. */}
+        {expanded && moves.length > 0 && showSelection && (
           <div className="flex items-center gap-3 px-2 py-1.5 bg-gray-50 dark:bg-gray-800/50 rounded-lg text-xs text-gray-500">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input type="checkbox" checked={allSelected} onChange={toggleAll} className="accent-primary-600" />
@@ -99,7 +124,8 @@ export function ApprovalCard({ title, message, moves, onApproveAll, onReview, on
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    {expanded && (
+                    {/* D-4: only render selection checkbox when a bulk action can consume it. */}
+                    {expanded && showSelection && (
                       <input
                         type="checkbox"
                         checked={selected[move.appointment_id] || false}
@@ -126,23 +152,69 @@ export function ApprovalCard({ title, message, moves, onApproveAll, onReview, on
                     <span>{fmt(move.proposed_start)}</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button variant="ghost" size="icon" className="text-green-600 hover:bg-green-50" title="Accept">
-                    <CheckCircle className="h-4 w-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="text-red-600 hover:bg-red-50" title="Reject">
-                    <XCircle className="h-4 w-4" />
-                  </Button>
-                </div>
+                {/* D-4: hide per-row buttons entirely when no handler is wired (were dead before). */}
+                {showRowActions && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    {onApproveOne && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-green-600 hover:bg-green-50"
+                        title="Accept"
+                        onClick={() => onApproveOne(move.appointment_id)}
+                        disabled={loading}
+                      >
+                        <CheckCircle className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {onRejectOne && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-red-600 hover:bg-red-50"
+                        title="Reject"
+                        onClick={() => onRejectOne(move.appointment_id)}
+                        disabled={loading}
+                      >
+                        <XCircle className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ))}
         </div>
         <div className="flex items-center justify-between pt-2 border-t border-gray-200 dark:border-gray-700">
           <span className="text-xs text-gray-500">
-            {selectedCount > 0 ? `${selectedCount} of ${moves.length} selected` : 'Select moves to manage'}
+            {showSelection
+              ? (selectedCount > 0 ? `${selectedCount} of ${moves.length} selected` : 'Select moves to manage')
+              : `${moves.length} pending`}
           </span>
           <div className="flex items-center gap-2">
+            {/* D-4: bulk action buttons — only rendered when there IS a selection AND a handler. */}
+            {showSelection && selectedCount > 0 && onApproveSelected && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onApproveSelected(Object.keys(selected).filter(id => selected[id]))}
+                disabled={loading}
+                className="text-green-700 border-green-300 hover:bg-green-50"
+              >
+                Approve selected ({selectedCount})
+              </Button>
+            )}
+            {showSelection && selectedCount > 0 && onRejectSelected && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onRejectSelected(Object.keys(selected).filter(id => selected[id]))}
+                disabled={loading}
+                className="text-red-700 border-red-300 hover:bg-red-50"
+              >
+                Reject selected ({selectedCount})
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={onCancel} disabled={loading}>Cancel All</Button>
             <Button variant="outline" size="sm" onClick={onReview} disabled={loading}>Review</Button>
             <Button size="sm" onClick={onApproveAll} disabled={loading || moves.length === 0}>

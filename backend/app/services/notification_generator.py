@@ -116,6 +116,10 @@ FALLBACK_TEMPLATES: Dict[str, Dict[str, str]] = {
         "subject": "Certificate Issued",
         "body": "Dear {patient_name}, your {cert_type} certificate has been issued and is available for download.",
     },
+    "weekly_report_ready": {
+        "subject": "Weekly Clinical Report Ready - {layout} Layout",
+        "body": "Dear {patient_name}, your weekly clinical report ({layout}) is now ready to download from your patient portal.",
+    },
 }
 
 
@@ -235,6 +239,121 @@ async def create_patient_notification(
         "body": body,
         "meta": meta,
     }
+
+
+# ─── Doctor Notifications (C-9) ────────────────────
+# Doctor-facing events. Fires when a patient books, an admin approves the
+# doctor's license, the weekly report is ready, etc. Mirrors the patient
+# path above: insert row + push over the /ws/doctor/{id} socket.
+
+DOCTOR_EVENT_TYPES = [
+    "appointment_booked_by_patient",
+    "patient_registered",
+    "verification_status_changed",
+    "weekly_report_ready",
+    "pending_matches_available",
+    "system_message",
+]
+
+
+async def create_doctor_notification(
+    db_session,
+    doctor_id,
+    event_type: str,
+    subject: str,
+    body: str,
+    meta: dict = None,
+    patient_id=None,
+) -> dict:
+    """C-9: Create a doctor notification row + push via WebSocket.
+
+    Mirrors create_patient_notification.
+    """
+    import uuid
+
+    from app.models import DoctorNotification
+
+    notification = DoctorNotification(
+        id=uuid.uuid4(),
+        doctor_id=doctor_id,
+        kind=event_type,
+        subject=subject[:255],
+        body=body,
+        meta=meta,
+        patient_id=patient_id,
+    )
+    db_session.add(notification)
+    await db_session.commit()
+    await db_session.refresh(notification)
+
+    # Push via WebSocket (notify_doctor already exists on ConnectionManager)
+    try:
+        from app.routers.portal import ws_manager
+
+        payload = {
+            "type": "notification",
+            "data": {
+                "id": str(notification.id),
+                "kind": event_type,
+                "subject": subject,
+                "body": body,
+                "patient_id": str(patient_id) if patient_id else None,
+                "created_at": notification.created_at.isoformat() if notification.created_at else None,
+            },
+        }
+        if meta:
+            payload["data"]["meta"] = meta
+        await ws_manager.notify_doctor(str(doctor_id), payload)
+    except Exception as exc:
+        logger.warning("Doctor WebSocket push failed: %s", exc)
+
+    return {
+        "id": str(notification.id),
+        "kind": event_type,
+        "subject": subject,
+        "body": body,
+        "meta": meta,
+        "patient_id": str(patient_id) if patient_id else None,
+    }
+
+
+async def dispatch_doctor_event(
+    db_session,
+    event_type: str,
+    doctor_id,
+    subject: str,
+    body: str,
+    meta: dict = None,
+    patient_id=None,
+) -> dict:
+    """C-9: Doctor-side dispatcher.
+
+    Thin wrapper around create_doctor_notification that consults
+    doctor.settings.notification_preferences to skip disabled events
+    (mirroring generate_and_dispatch on the patient side).
+    """
+    from sqlalchemy import select
+
+    from app.models import Doctor
+
+    doc_result = await db_session.execute(select(Doctor).where(Doctor.id == doctor_id))
+    doc = doc_result.scalar_one_or_none()
+    settings = doc.settings or {} if doc else {}
+    notification_prefs = settings.get("notification_preferences", {})
+    event_config = notification_prefs.get(event_type, {})
+    if not event_config.get("enabled", True):
+        logger.info("Doctor notification '%s' disabled by doctor %s", event_type, doctor_id)
+        return None
+
+    return await create_doctor_notification(
+        db_session,
+        doctor_id=doctor_id,
+        event_type=event_type,
+        subject=subject,
+        body=body,
+        meta=meta,
+        patient_id=patient_id,
+    )
 
 
 async def generate_and_dispatch(

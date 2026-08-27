@@ -10,17 +10,18 @@ Access is restricted to soloprac admin accounts (checked via email).
 
 from __future__ import annotations
 
-import uuid
 import logging
+import uuid
 from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import get_current_doctor
-from app.models import Doctor, AuditLog
-from app.schemas import VerificationPending, VerificationAction
+from app.models import AuditLog, Doctor
+from app.schemas import VerificationAction, VerificationPending
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,7 @@ async def list_pending_verifications(
 ):
     """List all doctors pending verification review."""
     result = await db.execute(
-        select(Doctor).where(
-            Doctor.verification_status == "pending_verification"
-        ).order_by(Doctor.created_at.asc())
+        select(Doctor).where(Doctor.verification_status == "pending_verification").order_by(Doctor.created_at.asc())
     )
     doctors = result.scalars().all()
     return [
@@ -112,6 +111,28 @@ async def approve_doctor(
         pass
 
     logger.info("Doctor %s (%s) verified by admin %s", doctor.name, doctor.email, admin.email)
+
+    # C-9 (Piece 5.3): notify the doctor they're approved. Never re-raise.
+    try:
+        from app.services.notification_generator import dispatch_doctor_event
+
+        await dispatch_doctor_event(
+            db,
+            event_type="verification_status_changed",
+            doctor_id=doctor.id,
+            subject="You're verified ✓",
+            body=(
+                "Your medical license has been verified. You now appear in "
+                "patient search and can accept online bookings."
+            ),
+            meta={
+                "resource_type": "verification",
+                "status": "verified",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dispatch_doctor_event(verification approved) failed: %s", exc)
+
     return {
         "status": "verified",
         "doctor_id": str(doctor.id),
@@ -161,6 +182,29 @@ async def reject_doctor(
         pass
 
     logger.info("Doctor %s (%s) rejected by admin %s: %s", doctor.name, doctor.email, admin.email, reason)
+
+    # C-9 (Piece 5.3): notify the doctor of the rejection + reason.
+    try:
+        from app.services.notification_generator import dispatch_doctor_event
+
+        await dispatch_doctor_event(
+            db,
+            event_type="verification_status_changed",
+            doctor_id=doctor.id,
+            subject="Verification needs attention",
+            body=(
+                f"Your verification request was not approved. Reason: {reason}. "
+                f"You can resubmit with corrected documents from Settings → Profile."
+            ),
+            meta={
+                "resource_type": "verification",
+                "status": "rejected",
+                "reason": reason,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dispatch_doctor_event(verification rejected) failed: %s", exc)
+
     return {
         "status": "rejected",
         "doctor_id": str(doctor.id),

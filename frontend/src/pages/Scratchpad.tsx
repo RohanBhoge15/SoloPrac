@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
-import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File, Search, ChevronRight, ChevronLeft, Camera, AlertTriangle } from 'lucide-react'
+import { Upload, FileText, X, User, CheckCircle, Loader2, Eye, File, Search, ChevronRight, ChevronLeft, Camera, AlertTriangle, Type } from 'lucide-react'
 import { CameraCaptureModal } from '@/components/CameraCaptureModal'
 import { PrescriptionHighlighter } from '@/components/PrescriptionHighlighter'
+import { toast } from '@/components/ui/Toast'
 
 interface ParsedDocument {
   doc_id: string
@@ -36,6 +37,69 @@ interface PatientSummary {
   id: string
   initials: string
   name: string
+}
+
+// In-place OCR text editor for the "Extracted Content" card. Kept as a
+// local subcomponent (not a shared component) because it's tightly coupled
+// to the file/result shape above and the highlighter toggle is scratchpad-
+// specific. Emits the new text upward via onChange so the parent's file
+// state is the single source of truth — Save-to-Patient reads the edited
+// value the same way it read the original.
+function ScratchpadTextEditor({
+  file,
+  onChange,
+}: {
+  file: UploadingFile
+  onChange: (text: string) => void
+}) {
+  const isPrescription = file.result?.doc_type === 'prescription'
+  const [mode, setMode] = useState<'preview' | 'edit'>(isPrescription ? 'preview' : 'edit')
+  const text = file.result?.raw_text ?? ''
+
+  return (
+    <div className="space-y-2">
+      {isPrescription && (
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setMode('preview')}
+            className={cn(
+              'px-2 py-1 text-xs rounded border',
+              mode === 'preview'
+                ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
+            )}
+          >
+            Highlighted
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('edit')}
+            className={cn(
+              'px-2 py-1 text-xs rounded border',
+              mode === 'edit'
+                ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+                : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800',
+            )}
+          >
+            Edit
+          </button>
+        </div>
+      )}
+
+      {isPrescription && mode === 'preview' && text ? (
+        <PrescriptionHighlighter text={text} />
+      ) : (
+        <textarea
+          value={text}
+          onChange={(e) => onChange(e.target.value)}
+          spellCheck={false}
+          className="w-full p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 min-h-[160px] max-h-[400px] text-gray-900 dark:text-white text-sm whitespace-pre-wrap font-mono border border-gray-200 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-y"
+          placeholder="No text extracted. Type or paste corrections here."
+        />
+      )}
+    </div>
+  )
 }
 
 const DOC_TYPE_LABELS: Record<string, string> = {
@@ -72,6 +136,23 @@ export function Scratchpad() {
   const [doctorNotes, setDoctorNotes] = useState('')
   const [editingResult, setEditingResult] = useState<ParsedDocument | null>(null)
   const [cameraOpen, setCameraOpen] = useState(false)
+  // Dedicated text-preview modal so the OCR output has an obvious surface
+  // per file, independent of the "save to patient" flow. The card panel that
+  // renders below the file list is easy to miss because it lives below the
+  // fold and is filtered out when raw_text is empty.
+  const [textPreview, setTextPreview] = useState<{ name: string; docType?: string; text: string; confidence?: number } | null>(null)
+
+  // ESC closes whichever overlay is on top (text preview beats doc viewer).
+  useEffect(() => {
+    if (!textPreview && !cameraOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (textPreview) setTextPreview(null)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [textPreview, cameraOpen])
 
   // Fetch real patients on mount
   useEffect(() => {
@@ -117,7 +198,21 @@ export function Scratchpad() {
       setFiles(prev => [...prev, ...newFiles])
     }
 
-    // Upload each file to the parse API
+    // Upload each file to the parse API.
+    //
+    // Two response shapes are possible:
+    //   (a) sync path — arq unavailable, backend inlines OCR and returns the
+    //       full `ParsedDocument` immediately.
+    //   (b) async path (default) — backend returns `{status:'accepted', job_id,
+    //       poll_url}` after S3 upload; the arq worker runs OCR in the
+    //       background. Frontend must poll GET /jobs/{job_id} until
+    //       `status === 'complete'` and then read `.result` (which IS the
+    //       ParsedDocument the sync path would have returned inline).
+    //
+    // Prior code assumed (a) always. When arq was available (the default),
+    // response.data was `{status:'accepted',...}` — no `raw_text`, no
+    // `structured` — and the whole file card would show a completed state with
+    // an empty preview. Fix: detect the async shape and poll the job.
     for (const nf of newFiles) {
       setFiles(prev => prev.map(f => f.id === nf.id ? { ...f, status: 'uploading' as const } : f))
 
@@ -133,7 +228,39 @@ export function Scratchpad() {
           timeout: 60000,
         })
 
-        const result: ParsedDocument = response.data
+        let result: ParsedDocument
+        if (response.data?.status === 'accepted' && response.data?.job_id) {
+          // Async path — poll /jobs/{job_id}. 90s ceiling, 1.5s cadence.
+          // OCR on a scanned prescription typically finishes in 5-20s.
+          const jobId = response.data.job_id as string
+          const startedAt = Date.now()
+          const TIMEOUT_MS = 90_000
+          const POLL_MS = 1500
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            if (Date.now() - startedAt > TIMEOUT_MS) {
+              throw new Error('OCR timed out — try again with a clearer scan')
+            }
+            await new Promise(r => setTimeout(r, POLL_MS))
+            const poll = await apiClient.get(`/jobs/${jobId}`)
+            const st = poll.data?.status
+            if (st === 'complete') {
+              if (poll.data?.success === false) {
+                throw new Error('Backend OCR job reported failure')
+              }
+              result = poll.data.result as ParsedDocument
+              break
+            }
+            if (st === 'expired' || st === 'not_found') {
+              throw new Error('OCR job was evicted before completion — try again')
+            }
+            // else: queued | in_progress — keep polling
+          }
+        } else {
+          // Sync path — already have the ParsedDocument.
+          result = response.data as ParsedDocument
+        }
+
         setFiles(prev => prev.map(f =>
           f.id === nf.id ? { ...f, status: 'completed' as const, result } : f
         ))
@@ -230,8 +357,11 @@ export function Scratchpad() {
         setDoctorNotes('')
         setModalStep('review')
       }, 2000)
-    } catch {
+    } catch (err) {
+      // R-8: surface save failures instead of swallowing silently.
       setSaving(false)
+      console.error('[Scratchpad] save-to-patient failed:', err)
+      toast.error('Failed to save document to patient record. Please try again.')
     }
   }
 
@@ -383,10 +513,22 @@ export function Scratchpad() {
                   )}
                   {file.status === 'completed' && file.result && (
                     <div className="mt-1 space-y-1">
+                      {/* Guard every field — the async /jobs/{id} path and the
+                          parser's error branch don't always populate confidence
+                          or took_ms. Silent `undefined * 100 = NaN` was rendering
+                          "Confidence: NaN%" and "NaNs" on every completed card. */}
                       <div className="flex items-center gap-2 text-xs text-gray-500">
-                        <span>Confidence: {(file.result.confidence * 100).toFixed(0)}%</span>
-                        <span>·</span>
-                        <span>{(file.result.took_ms / 1000).toFixed(1)}s</span>
+                        {typeof file.result.confidence === 'number' && Number.isFinite(file.result.confidence) && (
+                          <>
+                            <span>Confidence: {(file.result.confidence * 100).toFixed(0)}%</span>
+                            <span>·</span>
+                          </>
+                        )}
+                        {typeof file.result.took_ms === 'number' && Number.isFinite(file.result.took_ms) ? (
+                          <span>{(file.result.took_ms / 1000).toFixed(1)}s</span>
+                        ) : (
+                          <span>Parsed</span>
+                        )}
                         {file.result.structured && typeof file.result.structured === 'object' && 'text_length' in file.result.structured && (
                           <>
                             <span>·</span>
@@ -394,7 +536,7 @@ export function Scratchpad() {
                           </>
                         )}
                       </div>
-                      {file.result.confidence < 0.5 && (
+                      {typeof file.result.confidence === 'number' && Number.isFinite(file.result.confidence) && file.result.confidence < 0.5 && (
                         <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                           <AlertTriangle className="h-3 w-3" />
                           <span>Low OCR confidence — please verify extracted text</span>
@@ -426,14 +568,57 @@ export function Scratchpad() {
                         size="icon"
                         className="h-8 w-8"
                         title="View document"
-                        onClick={() => {
-                          if (file.result) {
-                            const url = `/api/v1/documents/${file.result.doc_id}/file`
-                            setViewingDoc({ url, type: file.type, name: file.name })
+                        onClick={async () => {
+                          // R-6: fetch through apiClient (auth cookies + /api/v1
+                          // baseURL) and open as a blob URL so the viewer works
+                          // under any proxy prefix.
+                          //
+                          // Prefer the browser-inferred MIME of the original File
+                          // over the S3 response's Content-Type: after the 307
+                          // redirect, S3 sometimes sends application/xml or
+                          // application/octet-stream (esp. when the object was
+                          // uploaded without an explicit content-type), which
+                          // would push the viewer to render the iframe branch
+                          // for what is actually a JPEG/PNG.
+                          if (!file.result) return
+                          try {
+                            const res = await apiClient.get(`/documents/${file.result.doc_id}/file`, { responseType: 'blob' })
+                            const respMime = String(res.headers?.['content-type'] || '')
+                            const isGenericResp = !respMime || respMime.startsWith('application/octet-stream') || respMime.startsWith('application/xml') || respMime.startsWith('binary/')
+                            const mime = (isGenericResp && file.type) ? file.type : (respMime || file.type || 'application/octet-stream')
+                            const blob = new Blob([res.data], { type: mime })
+                            const url = URL.createObjectURL(blob)
+                            setViewingDoc({ url, type: mime, name: file.name })
+                          } catch (err) {
+                            console.error('Failed to load document for viewing:', err)
+                            toast.error('Could not open document', {
+                              description: err instanceof Error ? err.message : 'The file may still be processing — try again in a moment.',
+                            })
                           }
                         }}
                       >
                         <Eye className="h-3.5 w-3.5" />
+                      </Button>
+                      {/* View OCR text — always shown for completed files so
+                          the user always has a way to see what the parser
+                          returned. The modal itself handles the "no text
+                          extracted" case with a friendly empty state, which
+                          is more useful than silently hiding the button and
+                          leaving the user wondering where the text went. */}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs"
+                        title="View extracted text"
+                        onClick={() => setTextPreview({
+                          name: file.name,
+                          docType: file.result?.doc_type,
+                          text: file.result?.raw_text || '',
+                          confidence: file.result?.confidence,
+                        })}
+                      >
+                        <Type className="h-3 w-3 mr-1" />
+                        Text
                       </Button>
                       <Button
                         variant="outline"
@@ -459,7 +644,10 @@ export function Scratchpad() {
       {/* Extracted Content Details */}
       {hasContent && (
         <div className="space-y-4">
-          {completedFiles.filter(f => f.result?.raw_text).map((file) => (
+          {/* Render the panel for every completed file, not just those with
+              text — otherwise a failed OCR leaves the user no surface at all
+              to type in a correction. The editor placeholder guides them. */}
+          {completedFiles.map((file) => (
             <Card key={file.id}>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-sm">
@@ -475,15 +663,30 @@ export function Scratchpad() {
                 </Button>
               </CardHeader>
               <CardContent>
-                {/* Prescriptions get the entity-highlighted view; other doc types
-                    stay on the plain-text panel because the keyword patterns
-                    are prescription-specific. */}
-                {file.result?.doc_type === 'prescription' && file.result?.raw_text ? (
-                  <PrescriptionHighlighter text={file.result.raw_text} />
-                ) : (
-                  <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 min-h-[100px] max-h-[300px] overflow-y-auto text-gray-900 dark:text-white text-sm whitespace-pre-wrap font-mono">
-                    {file.result?.raw_text || 'No text extracted.'}
-                  </div>
+                {/* OCR output is user-editable in place — the parser is right most
+                    of the time but frontline correction is a first-class need for
+                    prescriptions (drug names, dosages). Edits update the same
+                    file.result.raw_text used by the Save-to-Patient flow and the
+                    prescription highlighter, so downstream views reflect the
+                    correction immediately.
+                    Prescriptions get a two-mode toggle: highlighted (default,
+                    read-only preview) and Edit (plain textarea). Everything else
+                    is just the textarea. */}
+                <ScratchpadTextEditor
+                  file={file}
+                  onChange={(newText) => {
+                    setFiles(prev => prev.map(f =>
+                      f.id === file.id && f.result
+                        ? { ...f, result: { ...f.result, raw_text: newText } }
+                        : f
+                    ))
+                  }}
+                />
+                {file.result?.doc_type === 'prescription' && (
+                  <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                    Tip: fix any OCR mistakes above before saving. The prescription
+                    highlighter will re-parse your edits.
+                  </p>
                 )}
 
                 {/* Structured data preview */}
@@ -541,7 +744,7 @@ export function Scratchpad() {
                     ))}
                   </div>
                 )}
-                {editingResult && editingResult.confidence < 0.5 && (
+                {editingResult && typeof editingResult.confidence === 'number' && Number.isFinite(editingResult.confidence) && editingResult.confidence < 0.5 && (
                   <div className="mb-3 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
                     <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
                       <AlertTriangle className="h-3 w-3 shrink-0" />
@@ -657,11 +860,11 @@ export function Scratchpad() {
 
       {/* Document Viewer Modal */}
       {viewingDoc && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setViewingDoc(null)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => { const u = viewingDoc.url; setViewingDoc(null); if (u.startsWith('blob:')) URL.revokeObjectURL(u) }}>
           <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[90vw] h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate">{viewingDoc.name}</span>
-              <button onClick={() => setViewingDoc(null)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
+              <button onClick={() => { const u = viewingDoc.url; setViewingDoc(null); if (u.startsWith('blob:')) URL.revokeObjectURL(u) }} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
                 <X className="h-4 w-4 text-gray-500" />
               </button>
             </div>
@@ -670,6 +873,79 @@ export function Scratchpad() {
                 <img src={viewingDoc.url} alt={viewingDoc.name} className="max-w-full max-h-full mx-auto object-contain rounded" />
               ) : (
                 <iframe src={viewingDoc.url} className="w-full h-full border-0 rounded" title={viewingDoc.name} />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Extracted Text Preview Modal — dedicated surface for the OCR output.
+          Prescriptions get the entity-highlighted view; everything else uses
+          the plain scrollable text panel (same rules as the inline card). */}
+      {textPreview && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setTextPreview(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Extracted text"
+        >
+          <div
+            className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-[90vw] max-w-3xl h-[80vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+              <div className="min-w-0 pr-3">
+                <div className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                  Extracted text — {textPreview.name}
+                </div>
+                <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
+                  {textPreview.docType && (
+                    <span>{DOC_TYPE_LABELS[textPreview.docType] || textPreview.docType}</span>
+                  )}
+                  {typeof textPreview.confidence === 'number' && Number.isFinite(textPreview.confidence) && (
+                    <>
+                      {textPreview.docType && <span>·</span>}
+                      <span>Confidence {(textPreview.confidence * 100).toFixed(0)}%</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(textPreview.text).then(
+                      () => toast.success('Copied to clipboard'),
+                      () => toast.error('Copy failed'),
+                    )
+                  }}
+                  className="px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => setTextPreview(null)}
+                  className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
+                  aria-label="Close"
+                >
+                  <X className="h-4 w-4 text-gray-500" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              {textPreview.text.trim() ? (
+                textPreview.docType === 'prescription' ? (
+                  <PrescriptionHighlighter text={textPreview.text} />
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words text-sm text-gray-800 dark:text-gray-200 font-mono leading-relaxed">
+                    {textPreview.text}
+                  </pre>
+                )
+              ) : (
+                <div className="h-full flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+                  No text extracted from this document.
+                </div>
               )}
             </div>
           </div>

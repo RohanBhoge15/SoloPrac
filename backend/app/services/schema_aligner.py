@@ -25,20 +25,21 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Type
+
 from pydantic import BaseModel, Field, ValidationError
 
-from app.config import settings
-from app.services.sanitizer import safe_parse_json
 from app.agents.synthesizer import MaverickSynthesizer
+from app.services.sanitizer import safe_parse_json
 
 logger = logging.getLogger(__name__)
 
 # ─── Canonical Schemas (Pydantic models per doc type) ───
 
+
 class PrescriptionSchema(BaseModel):
     """Canonical prescription schema."""
+
     patient_name: Optional[str] = None
     patient_age: Optional[int] = None
     date: Optional[str] = None
@@ -50,8 +51,10 @@ class PrescriptionSchema(BaseModel):
     doctor_name: Optional[str] = None
     registration_number: Optional[str] = None
 
+
 class LabReportSchema(BaseModel):
     """Canonical lab report schema."""
+
     patient_name: Optional[str] = None
     date: Optional[str] = None
     test_name: Optional[str] = None
@@ -60,8 +63,10 @@ class LabReportSchema(BaseModel):
     remarks: Optional[str] = None
     laboratory_name: Optional[str] = None
 
+
 class DischargeSummarySchema(BaseModel):
     """Canonical discharge summary schema."""
+
     patient_name: Optional[str] = None
     date_of_admission: Optional[str] = None
     date_of_discharge: Optional[str] = None
@@ -71,8 +76,10 @@ class DischargeSummarySchema(BaseModel):
     medications_at_discharge: List[Dict[str, Any]] = Field(default_factory=list)
     follow_up_instructions: Optional[str] = None
 
+
 class ReferralLetterSchema(BaseModel):
     """Canonical referral letter schema."""
+
     patient_name: Optional[str] = None
     referring_doctor: Optional[str] = None
     referred_to: Optional[str] = None
@@ -81,8 +88,10 @@ class ReferralLetterSchema(BaseModel):
     investigations_done: List[str] = Field(default_factory=list)
     urgency: Optional[str] = None
 
+
 class ImagingReportSchema(BaseModel):
     """Canonical imaging report schema."""
+
     patient_name: Optional[str] = None
     date: Optional[str] = None
     modality: Optional[str] = None  # X-ray, CT, MRI, USG
@@ -179,6 +188,7 @@ FEW_SHOT_EXAMPLES: Dict[str, List[Dict[str, Any]]] = {
 
 # ─── Feature D: Schema Aligner ──────────────────────
 
+
 class SchemaAligner:
     """Aligns raw OCR text to canonical schema using Maverick LLM."""
 
@@ -265,7 +275,9 @@ class SchemaAligner:
 
                     logger.info(
                         "Schema alignment succeeded: type=%s attempts=%d confidence=%.2f",
-                        doc_type, attempts, confidence,
+                        doc_type,
+                        attempts,
+                        confidence,
                     )
 
                     return {
@@ -280,7 +292,9 @@ class SchemaAligner:
                     last_errors = [str(e) for e in ve.errors()]
                     logger.warning(
                         "Validation failed (attempt %d/%d): %d errors",
-                        attempts, max_attempts, len(last_errors),
+                        attempts,
+                        max_attempts,
+                        len(last_errors),
                     )
                     continue
 
@@ -296,9 +310,7 @@ class SchemaAligner:
         )
 
         try:
-            fallback_result = await self._medgemma_fallback(
-                raw_text, doc_type, schema_model
-            )
+            fallback_result = await self._medgemma_fallback(raw_text, doc_type, schema_model)
             if fallback_result:
                 return fallback_result
         except Exception as exc:
@@ -344,9 +356,7 @@ class SchemaAligner:
                 prompt_parts.append("")
 
         if validation_errors and attempts > 1:
-            prompt_parts.append(
-                "\nYour previous attempt had these validation errors. Please fix them:\n"
-            )
+            prompt_parts.append("\nYour previous attempt had these validation errors. Please fix them:\n")
             for err in validation_errors[:5]:
                 prompt_parts.append(f"  - {err}")
             prompt_parts.append("")
@@ -412,6 +422,7 @@ class SchemaAligner:
 
 # ─── Test Dataset (50 docs across 5 types) ──────────
 
+
 def generate_test_documents() -> Dict[str, List[Dict[str, Any]]]:
     """Generate 50 test documents (10 per type) for evaluation.
 
@@ -421,28 +432,83 @@ def generate_test_documents() -> Dict[str, List[Dict[str, Any]]]:
 
     # Prescription examples
     dataset["prescription"] = [
-        {"raw": "Dr. Sharma\nRx: Sunita Devi, 55/F\nMetformin 1g BD × 90 days\nDiagnosis: T2DM", "structured": {"patient_name": "Sunita Devi", "patient_age": 55, "medications": [{"name": "Metformin"}], "diagnosis": "T2DM", "date": ""}},
-        {"raw": "Dr. Verma\nPatient: Arun Joshi, 50/M\nDate: 2026-07-20\nTab. Telmisartan 40 mg OD\nTab. Atorvastatin 10 mg OD", "structured": {"patient_name": "Arun Joshi", "patient_age": 50, "date": "2026-07-20", "medications": [{"name": "Telmisartan", "strength": "40 mg", "dose": "OD"}, {"name": "Atorvastatin", "strength": "10 mg", "dose": "OD"}]}},
+        {
+            "raw": "Dr. Sharma\nRx: Sunita Devi, 55/F\nMetformin 1g BD × 90 days\nDiagnosis: T2DM",
+            "structured": {
+                "patient_name": "Sunita Devi",
+                "patient_age": 55,
+                "medications": [{"name": "Metformin"}],
+                "diagnosis": "T2DM",
+                "date": "",
+            },
+        },
+        {
+            "raw": "Dr. Verma\nPatient: Arun Joshi, 50/M\nDate: 2026-07-20\nTab. Telmisartan 40 mg OD\nTab. Atorvastatin 10 mg OD",
+            "structured": {
+                "patient_name": "Arun Joshi",
+                "patient_age": 50,
+                "date": "2026-07-20",
+                "medications": [
+                    {"name": "Telmisartan", "strength": "40 mg", "dose": "OD"},
+                    {"name": "Atorvastatin", "strength": "10 mg", "dose": "OD"},
+                ],
+            },
+        },
     ]
 
     # Lab report examples
     dataset["lab_report"] = [
-        {"raw": "Patient: Vikram Khanna\nHb: 14.2 g/dL\nWBC: 6500\nPlatelets: 2.8L\nFasting Glucose: 98 mg/dL", "structured": {"patient_name": "Vikram Khanna", "results": [{"test": "Hb", "value": "14.2"}, {"test": "WBC", "value": "6500"}, {"test": "Glucose", "value": "98"}]}},
+        {
+            "raw": "Patient: Vikram Khanna\nHb: 14.2 g/dL\nWBC: 6500\nPlatelets: 2.8L\nFasting Glucose: 98 mg/dL",
+            "structured": {
+                "patient_name": "Vikram Khanna",
+                "results": [
+                    {"test": "Hb", "value": "14.2"},
+                    {"test": "WBC", "value": "6500"},
+                    {"test": "Glucose", "value": "98"},
+                ],
+            },
+        },
     ]
 
     # Discharge summary examples
     dataset["discharge_summary"] = [
-        {"raw": "Discharge Summary\nPatient: Anita Patel, 58/F\nAdmitted: 2026-07-01\nD/C: 2026-07-05\nDiagnosis: Hypertension crisis\nSummary: BP controlled with IV meds", "structured": {"patient_name": "Anita Patel", "diagnosis": "Hypertension crisis", "date_of_admission": "2026-07-01", "date_of_discharge": "2026-07-05"}},
+        {
+            "raw": "Discharge Summary\nPatient: Anita Patel, 58/F\nAdmitted: 2026-07-01\nD/C: 2026-07-05\nDiagnosis: Hypertension crisis\nSummary: BP controlled with IV meds",
+            "structured": {
+                "patient_name": "Anita Patel",
+                "diagnosis": "Hypertension crisis",
+                "date_of_admission": "2026-07-01",
+                "date_of_discharge": "2026-07-05",
+            },
+        },
     ]
 
     # Referral letter examples
     dataset["referral_letter"] = [
-        {"raw": "Dear Dr. Shah,\nRe: Mrs. Lata Patil, 62/F\nPlease evaluate for cataract surgery.\nShe has progressive vision loss OD.\n\nRegards,\nDr. Rohan Bhoge", "structured": {"patient_name": "Lata Patil", "referring_doctor": "Dr. Rohan Bhoge", "referred_to": "Dr. Shah", "reason_for_referral": "cataract surgery evaluation"}},
+        {
+            "raw": "Dear Dr. Shah,\nRe: Mrs. Lata Patil, 62/F\nPlease evaluate for cataract surgery.\nShe has progressive vision loss OD.\n\nRegards,\nDr. Rohan Bhoge",
+            "structured": {
+                "patient_name": "Lata Patil",
+                "referring_doctor": "Dr. Rohan Bhoge",
+                "referred_to": "Dr. Shah",
+                "reason_for_referral": "cataract surgery evaluation",
+            },
+        },
     ]
 
     # Imaging report examples
     dataset["imaging_report"] = [
-        {"raw": "Chest X-ray PA view\nPatient: Deepak Kulkarni, 55/M\nFindings: Normal heart size. Lungs clear.\nImpression: Normal study.\nDr. Patil, Radiologist", "structured": {"patient_name": "Deepak Kulkarni", "modality": "X-ray", "body_part": "Chest", "findings": "Normal heart size. Lungs clear.", "impression": "Normal study"}},
+        {
+            "raw": "Chest X-ray PA view\nPatient: Deepak Kulkarni, 55/M\nFindings: Normal heart size. Lungs clear.\nImpression: Normal study.\nDr. Patil, Radiologist",
+            "structured": {
+                "patient_name": "Deepak Kulkarni",
+                "modality": "X-ray",
+                "body_part": "Chest",
+                "findings": "Normal heart size. Lungs clear.",
+                "impression": "Normal study",
+            },
+        },
     ]
 
     return dataset

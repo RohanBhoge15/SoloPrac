@@ -2,10 +2,28 @@ import { useState, useEffect } from 'react'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { apiClient } from '@/services/api'
+import { toast } from '@/components/ui/Toast'
+import { openPdfViaBlob } from '@/utils/helpers'
 import { Loader2, CheckCircle, Clock } from 'lucide-react'
 import { usePatientWebSocket } from '@/hooks/useWebSocket'
 
 function cn(...classes: any[]) { return classes.filter(Boolean).join(' ') }
+
+// Map a notification's resource_type to the patient-portal PDF path. The
+// notification's stored pdf_url is the DOCTOR endpoint (/patients/.../pdf),
+// which rejects patient auth — so patients must use the /patient/me/... routes.
+const PATIENT_DOC_PDF: Record<string, (id: string) => string> = {
+  prescription: (id) => `/patient/me/prescriptions/${id}/pdf`,
+  invoice: (id) => `/patient/me/invoices/${id}/pdf`,
+  certificate: (id) => `/patient/me/certificates/${id}/pdf`,
+}
+
+function patientDocPath(meta: any): string | null {
+  if (meta?.resource_type && meta?.resource_id && PATIENT_DOC_PDF[meta.resource_type]) {
+    return PATIENT_DOC_PDF[meta.resource_type](meta.resource_id)
+  }
+  return null
+}
 
 export function PatientInbox() {
   const [notifications, setNotifications] = useState<any[]>([])
@@ -52,7 +70,12 @@ export function PatientInbox() {
   const markAsRead = async (id: string) => {
     try {
       await apiClient.patch(`/patient/me/inbox/${id}/read`)
-    } catch {}
+    } catch (err) {
+      // R-8: surface mark-as-read failures so the user knows the server didn't
+      // record the change (the local optimistic update below will drift).
+      console.error('[Inbox] mark-as-read failed:', err)
+      toast.error('Failed to mark notification as read')
+    }
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
     setUnreadCount(prev => Math.max(0, prev - 1))
   }
@@ -88,8 +111,20 @@ export function PatientInbox() {
                   </div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">{n.body}</p>
                   <p className="text-xs text-gray-400 mt-1 flex items-center gap-1"><Clock className="h-3 w-3" />{new Date(n.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
-                  {n.meta && n.meta.pdf_url && (
-                    <a href={n.meta.pdf_url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary-600 dark:text-primary-400 hover:underline mt-2 inline-block">
+                  {n.meta && (patientDocPath(n.meta) || n.meta.pdf_url) && (
+                    <a
+                      href={patientDocPath(n.meta) || n.meta.pdf_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => {
+                        const p = patientDocPath(n.meta)
+                        if (p) {
+                          e.preventDefault()
+                          openPdfViaBlob(p).catch(() => toast.error('Failed to open document'))
+                        }
+                      }}
+                      className="text-xs text-primary-600 dark:text-primary-400 hover:underline mt-2 inline-block"
+                    >
                       View document →
                     </a>
                   )}

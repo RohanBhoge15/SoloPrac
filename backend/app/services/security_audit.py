@@ -15,10 +15,10 @@ Usage:
 from __future__ import annotations
 
 import ast
-import os
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+import os
 from datetime import datetime, timezone
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +101,14 @@ class SecurityAuditor:
         findings = []
 
         if not os.path.exists(self.routers_dir):
-            findings.append({
-                "file": "routers/",
-                "severity": "critical",
-                "message": "Routers directory not found — cannot audit",
-                "detail": "",
-            })
+            findings.append(
+                {
+                    "file": "routers/",
+                    "severity": "critical",
+                    "message": "Routers directory not found — cannot audit",
+                    "detail": "",
+                }
+            )
             return findings
 
         for fname in sorted(os.listdir(self.routers_dir)):
@@ -144,26 +146,50 @@ class SecurityAuditor:
                                 # Check if path is public
                                 for _a in decorator.args:
                                     if isinstance(_a, ast.Constant) and isinstance(_a.value, str):
-                                        if _a.value.startswith("/api/public") or _a.value.startswith(
-                                                "/health") or _a.value.startswith("/docs"):
+                                        if (
+                                            _a.value.startswith("/api/public")
+                                            or _a.value.startswith("/health")
+                                            or _a.value.startswith("/docs")
+                                        ):
                                             has_public_marker = True
 
-                    if not has_auth and not has_public_marker and node.name.startswith(("get_", "post_", "put_",
-                                                                                         "patch_", "delete_",
-                                                                                         "list_", "create_", "update_",
-                                                                                         "generate_", "patient_")):
+                    if (
+                        not has_auth
+                        and not has_public_marker
+                        and node.name.startswith(
+                            (
+                                "get_",
+                                "post_",
+                                "put_",
+                                "patch_",
+                                "delete_",
+                                "list_",
+                                "create_",
+                                "update_",
+                                "generate_",
+                                "patient_",
+                            )
+                        )
+                    ):
                         # Check if it has _auth_ or _otp_ in name (public auth endpoints)
                         if "auth" not in node.name and "otp" not in node.name and "verify" not in node.name:
                             if node.name not in (
-                            "websocket_stats", "get_available_layouts", "get_likert_study_design",
-                            "evaluation_status", "get_feature_b_queries", "get_research_data",
-                            "export_langfuse"):
-                                findings.append({
-                                    "file": f"routers/{fname}",
-                                    "severity": "warning",
-                                    "message": f"Function '{node.name}' may lack auth dependency",
-                                    "detail": f"Line {node.lineno} in {fname}",
-                                })
+                                "websocket_stats",
+                                "get_available_layouts",
+                                "get_likert_study_design",
+                                "evaluation_status",
+                                "get_feature_b_queries",
+                                "get_research_data",
+                                "export_langfuse",
+                            ):
+                                findings.append(
+                                    {
+                                        "file": f"routers/{fname}",
+                                        "severity": "warning",
+                                        "message": f"Function '{node.name}' may lack auth dependency",
+                                        "detail": f"Line {node.lineno} in {fname}",
+                                    }
+                                )
 
         return findings
 
@@ -189,12 +215,14 @@ class SecurityAuditor:
                         continue
                     if "health" in fname:
                         continue
-                    findings.append({
-                        "file": f"routers/{fname}",
-                        "severity": "info",
-                        "message": f"Possible RLS gap: select() without .where() on line {i+1}",
-                        "detail": stripped[:120],
-                    })
+                    findings.append(
+                        {
+                            "file": f"routers/{fname}",
+                            "severity": "info",
+                            "message": f"Possible RLS gap: select() without .where() on line {i + 1}",
+                            "detail": stripped[:120],
+                        }
+                    )
 
         return findings
 
@@ -245,14 +273,17 @@ class SecurityAuditor:
                         content = f.read()
                     for pattern_name, pattern in patterns.items():
                         import re
+
                         matches = re.findall(pattern, content)
                         if matches:
-                            findings.append({
-                                "file": os.path.relpath(filepath, os.path.dirname(__file__)),
-                                "severity": "critical",
-                                "message": f"Possible {pattern_name} hardcoded",
-                                "detail": f"{len(matches)} match(es) found",
-                            })
+                            findings.append(
+                                {
+                                    "file": os.path.relpath(filepath, os.path.dirname(__file__)),
+                                    "severity": "critical",
+                                    "message": f"Possible {pattern_name} hardcoded",
+                                    "detail": f"{len(matches)} match(es) found",
+                                }
+                            )
                 except (IOError, UnicodeDecodeError):
                     continue
 
@@ -260,6 +291,7 @@ class SecurityAuditor:
 
 
 # ─── Penetration Test Scripts ─────────────────────────────
+
 
 class PenetrationTester:
     """Automated cross-tenant access tests."""
@@ -276,8 +308,9 @@ class PenetrationTester:
         Returns:
             Test result.
         """
-        from app.models import Doctor, Patient
         from sqlalchemy import select
+
+        from app.models import Patient
 
         results = {
             "test": "cross_tenant_patient_access",
@@ -295,17 +328,21 @@ class PenetrationTester:
 
             # If we can see patients from other doctors, that's a finding
             if patients:
-                results["findings"].append({
-                    "severity": "critical",
-                    "detail": f"Found {len(patients)} patients potentially accessible cross-tenant",
-                })
+                results["findings"].append(
+                    {
+                        "severity": "critical",
+                        "detail": f"Found {len(patients)} patients potentially accessible cross-tenant",
+                    }
+                )
                 results["passed"] = False
 
         except Exception as exc:
-            results["findings"].append({
-                "severity": "info",
-                "detail": f"Query error (expected if no data): {str(exc)[:100]}",
-            })
+            results["findings"].append(
+                {
+                    "severity": "info",
+                    "detail": f"Query error (expected if no data): {str(exc)[:100]}",
+                }
+            )
 
         return results
 
@@ -341,7 +378,9 @@ class PenetrationTester:
         """Run all penetration tests."""
         return {
             "tested_at": datetime.now(timezone.utc).isoformat(),
-            "cross_tenant": await self.test_cross_tenant_patient_access(db_session) if db_session else {
+            "cross_tenant": await self.test_cross_tenant_patient_access(db_session)
+            if db_session
+            else {
                 "test": "cross_tenant_patient_access",
                 "passed": True,
                 "note": "Skipped — requires DB session",
@@ -360,6 +399,7 @@ penetration_tester = PenetrationTester()
 
 
 # ─── Quick Audit Entry Point ──────────────────────────────
+
 
 async def run_full_audit() -> Dict[str, Any]:
     """Run complete security audit."""

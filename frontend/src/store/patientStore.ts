@@ -2,6 +2,16 @@ import { create } from 'zustand'
 import apiClient from '@/services/api'
 import type { Patient, PatientVersion, PatientVersionDiff } from '@/types'
 
+// Mirrors DemographicsPatch in backend/app/schemas.py:319. Used to decide
+// whether a flat key like "phone" belongs under state_jsonb.demographics
+// when applying an optimistic patch. Keep in sync with the backend schema.
+const DEMOGRAPHIC_KEYS = new Set([
+  'name', 'phone', 'email', 'dob', 'gender', 'address',
+  'blood_group', 'allergies', 'known_conditions',
+  'height_cm', 'weight_kg',
+  'emergency_contact_name', 'emergency_contact_phone', 'insurance_info',
+])
+
 interface VersionNode {
   id: string
   version_number: number
@@ -113,8 +123,18 @@ export const usePatientStore = create<PatientStore>((set, get) => ({
     if (prevHead) {
       const state = (prevHead.state_jsonb as any) ?? {}
       const nextState = { ...state }
-      // Field keys in `fields` are dot paths like "demographics.name". Apply each.
-      for (const [path, value] of Object.entries(fields)) {
+      // Keys arrive in two shapes and BOTH must land in the same place:
+      //   - dot paths ("demographics.name") from older callers
+      //   - flat demographic keys ("name") from PatientDetail's quick-edit,
+      //     which mirrors what the backend accepts (see patients.py — it
+      //     wraps flat keys into `demographics` before validating).
+      // Previously a flat "name" wrote nextState.name while the UI reads
+      // state.demographics.name, so the optimistic edit was invisible and the
+      // field appeared to revert until the refetch landed.
+      for (const [rawPath, value] of Object.entries(fields)) {
+        const path = !rawPath.includes('.') && DEMOGRAPHIC_KEYS.has(rawPath)
+          ? `demographics.${rawPath}`
+          : rawPath
         const parts = path.split('.')
         let cursor: any = nextState
         for (let i = 0; i < parts.length - 1; i++) {

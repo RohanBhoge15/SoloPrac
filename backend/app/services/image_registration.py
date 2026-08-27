@@ -19,21 +19,18 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
-import json
-import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
-
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # ─── Registration Result ────────────────────────────
+
 
 @dataclass
 class ComparisonMetrics:
@@ -44,6 +41,7 @@ class ComparisonMetrics:
     num_good_matches: int = 0
     match_ratio: float = 0.0
     homography_confidence: float = 0.0
+
 
 @dataclass
 class RegistrationResult:
@@ -58,6 +56,7 @@ class RegistrationResult:
 
 
 # ─── Image Registration Service ─────────────────────
+
 
 class ImageRegistrationService:
     """ORB-based image registration for clinical wound/skin comparison.
@@ -90,7 +89,8 @@ class ImageRegistrationService:
         self._orb = None
         self._output_dir = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "uploads", "comparisons",
+            "uploads",
+            "comparisons",
         )
 
     def _ensure_output_dir(self):
@@ -100,6 +100,7 @@ class ImageRegistrationService:
         """Lazy-load OpenCV ORB detector."""
         if self._orb is None:
             import cv2
+
             self._orb = cv2.ORB_create(
                 nfeatures=self.nfeatures,
                 scaleFactor=self.scale_factor,
@@ -130,13 +131,15 @@ class ImageRegistrationService:
         # Validate inputs
         if not os.path.exists(image_prev_path):
             return RegistrationResult(
-                status="error", matched=False,
+                status="error",
+                matched=False,
                 metrics=ComparisonMetrics(),
                 message=f"Previous image not found: {image_prev_path}",
             )
         if not os.path.exists(image_curr_path):
             return RegistrationResult(
-                status="error", matched=False,
+                status="error",
+                matched=False,
                 metrics=ComparisonMetrics(),
                 message=f"Current image not found: {image_curr_path}",
             )
@@ -147,7 +150,8 @@ class ImageRegistrationService:
 
         if img_prev is None or img_curr is None:
             return RegistrationResult(
-                status="error", matched=False,
+                status="error",
+                matched=False,
                 metrics=ComparisonMetrics(),
                 message="Failed to load one or both images",
             )
@@ -163,7 +167,8 @@ class ImageRegistrationService:
 
         if des_prev is None or des_curr is None:
             return RegistrationResult(
-                status="error", matched=False,
+                status="error",
+                matched=False,
                 metrics=ComparisonMetrics(),
                 message="No features detected in one or both images",
                 keypoints_prev=len(kp_prev) if kp_prev is not None else 0,
@@ -187,7 +192,11 @@ class ImageRegistrationService:
 
         logger.info(
             "ORB: prev=%d keypoints, curr=%d keypoints, matches=%d, good=%d (ratio=%.2f)",
-            len(kp_prev), len(kp_curr), len(matches), num_matches, match_ratio,
+            len(kp_prev),
+            len(kp_curr),
+            len(matches),
+            num_matches,
+            match_ratio,
         )
 
         # Step 4: Check if we have enough matches for homography
@@ -202,7 +211,8 @@ class ImageRegistrationService:
                 color_histogram_shift=self._compute_color_shift(img_prev, img_curr),
             )
             return RegistrationResult(
-                status="ok", matched=False,
+                status="ok",
+                matched=False,
                 metrics=metrics,
                 overlay_path=overlay_path,
                 keypoints_prev=len(kp_prev),
@@ -231,7 +241,8 @@ class ImageRegistrationService:
                 color_histogram_shift=self._compute_color_shift(img_prev, img_curr),
             )
             return RegistrationResult(
-                status="ok", matched=False,
+                status="ok",
+                matched=False,
                 metrics=metrics,
                 overlay_path=overlay_path,
                 keypoints_prev=len(kp_prev),
@@ -274,7 +285,10 @@ class ImageRegistrationService:
 
         logger.info(
             "Registration complete: area_change=%.1f%% edge=%.4f color_shift=%.4f overlay=%s",
-            area_change, edge_score, color_shift, overlay_path,
+            area_change,
+            edge_score,
+            color_shift,
+            overlay_path,
         )
 
         return RegistrationResult(
@@ -291,13 +305,16 @@ class ImageRegistrationService:
     # ─── Metrics Computation ─────────────────────────
 
     def _compute_area_change(
-        self, warped_prev: np.ndarray, img_curr: np.ndarray,
+        self,
+        warped_prev: np.ndarray,
+        img_curr: np.ndarray,
     ) -> float:
         """Estimate percentage area change between aligned images.
 
         Uses grayscale threshold difference as a proxy for tissue/area change.
         """
         import cv2
+
         gray_prev = cv2.cvtColor(warped_prev, cv2.COLOR_BGR2GRAY)
         gray_curr = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
 
@@ -316,13 +333,16 @@ class ImageRegistrationService:
         return (changed_pixels / max(total_pixels, 1)) * 100.0
 
     def _compute_edge_convergence(
-        self, gray_prev: np.ndarray, gray_curr: np.ndarray,
+        self,
+        gray_prev: np.ndarray,
+        gray_curr: np.ndarray,
     ) -> float:
         """Compute Canny edge convergence score between two images.
 
         Higher score = better edge alignment.
         """
         import cv2
+
         edges_prev = cv2.Canny(gray_prev, 50, 150)
         edges_curr = cv2.Canny(gray_curr, 50, 150)
 
@@ -339,7 +359,9 @@ class ImageRegistrationService:
         return inter_sum / union_sum
 
     def _compute_color_shift(
-        self, img_prev: np.ndarray, img_curr: np.ndarray,
+        self,
+        img_prev: np.ndarray,
+        img_curr: np.ndarray,
     ) -> float:
         """Compute color histogram shift as a measure of visual change.
 
@@ -365,10 +387,13 @@ class ImageRegistrationService:
         return float(distance)
 
     def _create_side_by_side(
-        self, img_prev: np.ndarray, img_curr: np.ndarray,
+        self,
+        img_prev: np.ndarray,
+        img_curr: np.ndarray,
     ) -> str:
         """Create a side-by-side comparison when registration fails."""
         import cv2
+
         comparison_id = uuid.uuid4()
         filename = f"sidebyside_{comparison_id}.jpg"
         filepath = os.path.join(self._output_dir, filename)

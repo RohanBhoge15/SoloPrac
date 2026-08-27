@@ -9,6 +9,7 @@ from app.routers import (
     backup,
     calendar,
     certificates,
+    doctor_inbox,  # C-9: doctor-side notification inbox
     documents,
     dpdp,
     evaluation,
@@ -52,3 +53,4 @@ api_router.include_router(backup.router, tags=["admin-backup"])
 api_router.include_router(voice.router, tags=["voice"])
 api_router.include_router(patient_documents.router, tags=["patient-documents"])
 api_router.include_router(jobs.router, tags=["jobs"])
+api_router.include_router(doctor_inbox.router, tags=["doctor-inbox"])  # C-9

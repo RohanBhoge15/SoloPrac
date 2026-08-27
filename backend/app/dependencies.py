@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from typing import Optional
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import get_settings
 from app.database import get_db
 from app.models import Doctor, Patient, User
 from app.schemas import TokenPayload
-from jose import jwt, JWTError
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -23,7 +25,7 @@ async def get_current_doctor(
     request: Request = None,
 ) -> Doctor:
     """Extract and validate JWT, return the Doctor instance.
-    
+
     First tries to use decoded payload from middleware (avoiding double decode).
     Falls back to decoding from Authorization header if middleware didn't run.
     """
@@ -189,12 +191,14 @@ async def get_patient_for_doctor(
 def _make_jti() -> str:
     """Generate a unique JWT ID for blacklist support."""
     import uuid
+
     return uuid.uuid4().hex
 
 
 def create_access_token(sub: str, token_type: str = "access") -> str:
     """Create a short-lived access token (30 minutes)."""
     from datetime import datetime, timedelta, timezone
+
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=settings.JWT_EXPIRATION_MINUTES)
     payload = TokenPayload(sub=sub, jti=_make_jti(), exp=expire, iat=now, type=token_type)
@@ -204,6 +208,7 @@ def create_access_token(sub: str, token_type: str = "access") -> str:
 def create_refresh_token(sub: str) -> str:
     """Create a long-lived refresh token (7 days)."""
     from datetime import datetime, timedelta, timezone
+
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=settings.JWT_REFRESH_EXPIRATION_DAYS)
     payload = TokenPayload(sub=sub, jti=_make_jti(), exp=expire, iat=now, type="refresh")
@@ -213,6 +218,7 @@ def create_refresh_token(sub: str) -> str:
 def create_user_token(user_id: str) -> str:
     """Create a user (patient portal) access token (30 days)."""
     from datetime import datetime, timedelta, timezone
+
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=30)
     payload = TokenPayload(sub=user_id, jti=_make_jti(), exp=expire, iat=now, type="patient")

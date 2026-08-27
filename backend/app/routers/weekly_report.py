@@ -39,7 +39,7 @@ router = APIRouter(tags=["weekly_report"])
 async def generate_weekly_report(
     patient_id: uuid.UUID,
     layout: str = Query("clinical", description=f"Layout: {REPORT_LAYOUTS}"),
-    days: int = Query(7, ge=1, le=90),
+    days: int = Query(7, ge=0, le=3650, description="Lookback window in days; 0 = full patient history"),
     doctor: Doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
@@ -84,7 +84,7 @@ async def get_likert_study_design(
 async def generate_report_ai_summary(
     patient_id: uuid.UUID,
     layout: str = Query("clinical"),
-    days: int = Query(7, ge=1, le=90),
+    days: int = Query(7, ge=0, le=3650, description="Lookback window in days; 0 = full patient history"),
     doctor: Doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
@@ -105,7 +105,7 @@ async def generate_report_ai_summary(
 async def download_weekly_report_pdf(
     patient_id: uuid.UUID,
     layout: str = Query("clinical", description=f"Layout: {REPORT_LAYOUTS}"),
-    days: int = Query(7, ge=1, le=90),
+    days: int = Query(7, ge=0, le=3650, description="Lookback window in days; 0 = full patient history"),
     doctor: Doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ):
@@ -190,7 +190,29 @@ async def download_weekly_report_pdf(
     if not pdf_path:
         raise HTTPException(status_code=404, detail="Report PDF could not be generated")
 
-    # Trigger email notification to patient (if patient has email)
+    # ── In-app notification (independent of SMTP) ──
+    # The patient web-app inbox must receive the "report ready" item even
+    # when no SMTP credentials are configured (email falls back silently).
+    try:
+        from app.services.notification_generator import generate_and_dispatch
+
+        await generate_and_dispatch(
+            db,
+            event_type="weekly_report_ready",
+            patient_id=patient_id,
+            doctor_id=doctor.id,
+            meta={
+                "resource_type": "weekly_report",
+                "layout": layout,
+                "pdf_url": f"/api/v1/patient/me/weekly-report/pdf?layout={layout}",
+            },
+            patient_name=patient_name,
+            layout=layout,
+        )
+    except Exception as exc:
+        logger.warning("weekly report in-app notification dispatch failed: %s", exc)
+
+    # Trigger email notification to patient (if patient has email + SMTP)
     try:
         await email_queue.enqueue(
             email_type="weekly_report_ready",

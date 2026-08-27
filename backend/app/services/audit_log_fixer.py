@@ -17,12 +17,12 @@ Expected events (from UpdatedIdea.MD):
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Set
 from datetime import datetime, timezone
+from typing import Any, Dict, Set
 from uuid import UUID
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
 
 from app.models import AuditLog
 
@@ -31,46 +31,72 @@ logger = logging.getLogger(__name__)
 # Complete event type taxonomy for paper
 ALL_EVENT_TYPES = {
     "auth": {
-        "doctor_login", "doctor_logout", "patient_login", "patient_logout",
-        "patient_otp_sent", "token_refresh", "password_reset",
+        "doctor_login",
+        "doctor_logout",
+        "patient_login",
+        "patient_logout",
+        "patient_otp_sent",
+        "token_refresh",
+        "password_reset",
     },
     "patient": {
-        "patient_created", "patient_updated", "patient_deleted",
+        "patient_created",
+        "patient_updated",
+        "patient_deleted",
     },
     "version": {
-        "version_created", "version_reverted", "version_diff_viewed",
+        "version_created",
+        "version_reverted",
+        "version_diff_viewed",
     },
     "appointment": {
-        "appointment_created", "appointment_rescheduled", "appointment_cancelled",
+        "appointment_created",
+        "appointment_rescheduled",
+        "appointment_cancelled",
         "appointment_booked_portal",
     },
     "document": {
-        "document_uploaded", "document_parsed", "document_saved_to_patient",
+        "document_uploaded",
+        "document_parsed",
+        "document_saved_to_patient",
     },
     "image": {
-        "image_uploaded", "image_compared", "comparison_saved_to_record",
+        "image_uploaded",
+        "image_compared",
+        "comparison_saved_to_record",
     },
     "prescription": {
-        "prescription_created", "prescription_pdf_downloaded",
+        "prescription_created",
+        "prescription_pdf_downloaded",
     },
     "invoice": {
-        "invoice_generated", "invoice_status_changed", "invoice_pdf_downloaded",
+        "invoice_generated",
+        "invoice_status_changed",
+        "invoice_pdf_downloaded",
     },
     "certificate": {
-        "certificate_created", "certificate_verified", "certificate_pdf_downloaded",
+        "certificate_created",
+        "certificate_verified",
+        "certificate_pdf_downloaded",
     },
     "settings": {
-        "working_hours_changed", "settings_changed",
+        "working_hours_changed",
+        "settings_changed",
         "notification_preferences_changed",
     },
     "notification": {
-        "notification_sent", "notification_read", "notification_email_sent",
+        "notification_sent",
+        "notification_read",
+        "notification_email_sent",
     },
     "portal": {
-        "portal_login", "report_accessed",
+        "portal_login",
+        "report_accessed",
     },
     "security": {
-        "login_failed", "rls_violation_attempted", "rate_limit_exceeded",
+        "login_failed",
+        "rls_violation_attempted",
+        "rate_limit_exceeded",
     },
 }
 
@@ -87,9 +113,7 @@ async def check_audit_completeness(db: AsyncSession) -> Dict[str, Any]:
     Returns:
         Report of present and missing event types.
     """
-    result = await db.execute(
-        select(func.distinct(AuditLog.event_type))
-    )
+    result = await db.execute(select(func.distinct(AuditLog.event_type)))
     existing_events: Set[str] = set(row[0] for row in result.all())
 
     # Categorize
@@ -122,7 +146,9 @@ async def check_audit_completeness(db: AsyncSession) -> Dict[str, Any]:
 
     logger.info(
         "Audit completeness: %d/%d event types logged (%.1f%%)",
-        total_present, EXPECTED_EVENT_COUNT, coverage_pct,
+        total_present,
+        EXPECTED_EVENT_COUNT,
+        coverage_pct,
     )
 
     return report

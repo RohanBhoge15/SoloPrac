@@ -51,7 +51,7 @@ try:
 except Exception as _magic_exc:  # ImportError, OSError from libmagic lookup
     _magic = None
     logger.info(
-        "python-magic/libmagic unavailable (%s) — MIME sniffing falls back to " "file extensions via mimetypes.",
+        "python-magic/libmagic unavailable (%s) — MIME sniffing falls back to file extensions via mimetypes.",
         _magic_exc,
     )
 
@@ -289,7 +289,7 @@ class ParserRouter:
             import cv2
             import numpy as np
         except ImportError:
-            logger.info("OpenCV/NumPy unavailable — handwriting detection degrades to a " "filename guess.")
+            logger.info("OpenCV/NumPy unavailable — handwriting detection degrades to a filename guess.")
             return self._guess_handwriting_from_filename(file_path)
 
         try:
@@ -378,7 +378,7 @@ class ParserRouter:
             }
             votes = sum(signals.values())
             logger.debug(
-                "Handwriting heuristic for %s: height_cv=%.3f baseline_jitter=%.3f " "stroke_cv=%.3f votes=%d",
+                "Handwriting heuristic for %s: height_cv=%.3f baseline_jitter=%.3f stroke_cv=%.3f votes=%d",
                 os.path.basename(file_path),
                 height_cv,
                 baseline_jitter,
@@ -388,7 +388,7 @@ class ParserRouter:
             return votes >= 2
         except Exception as exc:
             logger.warning(
-                "Handwriting detection failed for %s (%s) — falling back to " "filename guess.",
+                "Handwriting detection failed for %s (%s) — falling back to filename guess.",
                 file_path,
                 exc,
             )
@@ -468,21 +468,58 @@ class ParserRouter:
         return text, confidence
 
     async def _parse_handwritten(self, file_path: str) -> Tuple[str, float]:
-        """Parse handwritten document: Nanonets-OCR2-1.5B-exp -> MedGemma fallback."""
-        text, confidence = await self._ocr_service.nanonnets_ocr_parse(file_path)
-        if not text.strip() or confidence < 0.3:
-            # Fallback to MedGemma
-            text2, conf2 = await self._ocr_service.medgemma_parse(file_path)
-            if len(text2) > len(text):
-                return text2, conf2
+        """Parse "handwritten" documents.
+
+        The handwriting classifier (_detect_handwriting) uses image-content
+        heuristics that misfire on stylized / high-contrast graphics — a
+        screenshot of printed text on a bright background can look like
+        handwriting to the row-projection detector. So we ALWAYS try
+        RapidOCR (printed-text OCR) first. If it succeeds, great; if not,
+        fall back to MedGemma (VLM).
+
+        MedGemma also refuses some medical-looking images citing safety
+        ("I cannot extract text from a medical document…") — we detect that
+        specific refusal pattern and treat it as an empty result rather than
+        propagating garbage back to the user.
+        """
+        # First attempt: fast printed-text OCR (RapidOCR under the surya_parse name).
+        text, confidence = await self._ocr_service.surya_parse(file_path)
+        if text.strip() and confidence >= 0.5:
+            return text, confidence
+
+        # Second attempt: VLM.
+        vlm_text, vlm_conf = await self._ocr_service.medgemma_parse(file_path)
+        if self._is_vlm_refusal(vlm_text):
+            logger.info("MedGemma refused OCR; falling back to whatever RapidOCR produced.")
+            return text, confidence  # may be empty — caller handles that
+        if len(vlm_text) > len(text):
+            return vlm_text, vlm_conf
         return text, confidence
 
+    @staticmethod
+    def _is_vlm_refusal(text: str) -> bool:
+        """Detect the boilerplate refusal patterns MedGemma emits for medical images."""
+        if not text:
+            return False
+        low = text.strip().lower()
+        markers = (
+            "i cannot extract",
+            "i am not able to",
+            "i'm sorry, but i cannot",
+            "i am sorry, but i cannot",
+            "cannot access external",
+            "as an ai",
+        )
+        return any(m in low for m in markers)
+
     async def _parse_photo(self, file_path: str) -> Tuple[str, float]:
-        """Parse photo: Surya -> MedGemma re-check."""
+        """Parse photo: RapidOCR (surya_parse) first; MedGemma VLM re-check
+        only if RapidOCR was unconfident. Guard against MedGemma's medical-image
+        refusal replies so we don't return "I cannot extract text..." as OCR."""
         text, confidence = await self._ocr_service.surya_parse(file_path)
         if confidence < 0.5:
             text2, conf2 = await self._ocr_service.medgemma_parse(file_path)
-            if len(text2) > len(text):
+            if not self._is_vlm_refusal(text2) and len(text2) > len(text):
                 return text2, conf2
         return text, confidence
 
@@ -639,7 +676,29 @@ class OCRService:
         Falls back to PyPDF2 or pdfminer if Docling isn't installed.
         """
         try:
+            # Docling 2.x compiles its layout/detection models with
+            # torch.compile by default. On a CPU-only torch install that JITs a
+            # CUDA kernel (cuda_utils.c) which fails with "No working C++
+            # compiler" / missing libcuda, killing the whole conversion. The
+            # image ships g++ but no CUDA runtime, so disable compilation and
+            # run eager — slower but correct on this hardware.
+            #
+            # Env var must be set BEFORE the docling import: pydantic-settings
+            # reads DOCLING_* at instantiation time (module import). Mutating
+            # the singleton afterwards is too late for engine options that
+            # default from `defaults()`. Both are applied for belt-and-braces.
+            import os as _docling_os
+
+            _docling_os.environ.setdefault("DOCLING_INFERENCE_COMPILE_TORCH_MODELS", "false")
+
             from docling.document_converter import DocumentConverter
+
+            try:
+                from docling.datamodel.settings import settings as _docling_settings
+
+                _docling_settings.inference.compile_torch_models = False
+            except Exception:
+                pass
 
             converter = DocumentConverter()
             result = converter.convert(file_path)

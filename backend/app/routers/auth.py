@@ -133,13 +133,21 @@ DEV_DOCTOR_EMAIL = "dev.doctor@soloprac.local"
 
 
 @router.post("/dev-login")
-async def dev_login(response: Response, db: AsyncSession = Depends(get_db)):
+async def dev_login(
+    response: Response,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """DEV ONLY — log in as a seeded demo doctor without Google OAuth.
 
     Guarded by settings.DEBUG so it cannot exist in production. Upserts a
     single demo doctor and returns the same JWT pair the OAuth callback issues.
     Sets HttpOnly cookies instead of returning tokens in body.
     """
+    # Prior signature omitted `request: Request` but the body below reads
+    # `request.headers` / `request.client` — every dev-login raised NameError,
+    # swallowed by the outer try/except at line ~180, so the DoctorSession row
+    # silently never got created. Adding the parameter is the whole fix.
     if not settings.DEBUG:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -169,16 +177,25 @@ async def dev_login(response: Response, db: AsyncSession = Depends(get_db)):
         from app.models import DoctorSession
 
         payload = _jwt.decode(access_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        # Must be the token's `jti` (unique per token), NOT `sub` (the doctor_id,
+        # which is constant across logins). Using `sub` collided with the unique
+        # index ix_doctor_sessions_token_jti on the SECOND login onward; the
+        # IntegrityError then poisoned the session with PendingRollbackError and
+        # the whole request 500'd — so a doctor could log in exactly once.
         session = DoctorSession(
             doctor_id=doctor.id,
-            token_jti=payload.get("sub", ""),
+            token_jti=payload.get("jti", ""),
             device_info=request.headers.get("user-agent", "Unknown"),
             ip_address=request.client.host if request.client else None,
         )
         db.add(session)
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Session tracking is best-effort — log and continue so login still
+        # succeeds. Roll back first: a failed flush leaves the session
+        # unusable, and any later commit on it re-raises PendingRollbackError.
+        logger.warning("session tracking write failed: %s", exc)
+        await db.rollback()
 
     return {"status": "ok", "doctor": {"id": str(doctor.id), "email": doctor.email}}
 
@@ -265,6 +282,12 @@ async def get_active_sessions(
         .limit(20)
     )
     sessions = result.scalars().all()
+    # Plain-English summary rendered directly by Settings.tsx (sessions.note).
+    note = (
+        f"Your session lasts up to {SESSION_TIMEOUT_MINUTES} minutes and refreshes "
+        f"automatically for up to {settings.JWT_REFRESH_EXPIRATION_DAYS} days. "
+        "Signing out anywhere ends all active sessions."
+    )
     return {
         "sessions": [
             {
@@ -276,6 +299,7 @@ async def get_active_sessions(
             }
             for s in sessions
         ],
+        "note": note,
         "access_token_expiry_minutes": SESSION_TIMEOUT_MINUTES,
         "refresh_token_expiry_days": settings.JWT_REFRESH_EXPIRATION_DAYS,
     }
@@ -414,8 +438,12 @@ async def update_doctor_profile(
         )
         db.add(audit)
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("audit write failed: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
     lat, lng = _doctor_location_to_latlng(current_doctor)
     return {
@@ -697,8 +725,12 @@ async def update_doctor_settings(
         )
         db.add(audit)
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("audit write failed: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
     return {
         "status": "ok",
@@ -740,11 +772,23 @@ async def register_doctor(
         verification_status="unverified",
         settings={},
     )
+    # Optional geo-pin from the register form. Same PostGIS pattern as the
+    # profile-update endpoint — write to the `location` geography column so
+    # patients can find this doctor via the DoctorSearch radius query.
+    if body.latitude is not None and body.longitude is not None:
+        from sqlalchemy import func as _sf
+
+        doctor.location = _sf.ST_SetSRID(_sf.ST_MakePoint(body.longitude, body.latitude), 4326)
     db.add(doctor)
     await db.commit()
     await db.refresh(doctor)
 
-    # Audit log
+    # Capture values BEFORE the audit block — a failed commit + rollback
+    # expires all ORM objects, making attribute access raise MissingGreenlet.
+    doctor_id = str(doctor.id)
+    doctor_email = doctor.email
+
+    # Audit log — best-effort, never block registration.
     try:
         audit = AuditLog(
             doctor_id=doctor.id,
@@ -755,20 +799,28 @@ async def register_doctor(
         )
         db.add(audit)
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("audit write failed: %s", exc)
+        # A failed commit aborts the Postgres transaction and corrupts the
+        # session state — every subsequent attribute access on detached
+        # objects raises.  Roll back to restore a usable session so the
+        # rest of the handler (cookie-setting, response) can proceed.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
-    logger.info("New doctor registered: %s (%s)", doctor.email, doctor.id)
+    logger.info("New doctor registered: %s (%s)", doctor_email, doctor_id)
 
-    access_token = create_access_token(str(doctor.id))
-    refresh_token = create_refresh_token(str(doctor.id))
+    access_token = create_access_token(doctor_id)
+    refresh_token = create_refresh_token(doctor_id)
     _set_auth_cookies(response, access_token, refresh_token)
 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "doctor": {"id": str(doctor.id), "email": doctor.email},
+        "doctor": {"id": doctor_id, "email": doctor_email},
     }
 
 
@@ -801,6 +853,9 @@ async def login_doctor(
         )
 
     # Login success
+    doctor_id = str(doctor.id)
+    doctor_email = doctor.email
+
     try:
         audit = AuditLog(
             doctor_id=doctor.id,
@@ -811,16 +866,20 @@ async def login_doctor(
         )
         db.add(audit)
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("audit write failed: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
-    access_token = create_access_token(str(doctor.id))
-    refresh_token = create_refresh_token(str(doctor.id))
+    access_token = create_access_token(doctor_id)
+    refresh_token = create_refresh_token(doctor_id)
     _set_auth_cookies(response, access_token, refresh_token)
 
     return {
         "status": "ok",
-        "doctor": {"id": str(doctor.id), "email": doctor.email},
+        "doctor": {"id": doctor_id, "email": doctor_email},
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
@@ -850,23 +909,33 @@ async def submit_verification(
     current_doctor.state_medical_council = body.state_medical_council
     current_doctor.year_of_registration = body.year_of_registration
 
-    # Check if NMC API is configured for real verification
+    # Verification policy — the previous default was to auto-mark ANY doctor
+    # as `verified` (with hardcoded qualification="MBBS") whenever the NMC
+    # integration env vars were missing. In default configuration that meant
+    # every registrant became a fully verified, patient-searchable doctor
+    # without any external check. That is unsafe.
+    #
+    # Correct default: mark `pending_verification` and let an admin approve via
+    # the /admin/verifications/* endpoints after inspecting the registration
+    # number. When the real NMC integration is wired later, this branch can flip
+    # back to programmatic verification.
+    #
+    # The literal MUST stay `pending_verification`: that exact value is what
+    # admin.py filters the pending queue on and gates approve/reject with, and
+    # what init-schema.sql and the Doctor.verification_status comment document.
+    # A short-lived `pending_admin_review` spelling here meant submitted doctors
+    # never showed up in the admin queue and could never be approved, so they
+    # could never appear in patient search.
     from app.config import settings as _settings
 
     if _settings.NMC_API_URL and _settings.NMC_API_KEY:
         # TODO: Call real NMC API to verify registration number
-        # Example: response = await httpx.get(f"{_settings.NMC_API_URL}/verify", ...)
-        # For now, mark as pending until real API is wired
+        # response = await httpx.get(f"{_settings.NMC_API_URL}/verify", ...)
+        # For now, still route to admin review until the integration lands.
         current_doctor.verification_status = "pending_verification"
     else:
-        # No NMC API configured — mark as verified directly (localhost/testing)
-        from datetime import datetime as _dt
-        from datetime import timezone as _tz
-
-        current_doctor.verification_status = "verified"
-        current_doctor.verified_at = _dt.now(_tz.utc)
-        current_doctor.abdm_verified_at = _dt.now(_tz.utc)
-        current_doctor.qualification = "MBBS"
+        # No NMC API configured — admin review required.
+        current_doctor.verification_status = "pending_verification"
 
     await db.commit()
     await db.refresh(current_doctor)
@@ -887,12 +956,21 @@ async def submit_verification(
         )
         db.add(audit)
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("audit write failed: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
     return {
-        "status": "verified",
-        "message": "Doctor verified successfully via ABDM.",
+        "status": current_doctor.verification_status,
+        "message": (
+            "Verification submitted. Our team will review your registration "
+            "details and update your status shortly. You can use the full app "
+            "in the meantime — you just won't appear in patient search until "
+            "verification is complete."
+        ),
         "registration_number": body.registration_number,
         "state_medical_council": body.state_medical_council,
         "qualification": current_doctor.qualification,
@@ -922,8 +1000,12 @@ async def logout(
         )
         db.add(audit)
         await db.commit()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("audit write failed: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
     return {"status": "ok", "message": "Logged out successfully"}
 
@@ -988,8 +1070,9 @@ async def delete_my_account(
         )
         db.add(audit)
         await db.flush()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Audit write is best-effort — don't block account deletion on log-write errors.
+        logger.warning("audit write failed: %s", exc)
 
     await db.delete(current_doctor)
     await db.commit()

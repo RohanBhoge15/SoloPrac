@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_doctor
 from app.models import AuditLog, Patient, PatientVersion, PrescriptionBox
+from app.services.clinical_significance import clinical_significance_from_tags
 from app.services.notification_generator import generate_and_dispatch
 from app.services.pdf_generator import pdf_generator
 from app.services.storage import storage_service
@@ -113,7 +114,7 @@ async def create_prescription(
             meta={
                 "resource_type": "prescription",
                 "resource_id": str(rx.id),
-                "pdf_url": f"/api/v1/prescriptions/{rx.id}/pdf" if pdf_path else None,
+                "pdf_url": f"/api/v1/patients/{patient_id}/prescriptions/{rx.id}/pdf" if pdf_path else None,
             },
             patient_name=body.get("patient_name", "Patient"),
             doctor_name=doctor.name,
@@ -230,12 +231,23 @@ async def approve_prescription(
         summary=f"Prescription: {diagnosis}" if diagnosis else "Prescription approved",
         tags=["prescription"]
         + (["new_diagnosis"] if diagnosis and diagnosis not in clinical.get("diagnoses", [])[:-1] else []),
-        clinical_significance=0.7 if diagnosis else 0.3,
+        clinical_significance=clinical_significance_from_tags(
+            ["prescription"]
+            + (["new_diagnosis"] if diagnosis and diagnosis not in clinical.get("diagnoses", [])[:-1] else [])
+        ),
     )
 
     # Link prescription to the new version
     rx.version_id = new_version.id
     await db.commit()
+
+    # Index the newly minted version inline so it is immediately retrievable/groundable.
+    try:
+        from app.services.indexer import index_version
+
+        await index_version(db, new_version, patient, doctor.id)
+    except Exception as exc:
+        logger.warning("Failed to index prescription version %s: %s", new_version.id, exc)
 
     # Audit log
     try:

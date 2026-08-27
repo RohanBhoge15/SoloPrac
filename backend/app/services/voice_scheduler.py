@@ -48,7 +48,7 @@ class ASRService:
 
                 if os.path.isabs(model_path) and not os.path.exists(model_path):
                     raise FileNotFoundError(
-                        f"Whisper model not found at {model_path}. " "Set WHISPER_PATH in .env or install the model."
+                        f"Whisper model not found at {model_path}. Set WHISPER_PATH in .env or install the model."
                     )
                 self._whisper_model = WhisperModel(model_path, device="cpu", compute_type="int8")
                 logger.info("Loaded faster-whisper model: %s", model_path)

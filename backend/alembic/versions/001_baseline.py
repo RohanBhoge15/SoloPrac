@@ -6,9 +6,11 @@ Create Date: 2026-07-27
 """
 
 from typing import Sequence, Union
-from alembic import op
+
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+
+from alembic import op
 
 revision: str = "001_baseline"
 down_revision: Union[str, None] = None

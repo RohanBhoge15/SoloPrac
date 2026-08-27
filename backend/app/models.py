@@ -112,6 +112,8 @@ class Doctor(Base):
     appointments = relationship("Appointment", back_populates="doctor")
     audit_logs = relationship("AuditLog", back_populates="doctor")
     sessions = relationship("DoctorSession", back_populates="doctor")
+    # C-9: doctor-side notification inbox (mirrors PatientNotification pattern)
+    notifications = relationship("DoctorNotification", back_populates="doctor")
 
 
 class Patient(Base):
@@ -156,7 +158,7 @@ class Patient(Base):
     notifications = relationship("PatientNotification", back_populates="patient")
 
 
-EDIT_TYPE_CHOICES = {"manual", "voice", "ocr", "ai_suggestion", "revert"}
+EDIT_TYPE_CHOICES = {"manual", "voice", "ocr", "ai_suggestion", "revert", "status_update"}
 
 
 class PatientVersion(Base):
@@ -383,6 +385,43 @@ class PatientNotification(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     patient = relationship("Patient", back_populates="notifications")
+
+
+class DoctorNotification(Base):
+    """C-9: Doctor-side notification inbox.
+
+    Mirrors PatientNotification but keyed on doctor_id only. Populated by
+    app.services.notification_generator.create_doctor_notification whenever
+    a doctor-relevant event fires (e.g. patient books, verification result,
+    weekly report ready). Delivered live over the /ws/doctor/{id} WebSocket
+    and surfaced by GET /doctor/me/inbox.
+    """
+
+    __tablename__ = "doctor_notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    doctor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("doctors.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind = Column(String(50), nullable=False)
+    subject = Column(String(255), nullable=False)
+    body = Column(Text, nullable=False)
+    meta = Column(JSONB, nullable=True)  # {resource_type, resource_id, patient_name, appointment_time, ...}
+    read = Column(Boolean, default=False)
+    # Optional patient linkage for click-through. SET NULL so deleting the
+    # patient doesn't nuke the doctor's audit trail of past notifications.
+    patient_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("patients.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    doctor = relationship("Doctor", back_populates="notifications")
 
 
 class AuditLog(Base):

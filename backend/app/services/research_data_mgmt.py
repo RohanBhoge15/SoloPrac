@@ -19,8 +19,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ async def export_langfuse_metrics(
     # ── Feature A: Temporal Multimodal RAG ──
     async def _feature_a():
         from app.services.evaluation import EvaluationHarness
+
         harness = EvaluationHarness()
         await harness.generate_test_data(doctor_id=doctor_id, num_patients=5, num_visits=4)
         results = await harness.run_full_evaluation(doctor_id=doctor_id, num_patients=5)
@@ -73,13 +75,15 @@ async def export_langfuse_metrics(
     # ── Feature B: Self-Planning Agent ──
     async def _feature_b():
         from app.services.feature_b_eval import FeatureBEvaluator
+
         evaluator = FeatureBEvaluator()
         return await evaluator.run_evaluation(doctor_id=doctor_id)
 
     # ── Feature C: Cross-Modal Projector ──
     async def _feature_c():
-        from app.services.feature_c_projector import ProjectorTrainer, generate_synthetic_pairs
         from app.services.feature_c_eval import evaluate_projector
+        from app.services.feature_c_projector import ProjectorTrainer, generate_synthetic_pairs
+
         trainer = ProjectorTrainer()
         train_imgs, train_texts = generate_synthetic_pairs(num_pairs=200, seed=42)
         result = trainer.train(train_imgs, train_texts)
@@ -98,6 +102,7 @@ async def export_langfuse_metrics(
     # ── Feature E: Trajectory Clustering ──
     async def _feature_e():
         from app.services.feature_e_clustering import run_full_evaluation as run_e_eval
+
         return run_e_eval(num_patients=50, inject_deteriorations=5)
 
     # ── Feature F: Weekly Reports (Likert) ──
@@ -304,6 +309,7 @@ async def get_research_data_report(
     langfuse_available = False
     try:
         from app.services.langfuse import langfuse_client
+
         langfuse_available = langfuse_client.is_enabled
     except Exception:
         pass

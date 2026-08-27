@@ -17,13 +17,14 @@ In production, swap Redis URL to a managed Redis instance.
 from __future__ import annotations
 
 import hashlib
-import secrets
 import logging
+import secrets
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from uuid import UUID
-from jose import jwt, JWTError
+
+from jose import JWTError, jwt
 
 from app.config import settings
 
@@ -44,6 +45,7 @@ class PatientAuthService:
         """Get Redis connection via shared singleton (connection pooled)."""
         try:
             from app.services.redis import redis_service
+
             return await redis_service.connect()
         except Exception:
             logger.warning("Redis not available, falling back to in-memory OTP")
@@ -80,6 +82,7 @@ class PatientAuthService:
 
         # Fallback: in-memory (non-persistent, dev only, thread-safe via lock)
         from app.services.patient_auth import _in_memory_otp_lock, _in_memory_otp_store
+
         with _in_memory_otp_lock:
             _in_memory_otp_store[phone] = {
                 "otp": otp,
@@ -125,6 +128,7 @@ class PatientAuthService:
         # Fallback: in-memory (thread-safe via lock)
         if not stored_otp:
             from app.services.patient_auth import _in_memory_otp_lock, _in_memory_otp_store
+
             with _in_memory_otp_lock:
                 stored = _in_memory_otp_store.get(phone)
                 if stored:
@@ -164,9 +168,10 @@ class PatientAuthService:
         Uses SHA256(phone) for fast indexed lookup — no O(n) decryption.
         Does NOT create a Patient record (no doctor context yet).
         """
+        from sqlalchemy import select
+
         from app.database import async_session_maker
         from app.models import User as UserModel
-        from sqlalchemy import select
 
         phone_hash = PatientAuthService._phone_hash(phone)
 
@@ -187,9 +192,7 @@ class PatientAuthService:
 
         async with async_session_maker() as db:
             # Fast indexed lookup by phone_hash
-            result = await db.execute(
-                select(UserModel).where(UserModel.phone_hash == phone_hash)
-            )
+            result = await db.execute(select(UserModel).where(UserModel.phone_hash == phone_hash))
             user = result.scalar_one_or_none()
 
             if user:
@@ -232,6 +235,7 @@ class PatientAuthService:
     def _create_token(user_id: str) -> str:
         """Create a user (patient portal) JWT token (30 day expiry)."""
         from app.dependencies import create_user_token
+
         return create_user_token(user_id)
 
     @staticmethod

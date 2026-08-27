@@ -43,6 +43,17 @@ dependencies = [
     "parler-tts>=0.2.0",
     "soundfile>=0.12.0",
     "onnxruntime>=1.28.0",
+    # OCR: RapidOCR (PaddleOCR ONNX port, ~15 MB). Called via `surya_parse`
+    # in document_parser.OCRService — the function name is legacy, the impl
+    # is RapidOCR. Without this, every image-to-text extraction returns
+    # empty string and users see "No text extracted from this document".
+    "rapidocr_onnxruntime>=1.4.0",
+    # OCR: Docling (IBM, MIT) — typed-PDF layout parser, called via
+    # document_parser.OCRService.docling_parse. It was referenced by the code
+    # and docs since the initial build but never declared here, so the image
+    # silently degraded to the PyPDF2 fallback for typed PDFs. Declared now so
+    # a fresh image actually ships the documented pipeline.
+    "docling>=2.0.0",
     "misaki>=0.9.4",
     "phonemizer>=3.3.0",
     "espeakng-loader>=0.1.2",

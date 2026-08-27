@@ -14,11 +14,11 @@ Usage:
 
 from __future__ import annotations
 
-import time
 import logging
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from collections import defaultdict
 from uuid import UUID
 
 from sqlalchemy import text
@@ -161,9 +161,7 @@ class CalendarSecurityService:
         """
         results = {}
         try:
-            row = await db_session.execute(
-                text("SELECT relrowsecurity FROM pg_class WHERE relname = 'appointments'")
-            )
+            row = await db_session.execute(text("SELECT relrowsecurity FROM pg_class WHERE relname = 'appointments'"))
             rls_enabled = row.scalar()
             results["appointments"] = {
                 "rls_enabled": bool(rls_enabled),

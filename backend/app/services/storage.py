@@ -24,10 +24,8 @@ missing MinIO never breaks application startup.
 
 from __future__ import annotations
 
-import os
 import logging
-from typing import Optional, BinaryIO
-from datetime import timedelta
+from typing import Optional
 
 import boto3
 from botocore.client import Config
@@ -108,7 +106,8 @@ class StorageService:
                 # real error to its caller if the store is truly down.
                 logger.warning(
                     "Could not verify bucket %s (object store unreachable?): %s",
-                    bucket_name, e,
+                    bucket_name,
+                    e,
                 )
                 self._buckets_ready = False
                 return

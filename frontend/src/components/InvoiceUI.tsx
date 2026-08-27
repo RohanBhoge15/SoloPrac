@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { cn } from '@/utils/helpers'
+import { cn, printPdfViaBlob } from '@/utils/helpers'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -149,7 +149,8 @@ export function InvoiceUI({ patientId, className }: InvoiceUIProps) {
                   <Button variant="outline" size="sm" onClick={() => window.open(result.pdf_path, '_blank')}>
                     <Download className="h-3 w-3 mr-1" /> PDF
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => window.open(result.pdf_path, '_blank')}>
+                  {/* D-7: Print button now actually triggers print (was identical to Download). */}
+                  <Button variant="outline" size="sm" onClick={() => result.id && printPdfViaBlob(`/patients/${patientId}/invoices/${result.id}/pdf`)}>
                     <Printer className="h-3 w-3 mr-1" /> Print
                   </Button>
                 </>

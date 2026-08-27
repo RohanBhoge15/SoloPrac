@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback } from 'react'
-import { cn } from '@/utils/helpers'
+import { cn, openPdfViaBlob, printPdfViaBlob } from '@/utils/helpers'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -282,10 +282,11 @@ export function PrescriptionBox({
           {result?.pdf_path && (
             <div className="flex items-center gap-2">
               <Badge variant="default" className="bg-green-100 text-green-700">PDF Ready</Badge>
-              <Button variant="outline" size="sm" onClick={() => window.open(result.pdf_path, '_blank')}>
+              <Button variant="outline" size="sm" onClick={() => openPdfViaBlob(`/patients/${patientId}/prescriptions/${result.id}/pdf`)}>
                 <Download className="h-3 w-3 mr-1" /> Download
               </Button>
-              <Button variant="outline" size="sm" onClick={() => window.open(result.pdf_path, '_blank')}>
+              {/* D-7: Print button now actually triggers print (was identical to Download). */}
+              <Button variant="outline" size="sm" onClick={() => result.id && printPdfViaBlob(`/patients/${patientId}/prescriptions/${result.id}/pdf`)}>
                 <Printer className="h-3 w-3 mr-1" /> Print
               </Button>
             </div>

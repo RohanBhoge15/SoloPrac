@@ -111,7 +111,7 @@ async def create_certificate(
             meta={
                 "resource_type": "certificate",
                 "resource_id": str(cert.id),
-                "pdf_url": f"/api/v1/certificates/{cert.id}/pdf" if pdf_path else None,
+                "pdf_url": f"/api/v1/patients/{patient_id}/certificates/{cert.id}/pdf" if pdf_path else None,
             },
             patient_name=body.get("patient_name", "Patient"),
             cert_type=cert_type.replace("_", " ").title(),

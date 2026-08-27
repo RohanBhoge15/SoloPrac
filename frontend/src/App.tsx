@@ -19,6 +19,7 @@ const Calendar = lazy(() => import('@/pages/Calendar').then(m => ({ default: m.C
 const Scratchpad = lazy(() => import('@/pages/Scratchpad').then(m => ({ default: m.Scratchpad })))
 const Settings = lazy(() => import('@/pages/Settings').then(m => ({ default: m.Settings })))
 const PatientDetail = lazy(() => import('@/pages/PatientDetail').then(m => ({ default: m.PatientDetail })))
+const PatientNew = lazy(() => import('@/pages/PatientNew').then(m => ({ default: m.PatientNew })))
 const Chat = lazy(() => import('@/pages/Chat').then(m => ({ default: m.Chat })))
 const PatientRegistration = lazy(() => import('@/pages/PatientRegistration').then(m => ({ default: m.PatientRegistration })))
 const PatientDashboard = lazy(() => import('@/pages/PatientDashboard').then(m => ({ default: m.PatientDashboard })))
@@ -189,6 +190,9 @@ function AppRoutes() {
         <Route path="/chat" element={<Chat />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/weekly-report" element={<WeeklyReport />} />
+        {/* /patients/new MUST come before /patients/:id — otherwise the
+            dynamic segment eats "new" as an id and PatientDetail 404s. */}
+        <Route path="/patients/new" element={<PatientNew />} />
         <Route path="/patients/:id" element={<PatientDetail />} />
       </Route>
       <Route path="/" element={<RootRedirect />} />

@@ -23,6 +23,7 @@ from app.dependencies import get_current_doctor
 from app.models import AuditLog, Patient, PatientVersion
 from app.routers.patients import _mint_version
 from app.services.batch_import import batch_import_prescription_pdf
+from app.services.clinical_significance import clinical_significance_from_tags
 from app.services.document_parser import parser_router
 from app.services.notification_generator import generate_and_dispatch as _dispatch_notification
 from app.services.storage import storage_service
@@ -37,10 +38,11 @@ async def _background_index_version(version_id: str, patient_id: str, doctor_id:
     try:
         import uuid as _uuid
 
-        from app.database import async_session_maker
+        from app.database import async_session_maker, set_rls_context
         from app.services.indexer import index_version
 
         async with async_session_maker() as db:
+            await set_rls_context(db, doctor_id=doctor_id)
             result = await db.execute(select(PatientVersion).where(PatientVersion.id == _uuid.UUID(version_id)))
             version = result.scalar_one_or_none()
             if not version:
@@ -86,18 +88,14 @@ async def _check_upload_rate_limit(doctor_id: str) -> bool:
         return True
 
 
-async def _record_upload(doctor_id: str):
-    """Record upload in Redis for rate limiting."""
-    try:
-        from app.services.redis import redis_service
-
-        client = await redis_service.connect()
-        key = f"rate_limit:upload:{doctor_id}"
-        current = await client.incr(key)
-        if current == 1:
-            await client.expire(key, 60)
-    except Exception:
-        pass
+# NOTE: previously a second `_record_upload(doctor_id)` helper existed that
+# also `INCR`'d the same Redis key. `_check_upload_rate_limit` above already
+# increments (line 79) and checks against the ceiling atomically, so a
+# post-check `_record_upload()` would either double-count uploads (if
+# awaited) or emit "coroutine never awaited" warnings and never increment
+# at all (which was the actual bug prior to this fix, since the caller
+# forgot `await`). Delete the helper and rely on the check-and-increment
+# in `_check_upload_rate_limit` alone.
 
 
 @router.post("/parse")
@@ -166,7 +164,12 @@ async def parse_document(
         logger.error("S3 upload failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(exc)[:200]}")
 
-    _record_upload(doctor_id_str)
+    # Rate-limit accounting is done by `_check_upload_rate_limit` above — it
+    # INCRs the same Redis key atomically. Prior code also called
+    # `_record_upload(...)` here without `await`, which never actually ran
+    # (just emitted a "coroutine never awaited" warning), so uploads were
+    # counted exactly once by the check itself. Keep it that way — no extra
+    # increment.
 
     # ─── P0.7: async path (default) ─────────────────────────────────────
     # Enqueue the OCR job and return 202. The arq worker downloads from S3,
@@ -250,7 +253,7 @@ async def parse_document(
                 author=f"doctor:{doctor.id}",
                 summary=f"Document uploaded: {file.filename} ({result.get('doc_type', 'unknown')})",
                 tags=["document", result.get("doc_type", "general")],
-                clinical_significance=0.5,
+                clinical_significance=clinical_significance_from_tags(["document"]),
             )
             logger.info("Created PatientVersion %s for document %s", version.id, doc_id)
 
@@ -326,6 +329,11 @@ async def parse_document(
         "size": len(content),
     }
     response.update(result)
+    # Normalize fields the frontend renders unconditionally — the parser's error
+    # branches (and some format-detection early returns) may omit these, and
+    # `undefined * 100 = NaN` on the client shows up as "Confidence: NaN%" / "NaNs".
+    response.setdefault("confidence", 0.0)
+    response.setdefault("took_ms", 0.0)
     return response
 
 
@@ -392,7 +400,7 @@ async def save_document_to_patient(
         author=f"doctor:{doctor.id}",
         summary=summary,
         tags=["document", "uploaded"],
-        clinical_significance=0.5,
+        clinical_significance=clinical_significance_from_tags(["document"]),
     )
 
     # Index in background (non-blocking)
@@ -456,7 +464,15 @@ async def get_document_file(
     doc_id: str,
     doctor=Depends(get_current_doctor),
 ):
-    """Get a presigned URL for a document file in S3."""
+    """Return the raw document bytes for in-app viewing.
+
+    We used to redirect the browser to a presigned MinIO URL. That URL is
+    signed against MINIO_ENDPOINT which in this deploy is `minio:9000` — a
+    Docker-internal hostname the browser can't resolve. Symptom: Axios
+    reports "Network Error" the moment it follows the 307. Streaming the
+    file through the backend sidesteps the whole hostname-rewrite dance
+    (backend can reach `minio:9000` just fine).
+    """
     try:
         files = await storage_service.list_files("documents", f"documents/{doctor.id}/{doc_id}")
         if not files:
@@ -468,13 +484,26 @@ async def get_document_file(
         raise HTTPException(status_code=500, detail="Failed to retrieve document")
 
     s3_key = files[0]
-    presigned_url = await storage_service.get_presigned_url(s3_key, expires_in=3600)
-    if not presigned_url:
-        raise HTTPException(status_code=500, detail="Failed to generate URL")
+    try:
+        content = await storage_service.download_file(bucket_type="documents", key=s3_key)
+    except Exception as exc:
+        logger.error("S3 download failed for %s: %s", s3_key, exc)
+        raise HTTPException(status_code=500, detail="Failed to download document")
 
-    from fastapi.responses import RedirectResponse
+    # Infer content-type from extension so the frontend viewer picks
+    # <img> vs <iframe> correctly.
+    import mimetypes
 
-    return RedirectResponse(url=presigned_url)
+    guessed, _ = mimetypes.guess_type(s3_key)
+    media_type = guessed or "application/octet-stream"
+
+    from fastapi.responses import Response
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=60"},
+    )
 
 
 @router.get("/avatar/{doctor_id}")
@@ -492,15 +521,30 @@ async def get_doctor_avatar(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid doctor ID")
 
-    # Try common extensions
+    # Try common extensions. Stream bytes through the backend rather than
+    # redirecting to a presigned URL — MINIO_ENDPOINT (minio:9000) isn't
+    # resolvable from the browser, and this endpoint is called by <img>
+    # tags in patient search results where a Network Error just breaks
+    # the whole card.
+    import mimetypes
+
+    from fastapi.responses import Response
+
     for ext in [".jpg", ".jpeg", ".png", ".webp"]:
         s3_key = f"avatars/{doctor_id}{ext}"
         try:
             files = await storage_service.list_files("documents", s3_key)
             if files:
-                presigned_url = await storage_service.get_presigned_url(files[0], expires_in=3600)
-                if presigned_url:
-                    return RedirectResponse(url=presigned_url)
+                try:
+                    content = await storage_service.download_file(bucket_type="documents", key=files[0])
+                except Exception:
+                    continue
+                guessed, _ = mimetypes.guess_type(files[0])
+                return Response(
+                    content=content,
+                    media_type=guessed or "image/jpeg",
+                    headers={"Cache-Control": "public, max-age=300"},
+                )
         except Exception:
             continue
 

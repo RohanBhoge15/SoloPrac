@@ -7,7 +7,6 @@ Handles Indian phone formats: +91-9876543210, 919876543210, 09876543210, etc.
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 
 def normalize_phone(phone: str) -> str:

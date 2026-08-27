@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -24,6 +24,13 @@ interface AppointmentDetailProps {
 export function AppointmentDetail({ appointment, onClose, onReschedule, onCancel }: AppointmentDetailProps) {
   const [confirmCancel, setConfirmCancel] = useState(false)
 
+  // R-8 / modal ESC rollout: close on Escape key.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   const startDate = new Date(appointment.start_at)
   const endDate = new Date(appointment.end_at)
   const duration = Math.round((endDate.getTime() - startDate.getTime()) / 60000)
@@ -35,7 +42,16 @@ export function AppointmentDetail({ appointment, onClose, onReschedule, onCancel
   }[appointment.status] || 'bg-gray-100 text-gray-800'
 
   return (
-    <Card className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+    // Audit note: outer element was a <Card> being abused as a fullscreen
+    // backdrop. Swapped for a plain <div> so the backdrop isn't a Card and the
+    // inner Card gets proper dialog semantics.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Appointment details"
+    >
       <Card className="w-full max-w-md mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-lg">
@@ -110,6 +126,6 @@ export function AppointmentDetail({ appointment, onClose, onReschedule, onCancel
           </div>
         </CardContent>
       </Card>
-    </Card>
+    </div>
   )
 }

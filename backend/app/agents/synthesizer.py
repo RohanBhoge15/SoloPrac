@@ -81,7 +81,7 @@ class MaverickSynthesizer:
             self._client = AsyncOpenAI(
                 api_key=settings.NIM_API_KEY,
                 base_url=settings.NIM_BASE_URL,
-                timeout=20.0,
+                timeout=120.0,
                 max_retries=0,
             )
             logger.info("MaverickSynthesizer: NIM client initialized (model=%s)", settings.MAVERICK_MODEL)
@@ -162,6 +162,10 @@ class MaverickSynthesizer:
         import asyncio as _asyncio
 
         try:
+            # nemotron-3.5 defaults to emitting a long "thinking process" block;
+            # reasoning_effort=none makes it answer directly, which is what the
+            # app surfaces to users. (The param is ignored harmlessly by models
+            # that don't support it.)
             response = await _asyncio.wait_for(
                 self._client.chat.completions.create(
                     model=settings.MAVERICK_MODEL,
@@ -169,8 +173,9 @@ class MaverickSynthesizer:
                     temperature=0.3,
                     max_tokens=2048,
                     response_format=response_format,
+                    reasoning_effort="none",
                 ),
-                timeout=60.0,
+                timeout=120.0,
             )
 
             content = response.choices[0].message.content
@@ -219,8 +224,9 @@ class MaverickSynthesizer:
                             messages=messages,
                             temperature=0.3,
                             max_tokens=2048,
+                            reasoning_effort="none",
                         ),
-                        timeout=60.0,
+                        timeout=120.0,
                     )
                     content = response.choices[0].message.content
                     logger.info(
@@ -341,7 +347,7 @@ class MaverickSynthesizer:
 
         response = await _asyncio.wait_for(
             self._groq_client.chat.completions.create(
-                model=settings.VISION_MODEL,
+                model=settings.GROQ_MODEL,
                 messages=messages,
                 temperature=0.3,
                 max_tokens=2048,
@@ -352,7 +358,7 @@ class MaverickSynthesizer:
         return {
             "response": response.choices[0].message.content or "",
             "citations": [],
-            "model": f"groq/{settings.VISION_MODEL}",
+            "model": f"groq/{settings.GROQ_MODEL}",
             "structured": None,
             "usage": {},
         }

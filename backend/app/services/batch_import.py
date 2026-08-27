@@ -22,21 +22,18 @@ Usage:
 
 from __future__ import annotations
 
-import uuid
-import os
-import json
 import logging
+import os
 import tempfile
+import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import PyPDF2
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
-from app.config import settings
-from app.models import Patient, AuditLog
+from app.models import AuditLog, Patient
 from app.routers.patients import _mint_version
 from app.services.document_parser import ParserRouter
 from app.services.indexer import index_version
@@ -81,7 +78,13 @@ async def batch_import_prescription_pdf(
     # ── Step 1: Verify patient exists ──
     patient = await db.get(Patient, patient_id)
     if not patient or patient.doctor_id != doctor_id:
-        return {"status": "error", "message": "Patient not found", "pages_processed": 0, "versions": [], "errors": ["Patient not found or not owned by doctor"]}
+        return {
+            "status": "error",
+            "message": "Patient not found",
+            "pages_processed": 0,
+            "versions": [],
+            "errors": ["Patient not found or not owned by doctor"],
+        }
 
     # ── Step 2: Split PDF into page files ──
     page_paths: List[str] = []
@@ -91,11 +94,23 @@ async def batch_import_prescription_pdf(
         page_paths = _split_pdf_pages(pdf_bytes, page_temp_dir, filename)
     except Exception as exc:
         logger.error("PDF split failed: %s", exc)
-        return {"status": "error", "message": f"PDF split failed: {exc}", "pages_processed": 0, "versions": [], "errors": [str(exc)]}
+        return {
+            "status": "error",
+            "message": f"PDF split failed: {exc}",
+            "pages_processed": 0,
+            "versions": [],
+            "errors": [str(exc)],
+        }
 
     total_pages = len(page_paths)
     if total_pages == 0:
-        return {"status": "error", "message": "PDF has no pages", "pages_processed": 0, "versions": [], "errors": ["Empty PDF"]}
+        return {
+            "status": "error",
+            "message": "PDF has no pages",
+            "pages_processed": 0,
+            "versions": [],
+            "errors": ["Empty PDF"],
+        }
 
     if total_pages > MAX_PAGES:
         logger.warning("PDF has %d pages, truncating to %d", total_pages, MAX_PAGES)
@@ -165,8 +180,7 @@ async def batch_import_prescription_pdf(
             # If this is a prescription with medication data, promote it
             if doc_type == "prescription" and structured.get("medications_found"):
                 state["clinical"]["medications"] = [
-                    {"drug": m, "source": f"import_page_{page_num}"}
-                    for m in structured["medications_found"]
+                    {"drug": m, "source": f"import_page_{page_num}"} for m in structured["medications_found"]
                 ]
             if structured.get("dates_mentioned"):
                 state["clinical"]["dates_mentioned"] = structured["dates_mentioned"]
@@ -194,19 +208,25 @@ async def batch_import_prescription_pdf(
             except Exception as exc:
                 logger.warning("Qdrant indexing failed for page %d version %s: %s", page_num, version.id, exc)
 
-            versions_created.append({
-                "id": str(version.id),
-                "version_number": version.version_number,
-                "page_number": page_num,
-                "summary": version.summary,
-                "doc_type": doc_type,
-                "confidence": confidence,
-                "parent_version_id": str(parent_version_id) if page_num > 1 else None,
-            })
+            versions_created.append(
+                {
+                    "id": str(version.id),
+                    "version_number": version.version_number,
+                    "page_number": page_num,
+                    "summary": version.summary,
+                    "doc_type": doc_type,
+                    "confidence": confidence,
+                    "parent_version_id": str(parent_version_id) if page_num > 1 else None,
+                }
+            )
 
             logger.info(
                 "Batch import page %d/%d → version v%d (conf=%.2f, type=%s)",
-                page_num, total_pages, version.version_number, confidence, doc_type,
+                page_num,
+                total_pages,
+                version.version_number,
+                confidence,
+                doc_type,
             )
 
         except Exception as exc:
@@ -221,6 +241,7 @@ async def batch_import_prescription_pdf(
     if page_temp_dir and os.path.isdir(page_temp_dir):
         try:
             import shutil
+
             shutil.rmtree(page_temp_dir, ignore_errors=True)
         except Exception:
             pass

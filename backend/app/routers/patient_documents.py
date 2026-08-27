@@ -54,27 +54,40 @@ async def get_patient_documents(
     # `sum(4 queries)` to `max(4 queries)` — typically 4x on this endpoint.
 
     async def _fetch_prescriptions() -> List[Dict[str, Any]]:
+        # PrescriptionBox has no `diagnosis_short` / `medications` columns — the
+        # payload lives entirely inside `rx_jsonb` (see models.py:226). Prior
+        # code accessed `rx.diagnosis_short` which raised AttributeError; the
+        # broad `except` below silently dropped every prescription from the
+        # patient's documents timeline. Fix: read from `rx_jsonb`.
         out: List[Dict[str, Any]] = []
         try:
+            from app.database import set_rls_context
+
             async with async_session_maker() as s:
+                await set_rls_context(s, doctor_id=str(doctor.id))
                 rx_result = await s.execute(
                     select(PrescriptionBox)
                     .where(PrescriptionBox.patient_id == patient_id)
                     .order_by(PrescriptionBox.created_at.desc())
                 )
                 for rx in rx_result.scalars().all():
+                    rx_data = rx.rx_jsonb or {}
+                    diagnosis = rx_data.get("diagnosis_short") or rx_data.get("diagnosis") or "Untitled"
+                    meds = rx_data.get("medications") or []
                     out.append(
                         {
                             "id": str(rx.id),
                             "type": "prescription",
-                            "title": f"Prescription — {rx.diagnosis_short or 'Untitled'}",
+                            "title": f"Prescription — {diagnosis}",
                             "date": rx.created_at.isoformat() if rx.created_at else None,
                             "has_pdf": bool(rx.pdf_path),
-                            "pdf_url": f"/api/v1/prescriptions/{rx.id}/pdf" if rx.pdf_path else None,
+                            "pdf_url": f"/api/v1/patients/{patient_id}/prescriptions/{rx.id}/pdf"
+                            if rx.pdf_path
+                            else None,
                             "version_number": None,
                             "metadata": {
-                                "diagnosis": rx.diagnosis_short,
-                                "medications_count": len(rx.medications) if rx.medications else 0,
+                                "diagnosis": diagnosis,
+                                "medications_count": len(meds) if isinstance(meds, list) else 0,
                             },
                         }
                     )
@@ -86,6 +99,7 @@ async def get_patient_documents(
         out: List[Dict[str, Any]] = []
         try:
             async with async_session_maker() as s:
+                await set_rls_context(s, doctor_id=str(doctor.id))
                 inv_result = await s.execute(
                     select(Invoice).where(Invoice.patient_id == patient_id).order_by(Invoice.generated_at.desc())
                 )
@@ -97,7 +111,7 @@ async def get_patient_documents(
                             "title": f"Invoice #{inv.invoice_number}",
                             "date": inv.generated_at.isoformat() if inv.generated_at else None,
                             "has_pdf": bool(inv.pdf_path),
-                            "pdf_url": f"/api/v1/invoices/{inv.id}/pdf" if inv.pdf_path else None,
+                            "pdf_url": f"/api/v1/patients/{patient_id}/invoices/{inv.id}/pdf" if inv.pdf_path else None,
                             "version_number": None,
                             "metadata": {
                                 "total": inv.total,
@@ -111,23 +125,30 @@ async def get_patient_documents(
         return out
 
     async def _fetch_certificates() -> List[Dict[str, Any]]:
+        # Certificate uses `issued_at` (models.py:278), not `created_at`. Prior
+        # code referenced `cert.created_at` twice — AttributeError → silently
+        # dropped every certificate from the timeline.
         out: List[Dict[str, Any]] = []
         try:
             async with async_session_maker() as s:
+                await set_rls_context(s, doctor_id=str(doctor.id))
                 cert_result = await s.execute(
                     select(Certificate)
                     .where(Certificate.patient_id == patient_id)
-                    .order_by(Certificate.created_at.desc())
+                    .order_by(Certificate.issued_at.desc())
                 )
                 for cert in cert_result.scalars().all():
+                    cert_type = cert.cert_type or "certificate"
                     out.append(
                         {
                             "id": str(cert.id),
                             "type": "certificate",
-                            "title": f"{cert.cert_type.replace('_', ' ').title()} Certificate",
-                            "date": cert.created_at.isoformat() if cert.created_at else None,
+                            "title": f"{cert_type.replace('_', ' ').title()} Certificate",
+                            "date": cert.issued_at.isoformat() if cert.issued_at else None,
                             "has_pdf": bool(cert.pdf_path),
-                            "pdf_url": f"/api/v1/certificates/{cert.id}/pdf" if cert.pdf_path else None,
+                            "pdf_url": f"/api/v1/patients/{patient_id}/certificates/{cert.id}/pdf"
+                            if cert.pdf_path
+                            else None,
                             "version_number": None,
                             "metadata": {
                                 "verification_code": cert.verification_code,
@@ -142,6 +163,7 @@ async def get_patient_documents(
         out: List[Dict[str, Any]] = []
         try:
             async with async_session_maker() as s:
+                await set_rls_context(s, doctor_id=str(doctor.id))
                 ver_result = await s.execute(
                     select(PatientVersion)
                     .where(PatientVersion.patient_id == patient_id)

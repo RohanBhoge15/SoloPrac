@@ -8,11 +8,10 @@ This produces a JSON report suitable for paper tables.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
-from uuid import UUID, uuid4
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,7 @@ async def collect_all_metrics(
     logger.info("=== Feature A: Temporal Multimodal RAG ===")
     try:
         from app.services.evaluation import EvaluationHarness
+
         harness = EvaluationHarness()
         await harness.generate_test_data(doctor_id=doctor_id, num_patients=10, num_visits=6)
         feature_a = await harness.run_full_evaluation(doctor_id=doctor_id, num_patients=10)
@@ -58,6 +58,7 @@ async def collect_all_metrics(
     logger.info("=== Feature B: Self-Planning Agent ===")
     try:
         from app.services.feature_b_eval import FeatureBEvaluator
+
         evaluator = FeatureBEvaluator()
         feature_b = await evaluator.run_evaluation(doctor_id=doctor_id)
         results["features"]["B"] = feature_b
@@ -70,8 +71,8 @@ async def collect_all_metrics(
     if include_feature_c:
         logger.info("=== Feature C: Cross-Modal Projector ===")
         try:
-            from app.services.feature_c_projector import ProjectorTrainer, generate_synthetic_pairs
             from app.services.feature_c_eval import evaluate_projector
+            from app.services.feature_c_projector import ProjectorTrainer, generate_synthetic_pairs
 
             trainer = ProjectorTrainer()
             train_imgs, train_texts = generate_synthetic_pairs(num_pairs=500, seed=42)
@@ -91,7 +92,7 @@ async def collect_all_metrics(
     # Feature D: Schema Alignment (uses existing evaluation.py test dataset)
     logger.info("=== Feature D: Schema Alignment ===")
     try:
-        from app.services.evaluation import generate_test_dataset
+
         # Feature D eval: pass rate per doc type
         results["features"]["D"] = {
             "prescription_pass_rate": 0.92,
@@ -114,6 +115,7 @@ async def collect_all_metrics(
         logger.info("=== Feature E: Trajectory Clustering ===")
         try:
             from app.services.feature_e_clustering import run_full_evaluation as run_e_eval
+
             feature_e = run_e_eval(num_patients=100, inject_deteriorations=10)
             results["features"]["E"] = feature_e
             logger.info("Feature E complete")

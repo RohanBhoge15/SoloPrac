@@ -15,16 +15,14 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from functools import wraps
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Doctor, Patient, Appointment
+from app.models import Doctor, Patient
 from app.services.redis import redis_service
 
 logger = logging.getLogger(__name__)
@@ -33,28 +31,37 @@ logger = logging.getLogger(__name__)
 
 CACHE_PREFIX = "soloprac"
 
+
 def _key(*parts: str) -> str:
     return f"{CACHE_PREFIX}:{':'.join(parts)}"
+
 
 def patients_key(doctor_id: UUID) -> str:
     return _key("patients", str(doctor_id))
 
+
 def patient_key(patient_id: UUID) -> str:
     return _key("patient", str(patient_id))
+
 
 def doctor_settings_key(doctor_id: UUID) -> str:
     return _key("doctor:settings", str(doctor_id))
 
+
 def working_hours_key(doctor_id: UUID) -> str:
     return _key("doctor:wh", str(doctor_id))
+
 
 def slots_key(doctor_id: UUID, date_from: str, date_to: str) -> str:
     return _key("slots", str(doctor_id), date_from, date_to)
 
+
 def notifications_key(patient_id: UUID) -> str:
     return _key("notifications", str(patient_id))
 
+
 # ─── Cache Invalidation ────────────────────────────────────
+
 
 async def invalidate_cache(*keys: str) -> int:
     """Delete one or more cache keys. Returns count deleted."""
@@ -66,12 +73,14 @@ async def invalidate_cache(*keys: str) -> int:
             logger.warning("Cache invalidation failed for %s: %s", k, exc)
     return total
 
+
 async def invalidate_patient_cache(doctor_id: UUID, patient_id: Optional[UUID] = None) -> None:
     """Invalidate patient-related caches (call on patient write)."""
     keys = [patients_key(doctor_id)]
     if patient_id:
         keys.append(patient_key(patient_id))
     await invalidate_cache(*keys)
+
 
 async def invalidate_doctor_cache(doctor_id: UUID) -> None:
     """Invalidate doctor-related caches (call on settings/working-hours change)."""
@@ -80,7 +89,9 @@ async def invalidate_doctor_cache(doctor_id: UUID) -> None:
         working_hours_key(doctor_id),
     )
 
+
 # ─── Cached DB Accessors ───────────────────────────────────
+
 
 async def cached_patients(
     db: AsyncSession,
@@ -94,17 +105,17 @@ async def cached_patients(
         logger.debug("Cache hit: patients for doctor %s", doctor_id)
         return cached
 
-    result = await db.execute(
-        select(Patient).where(Patient.doctor_id == doctor_id).order_by(Patient.created_at.desc())
-    )
+    result = await db.execute(select(Patient).where(Patient.doctor_id == doctor_id).order_by(Patient.created_at.desc()))
     patients = []
     for p in result.scalars().all():
-        patients.append({
-            "id": str(p.id),
-            "name": f"Patient {str(p.id)[:8]}",
-            "created_at": p.created_at.isoformat() if p.created_at else None,
-            "head_version_id": str(p.head_version_id) if p.head_version_id else None,
-        })
+        patients.append(
+            {
+                "id": str(p.id),
+                "name": f"Patient {str(p.id)[:8]}",
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "head_version_id": str(p.head_version_id) if p.head_version_id else None,
+            }
+        )
 
     # Also try to get names from head versions
     for idx, p in enumerate(patients):
@@ -136,12 +147,14 @@ async def cached_doctor_settings(
 
 # ─── Eager Loading Optimization ────────────────────────────
 
+
 def eager_patient_query(patient_id: UUID) -> Any:
     """Build a patient query with eager-loaded relationships.
 
     Prevents N+1 queries when accessing patient with related data.
     """
     from sqlalchemy.orm import joinedload
+
     return (
         select(Patient)
         .options(
@@ -160,15 +173,16 @@ def eager_patient_query(patient_id: UUID) -> Any:
 
 # These are applied in database.py — just utilities here
 POOL_TUNING = {
-    "pool_size": 20,          # Increased from 10 — handle concurrent requests
-    "max_overflow": 40,       # Increased from 20 — burst capacity
-    "pool_pre_ping": True,    # Verify connections before use
-    "pool_recycle": 3600,     # Recycle connections after 1 hour
-    "pool_use_lifo": True,    # Use LIFO for better connection reuse
+    "pool_size": 20,  # Increased from 10 — handle concurrent requests
+    "max_overflow": 40,  # Increased from 20 — burst capacity
+    "pool_pre_ping": True,  # Verify connections before use
+    "pool_recycle": 3600,  # Recycle connections after 1 hour
+    "pool_use_lifo": True,  # Use LIFO for better connection reuse
 }
 
 
 # ─── Error Fixes Utility ───────────────────────────────────
+
 
 async def safe_get_patient(
     db: AsyncSession,

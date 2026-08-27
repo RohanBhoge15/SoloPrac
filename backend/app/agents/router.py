@@ -15,7 +15,25 @@ logger = logging.getLogger(__name__)
 
 # Fallback classification (no API key) — regex-based for development
 INTENT_KEYWORDS: dict[AgentIntent, list[str]] = {
-    AgentIntent.PATIENT_QA: ["what", "show", "tell", "status", "trend", "history", "last", "when", "how"],
+    AgentIntent.PATIENT_QA: [
+        "what",
+        "show",
+        "tell",
+        "status",
+        "trend",
+        "history",
+        "last",
+        "when",
+        "how",
+        "summarize",
+        "summary",
+        "brief",
+        "overview",
+        "describe",
+        "recap",
+        "give me",
+        "list",
+    ],
     AgentIntent.IMAGE_ANALYSIS: ["analyze", "look at", "xray", "x-ray", "image", "photo", "scan", "wound"],
     AgentIntent.IMAGE_COMPARE: ["compare", "overlay", "healing", "progress", "before", "after", "change"],
     AgentIntent.DOCUMENT_PARSE: ["upload", "document", "pdf", "scan", "read", "extract", "ocr", "parse"],

@@ -5,13 +5,23 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { AppointmentDetail } from '@/components/AppointmentDetail'
 import { apiClient } from '@/services/api'
 import { Plus, ChevronLeft, ChevronRight, Loader2, AlertCircle, X, Search, User, Calendar as CalendarIcon, Clock } from 'lucide-react'
-import { format, startOfWeek, endOfWeek, eachDayOfInterval, addWeeks, subWeeks, isToday } from 'date-fns'
+import { format, startOfWeek, endOfWeek, eachDayOfInterval, addWeeks, subWeeks, addDays, subDays, isToday } from 'date-fns'
 import { ConfirmationDialog } from '@/components/ui/ConfirmationDialog'
 import { toast } from '@/components/ui/Toast'
+import { useAuth } from '@/contexts/AuthContext'
+import { useDoctorWebSocket } from '@/hooks/useWebSocket'
 
+// D-5 (AUDIT.md): hour 12 was rendered as "12:00 AM" because the old ternary
+// (`h > 12 ? PM : AM`) grouped noon into the AM branch. Use an explicit
+// 12-hour clock mapping so 0 → 12 AM, 12 → 12 PM, 13..23 → 1..11 PM.
 const TIME_SLOTS = Array.from({ length: 16 }, (_, i) => {
   const h = 8 + i
-  return { label: h > 12 ? `${h - 12}:00 PM` : `${h}:00 AM`, value: h * 60 }
+  const label =
+    h === 0 ? '12:00 AM'
+    : h < 12 ? `${h}:00 AM`
+    : h === 12 ? '12:00 PM'
+    : `${h - 12}:00 PM`
+  return { label, value: h * 60 }
 })
 
 interface PatientResult {
@@ -54,15 +64,28 @@ export function Calendar() {
   const weekEnd = endOfWeek(currentWeek, { weekStartsOn: 1 })
   const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd })
 
+  // Depend on the FORMATTED strings, not the Date objects. `weekStart`/`weekEnd`
+  // are recomputed as fresh Date instances on every render (new reference each
+  // time), so listing them as deps to useCallback made the callback identity
+  // change every render → the useEffect below re-fired → setAppointments →
+  // re-render → new Dates → infinite "Loading appointments…" loop.
+  const weekFromStr = format(weekStart, 'yyyy-MM-dd')
+  const weekToStr = format(weekEnd, 'yyyy-MM-dd')
+
+  // The backend treats date_from/date_to as UTC day boundaries, but this grid
+  // reasons in LOCAL time. For any non-UTC timezone (IST is UTC+5:30) the local
+  // week spills past those boundaries, so a strict range clips appointments at
+  // the edges. Pad one day either side to guarantee a superset — the grid then
+  // filters exactly via getAppointmentForSlot's local-time comparison.
+  const fetchFromStr = format(subDays(weekStart, 1), 'yyyy-MM-dd')
+  const fetchToStr = format(addDays(weekEnd, 1), 'yyyy-MM-dd')
+
   const fetchAppointments = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
       const response = await apiClient.get('/calendar/appointments', {
-        params: {
-          date_from: format(weekStart, 'yyyy-MM-dd'),
-          date_to: format(weekEnd, 'yyyy-MM-dd'),
-        },
+        params: { date_from: fetchFromStr, date_to: fetchToStr },
       })
       setAppointments(response.data?.appointments || [])
     } catch {
@@ -71,17 +94,26 @@ export function Calendar() {
     } finally {
       setLoading(false)
     }
-  }, [weekStart, weekEnd])
+  }, [fetchFromStr, fetchToStr])
+
+  // ── Live updates ──
+  // Subscribe to the doctor WebSocket so patient bookings / cancels / reschedules
+  // appear on the calendar instantly instead of requiring a manual refresh.
+  const { user } = useAuth()
+  const { lastEvent } = useDoctorWebSocket(user?.id ?? null)
+  useEffect(() => {
+    if (!lastEvent) return
+    const kind = lastEvent.data?.kind ?? lastEvent.type ?? ''
+    if (typeof kind === 'string' && kind.toLowerCase().includes('appointment')) {
+      fetchAppointments()
+    }
+  }, [lastEvent, fetchAppointments])
 
   const fetchSlots = useCallback(async () => {
     setLoadingSlots(true)
     try {
       const response = await apiClient.get('/calendar/slots', {
-        params: {
-          date_from: format(weekStart, 'yyyy-MM-dd'),
-          date_to: format(weekEnd, 'yyyy-MM-dd'),
-          duration: 20,
-        },
+        params: { date_from: weekFromStr, date_to: weekToStr, duration: 20 },
       })
       setAvailableSlots(response.data?.slots || [])
     } catch {
@@ -89,7 +121,7 @@ export function Calendar() {
     } finally {
       setLoadingSlots(false)
     }
-  }, [weekStart, weekEnd])
+  }, [weekFromStr, weekToStr])
 
   useEffect(() => { fetchAppointments() }, [fetchAppointments])
 
@@ -125,12 +157,25 @@ export function Calendar() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
+  // D-6 (AUDIT.md): TIME_SLOTS only produces hour buckets (multiples of 60),
+  // but appointments can start at :15 / :30 / :45. The old exact-match against
+  // `HH:MM` dropped those appointments off the grid. Match by (date + hour
+  // bucket) instead. Original start_at is preserved untouched on the object
+  // so downstream display still shows the true minute (e.g. "10:15").
   const getAppointmentForSlot = (day: string, slotMinutes: number) => {
-    const slotTime = day + 'T' + `${String(Math.floor(slotMinutes / 60)).padStart(2, '0')}:${String(slotMinutes % 60).padStart(2, '0')}:00`
+    const slotHour = Math.floor(slotMinutes / 60)
     return appointments.find((a: any) => {
-      const aStart = a.start_at.slice(0, 16)
-      const sStart = slotTime.slice(0, 16)
-      return aStart === sStart
+      if (!a?.start_at) return false
+      // Cancelled appointments should not occupy the grid as active bookings.
+      if (a.status === 'cancelled') return false
+      // Compare in LOCAL time. `start_at` comes back as UTC (…Z), but the grid's
+      // row labels ("9 AM") and its `day` columns are local. String-slicing the
+      // UTC hour out of the ISO text meant a 9 AM IST booking (stored 03:30Z)
+      // was hunted for in the 3 AM row — which isn't rendered at all, so the
+      // appointment silently vanished right after being created.
+      const d = new Date(a.start_at)
+      if (Number.isNaN(d.getTime())) return false
+      return format(d, 'yyyy-MM-dd') === day && d.getHours() === slotHour
     })
   }
 
@@ -322,7 +367,21 @@ export function Calendar() {
             ) : (
               <div className="flex flex-wrap gap-2">
                 {availableSlots.slice(0, 20).map((slot: any, i: number) => (
-                  <button key={i} className="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800">
+                  // D-2 (AUDIT.md): slot buttons were inert. Clicking a slot
+                  // should pre-fill the booking dialog with its date/time/
+                  // duration and close the picker so the doctor can pick a
+                  // patient and confirm.
+                  <button
+                    key={i}
+                    onClick={() => {
+                      if (slot.date) setBookingDate(slot.date)
+                      if (slot.time) setBookingTime(String(slot.time).slice(0, 5))
+                      if (slot.duration_minutes) setBookingDuration(Number(slot.duration_minutes))
+                      setShowSlotPicker(false)
+                      setShowBooking(true)
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800 hover:bg-green-100 dark:hover:bg-green-900/40 transition-colors"
+                  >
                     {slot.date?.slice(5)} {slot.time} ({slot.duration_minutes}min)
                   </button>
                 ))}

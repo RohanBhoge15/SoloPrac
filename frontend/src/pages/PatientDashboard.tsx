@@ -78,7 +78,7 @@ export function PatientDashboard() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardContent className="p-4 flex items-center justify-between">
-            <div><p className="text-sm text-gray-500">Upcoming Appointments</p><p className="text-2xl font-bold">{appointments.filter((a: any) => a.status === 'scheduled').length}</p></div>
+            <div><p className="text-sm text-gray-500">Upcoming Appointments</p><p className="text-2xl font-bold">{appointments.filter((a: any) => a.status === 'scheduled' || a.status === 'confirmed').length}</p></div>
             <CalendarDays className="h-8 w-8 text-primary-600" />
           </CardContent>
         </Card>
@@ -100,7 +100,11 @@ export function PatientDashboard() {
         <Card>
           <CardHeader><CardTitle className="text-sm">Upcoming Appointments</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {appointments.filter((a: any) => a.status === 'scheduled').slice(0, 5).map((apt: any) => (
+            {appointments
+              .filter((a: any) => a.status === 'scheduled' || a.status === 'confirmed')
+              .sort((a: any, b: any) => new Date(a.start_at).getTime() - new Date(b.start_at).getTime())
+              .slice(0, 5)
+              .map((apt: any) => (
               <div key={apt.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
                 <div>
                   <p className="font-medium text-gray-900 dark:text-white">{new Date(apt.start_at).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</p>

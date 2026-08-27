@@ -15,14 +15,13 @@ Usage:
 
 from __future__ import annotations
 
-import uuid
-import json
-import time
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, List, Tuple
+import time
+import uuid
 from collections import defaultdict
-from jose import jwt, JWTError
+from typing import Any, Dict, List, Optional, Tuple
+
+from jose import JWTError, jwt
 
 from app.config import settings
 from app.models import AuditLog
@@ -47,7 +46,8 @@ class VoiceRateLimiter:
         allowed = current < self.default_rpm
         oldest = min(self._buckets[doctor_id]) if self._buckets[doctor_id] else now
         return allowed, {
-            "current_rpm": current, "limit": self.default_rpm,
+            "current_rpm": current,
+            "limit": self.default_rpm,
             "remaining": max(0, self.default_rpm - current),
             "reset_after": round(max(0, 60 - (now - oldest)), 1),
         }

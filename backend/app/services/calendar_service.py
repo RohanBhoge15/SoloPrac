@@ -100,7 +100,7 @@ def get_doctor_settings(doctor: Doctor) -> dict:
         "working_hours": parse_working_hours(settings),
         "auto_email": settings.get("auto_email_on_change", True),
         "max_future_days": settings.get("max_future_booking_days", 30),
-        "max_bookings_per_window": settings.get("max_bookings_per_window"),  # None = unlimited
+        "max_bookings_per_window": settings.get("max_bookings_per_window"),  # None/0 = unlimited
     }
 
 
@@ -148,23 +148,33 @@ async def find_available_slots(
     total_slot_time = dur + buffer
     max_per_window = settings.get("max_bookings_per_window")
 
-    # Get existing appointments for the date range
+    # Clinic timezone: IST = UTC+5:30. Doctor working hours are entered in local
+    # (IST) wall-clock, but Appointment.start_at is stored in UTC. Convert both
+    # sides to UTC so slot generation lines up with the clinic's local day.
+    # TODO: make this a per-doctor `settings.timezone` once multi-region is needed.
+    CLINIC_TZ_OFFSET = timedelta(hours=5, minutes=30)
+
+    # Get existing appointments for the (local) date range, expressed in UTC.
+    utc_from = (datetime.combine(date_from, time.min) - CLINIC_TZ_OFFSET).replace(tzinfo=timezone.utc)
+    utc_to = (datetime.combine(date_to + timedelta(days=1), time.min) - CLINIC_TZ_OFFSET).replace(tzinfo=timezone.utc)
     existing = await db.execute(
         select(Appointment).where(
             Appointment.doctor_id == doctor_id,
-            Appointment.start_at >= datetime.combine(date_from, time.min, tzinfo=timezone.utc),
-            Appointment.start_at < datetime.combine(date_to + timedelta(days=1), time.min, tzinfo=timezone.utc),
+            Appointment.start_at >= utc_from,
+            Appointment.start_at < utc_to,
             Appointment.status.in_(["scheduled", "done"]),
         )
     )
     existing_appts = existing.scalars().all()
 
-    # Build occupied slot map: (date_iso, start_minutes) -> appointment
+    # Build occupied slot map keyed by the appointment's LOCAL (IST) day + minute,
+    # so it lines up with the IST minute-of-day used for candidate slots.
     occupied: Dict[Tuple[str, int], Appointment] = {}
 
     for apt in existing_appts:
-        day_key = apt.start_at.date().isoformat()
-        occupied[(day_key, apt.start_at.hour * 60 + apt.start_at.minute)] = apt
+        ist = apt.start_at + CLINIC_TZ_OFFSET
+        day_key = ist.date().isoformat()
+        occupied[(day_key, ist.hour * 60 + ist.minute)] = apt
 
     slots: List[Dict[str, Any]] = []
     current = date_from
@@ -180,8 +190,8 @@ async def find_available_slots(
                 while slot_start + dur <= wh_end:
                     slot_end = slot_start + dur
 
-                    # Enforce per-window cap
-                    if max_per_window is not None and window_booking_count >= max_per_window:
+                    # Enforce per-window cap. 0 or None = unlimited (open booking).
+                    if max_per_window and window_booking_count >= max_per_window:
                         break
 
                     # Check if slot conflicts with existing appointment (including buffer)
@@ -189,16 +199,22 @@ async def find_available_slots(
                     for occ_start, occ_apt in occupied.items():
                         if occ_start[0] != day_key:
                             continue
-                        occ_end = occ_start[1] + ((occ_apt.end_at.hour * 60 + occ_apt.end_at.minute) - occ_start[1])
+                        occ_end_min = (occ_apt.end_at + CLINIC_TZ_OFFSET).hour * 60 + (
+                            occ_apt.end_at + CLINIC_TZ_OFFSET
+                        ).minute
+                        occ_end = occ_start[1] + (occ_end_min - occ_start[1])
                         # Check overlap with buffer
                         if not (slot_end + buffer <= occ_start[1] or slot_start >= occ_end + buffer):
                             has_conflict = True
                             break
 
                     if not has_conflict:
-                        start_dt = datetime.combine(current, time(0, 0), tzinfo=timezone.utc) + timedelta(
-                            minutes=slot_start
-                        )
+                        local_naive = datetime.combine(current, time(0, 0)) + timedelta(minutes=slot_start)
+                        start_dt = (local_naive - CLINIC_TZ_OFFSET).replace(tzinfo=timezone.utc)
+                        # Don't offer slots that have already passed (local now).
+                        if start_dt <= datetime.now(timezone.utc):
+                            slot_start += total_slot_time
+                            continue
                         end_dt = start_dt + timedelta(minutes=dur)
                         slots.append(
                             {
@@ -322,9 +338,10 @@ async def create_appointment(
             patient_name = "Patient"
             if patient.head_version and patient.head_version.state_jsonb:
                 patient_name = patient.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
-            from app.database import async_session_maker
+            from app.database import async_session_maker, set_rls_context
 
             async with async_session_maker() as notify_db:
+                await set_rls_context(notify_db, doctor_id=str(doctor_id))
                 await generate_and_dispatch(
                     notify_db,
                     event_type="booking_confirmation",
@@ -456,9 +473,10 @@ async def reschedule_appointment(
             pat_name = "Patient"
             if pat and pat.head_version and pat.head_version.state_jsonb:
                 pat_name = pat.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
-            from app.database import async_session_maker
+            from app.database import async_session_maker, set_rls_context
 
             async with async_session_maker() as notify_db:
+                await set_rls_context(notify_db, doctor_id=str(doctor_id))
                 await generate_and_dispatch(
                     notify_db,
                     event_type="reschedule_notification",
@@ -473,6 +491,25 @@ async def reschedule_appointment(
                 )
         except Exception as exc:
             logger.warning("Failed to dispatch reschedule notification: %s", exc)
+
+        # Push a lightweight realtime event to the doctor's own calendar so it
+        # refreshes without a manual reload. (No inbox notification row created.)
+        try:
+            from app.routers.portal import ws_manager
+
+            await ws_manager.notify_doctor(
+                str(doctor_id),
+                {
+                    "type": "realtime",
+                    "data": {
+                        "kind": "appointment_rescheduled",
+                        "resource_id": str(apt.id),
+                        "patient_id": str(apt.patient_id),
+                    },
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to push reschedule realtime event: %s", exc)
 
     return {
         "id": str(apt.id),
@@ -530,9 +567,10 @@ async def cancel_appointment(
             pat_name = "Patient"
             if pat and pat.head_version and pat.head_version.state_jsonb:
                 pat_name = pat.head_version.state_jsonb.get("demographics", {}).get("name", "Patient")
-            from app.database import async_session_maker
+            from app.database import async_session_maker, set_rls_context
 
             async with async_session_maker() as notify_db:
+                await set_rls_context(notify_db, doctor_id=str(doctor_id))
                 await generate_and_dispatch(
                     notify_db,
                     event_type="cancellation_notification",
@@ -545,6 +583,25 @@ async def cancel_appointment(
                 )
         except Exception as exc:
             logger.warning("Failed to dispatch cancellation notification: %s", exc)
+
+        # Push a lightweight realtime event to the doctor's own calendar so it
+        # refreshes without a manual reload. (No inbox notification row created.)
+        try:
+            from app.routers.portal import ws_manager
+
+            await ws_manager.notify_doctor(
+                str(doctor_id),
+                {
+                    "type": "realtime",
+                    "data": {
+                        "kind": "appointment_cancelled",
+                        "resource_id": str(apt.id),
+                        "patient_id": str(apt.patient_id),
+                    },
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to push cancel realtime event: %s", exc)
 
     return {"id": str(apt.id), "status": "cancelled"}
 
@@ -1008,8 +1065,8 @@ async def handle_doctor_off(
 
 Your appointment has been rescheduled due to doctor's unavailability.
 
-Original: {old_start.strftime('%A, %B %d at %I:%M %p')}
-New: {new_start.strftime('%A, %B %d at %I:%M %p')}
+Original: {old_start.strftime("%A, %B %d at %I:%M %p")}
+New: {new_start.strftime("%A, %B %d at %I:%M %p")}
 
 Please confirm or request a different time.
 

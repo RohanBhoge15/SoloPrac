@@ -15,17 +15,15 @@ Usage:
 
 from __future__ import annotations
 
-import json
-import time
 import logging
 import statistics
+import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
-from uuid import UUID, uuid4
+from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from app.agents.graph import AgentGraph
 from app.agents.planner import SelfPlanner
-from app.agents.state import AgentIntent
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +207,7 @@ class FixedPipelineAgent:
             return
         try:
             from app.agents.tools import retrieve_patient_context, synthesize_response
+
             self._retrieve_fn = retrieve_patient_context
             self._synthesize_fn = synthesize_response
             self._initialized = True
@@ -232,9 +231,7 @@ class FixedPipelineAgent:
         # Step 1: Retrieve patient context
         try:
             if self._retrieve_fn:
-                context = await self._retrieve_fn(
-                    query=query, doctor_id=doctor_id, patient_id=patient_id
-                )
+                context = await self._retrieve_fn(query=query, doctor_id=doctor_id, patient_id=patient_id)
                 steps += 1
             else:
                 errors += 1
@@ -246,9 +243,7 @@ class FixedPipelineAgent:
         # Step 2: Synthesize response
         try:
             if self._synthesize_fn and context is not None:
-                response_text = await self._synthesize_fn(
-                    query=query, context=context, doctor_id=doctor_id
-                )
+                response_text = await self._synthesize_fn(query=query, context=context, doctor_id=doctor_id)
                 steps += 1
             else:
                 errors += 1
@@ -392,9 +387,7 @@ class FeatureBEvaluator:
                 "avg_replan_count": round(statistics.mean(replans_all), 1) if replans_all else 0,
                 "queries_requiring_replan": sum(1 for r in results if r["replan_count"] > 0),
                 "avg_latency_ms": round(statistics.mean(times_all), 1) if times_all else 0,
-                "p95_latency_ms": round(
-                    sorted(times_all)[int(len(times_all) * 0.95)], 1
-                ) if times_all else 0,
+                "p95_latency_ms": round(sorted(times_all)[int(len(times_all) * 0.95)], 1) if times_all else 0,
             }
 
         # Per-intent aggregation (self-planning)
@@ -403,18 +396,16 @@ class FeatureBEvaluator:
             intent_results = [r for r in sp_results if r["intent"] == intent]
             per_intent[intent] = {
                 "count": len(intent_results),
-                "avg_steps": round(
-                    statistics.mean(r["execution_steps"] for r in intent_results), 1
-                ) if intent_results else 0,
-                "avg_replans": round(
-                    statistics.mean(r["replan_count"] for r in intent_results), 1
-                ) if intent_results else 0,
-                "avg_time_ms": round(
-                    statistics.mean(r["took_ms"] for r in intent_results), 1
-                ) if intent_results else 0,
-                "success_rate": round(
-                    sum(1 for r in intent_results if r["success"]) / len(intent_results) * 100, 1
-                ) if intent_results else 0,
+                "avg_steps": round(statistics.mean(r["execution_steps"] for r in intent_results), 1)
+                if intent_results
+                else 0,
+                "avg_replans": round(statistics.mean(r["replan_count"] for r in intent_results), 1)
+                if intent_results
+                else 0,
+                "avg_time_ms": round(statistics.mean(r["took_ms"] for r in intent_results), 1) if intent_results else 0,
+                "success_rate": round(sum(1 for r in intent_results if r["success"]) / len(intent_results) * 100, 1)
+                if intent_results
+                else 0,
             }
 
         # Overall metrics for both arms
@@ -423,23 +414,41 @@ class FeatureBEvaluator:
             "fixed_pipeline": _aggregate(fp_results),
             "comparison": {
                 "steps_reduction_pct": round(
-                    (1 - (
-                        statistics.mean([r["execution_steps"] for r in sp_results]) /
-                        statistics.mean([r["execution_steps"] for r in fp_results])
-                    )) * 100, 1
-                ) if sp_results and fp_results and statistics.mean([r["execution_steps"] for r in fp_results]) > 0 else None,
+                    (
+                        1
+                        - (
+                            statistics.mean([r["execution_steps"] for r in sp_results])
+                            / statistics.mean([r["execution_steps"] for r in fp_results])
+                        )
+                    )
+                    * 100,
+                    1,
+                )
+                if sp_results and fp_results and statistics.mean([r["execution_steps"] for r in fp_results]) > 0
+                else None,
                 "success_rate_delta_pp": round(
                     (
-                        sum(1 for r in sp_results if r["success"]) / len(sp_results) -
-                        sum(1 for r in fp_results if r["success"]) / len(fp_results)
-                    ) * 100, 1
-                ) if sp_results and fp_results else None,
+                        sum(1 for r in sp_results if r["success"]) / len(sp_results)
+                        - sum(1 for r in fp_results if r["success"]) / len(fp_results)
+                    )
+                    * 100,
+                    1,
+                )
+                if sp_results and fp_results
+                else None,
                 "latency_reduction_pct": round(
-                    (1 - (
-                        statistics.mean([r["took_ms"] for r in sp_results]) /
-                        statistics.mean([r["took_ms"] for r in fp_results])
-                    )) * 100, 1
-                ) if sp_results and fp_results and statistics.mean([r["took_ms"] for r in fp_results]) > 0 else None,
+                    (
+                        1
+                        - (
+                            statistics.mean([r["took_ms"] for r in sp_results])
+                            / statistics.mean([r["took_ms"] for r in fp_results])
+                        )
+                    )
+                    * 100,
+                    1,
+                )
+                if sp_results and fp_results and statistics.mean([r["took_ms"] for r in fp_results]) > 0
+                else None,
             },
             "per_intent": per_intent,
             "evaluated_at": datetime.now(timezone.utc).isoformat(),

@@ -16,23 +16,20 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import io
-import uuid
 import logging
-import qrcode
-from typing import Optional
+import os
+import uuid
 from datetime import datetime, timezone
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A5
-from reportlab.lib.units import mm
-from reportlab.lib.colors import HexColor
-from reportlab.lib.units import inch
-from PyPDF2 import PdfReader, PdfWriter
+from typing import Optional
 
 import fitz  # PyMuPDF - for QR embedding
-
-from app.config import settings
+import qrcode
+from PyPDF2 import PdfReader, PdfWriter
+from reportlab.lib.colors import HexColor
+from reportlab.lib.pagesizes import A5
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +43,7 @@ def watermark_text(doctor_name: str = DEFAULT_DOCTOR_NAME) -> str:
 def disclaimer_text(doctor_name: str = DEFAULT_DOCTOR_NAME) -> str:
     return f"AI-Assisted Draft — Validated by Dr. {doctor_name.replace('Dr. ', '')}. Not a substitute for clinical judgement."
 
+
 class PDFSecurityService:
     """Security layer for all PDF operations."""
 
@@ -55,7 +53,13 @@ class PDFSecurityService:
 
     # ─── Watermark & Disclaimer ───
 
-    async def add_watermark(self, input_path: str, output_path: Optional[str] = None, doctor_name: Optional[str] = None, custom_text: Optional[str] = None) -> str:
+    async def add_watermark(
+        self,
+        input_path: str,
+        output_path: Optional[str] = None,
+        doctor_name: Optional[str] = None,
+        custom_text: Optional[str] = None,
+    ) -> str:
         """Add a semi-transparent watermark to every page of a PDF.
 
         Follows UpdatedIdea.MD spec: 'AI-assisted draft — validated by Dr. <name>'
@@ -115,7 +119,13 @@ class PDFSecurityService:
         logger.info("Watermark applied to %s -> %s", input_path, output)
         return output
 
-    async def add_disclaimer(self, input_path: str, output_path: Optional[str] = None, doctor_name: Optional[str] = None, custom_text: Optional[str] = None) -> str:
+    async def add_disclaimer(
+        self,
+        input_path: str,
+        output_path: Optional[str] = None,
+        doctor_name: Optional[str] = None,
+        custom_text: Optional[str] = None,
+    ) -> str:
         """Add disclaimer footer to each page (no watermark).
 
         Follows UpdatedIdea.MD spec: 'AI-assisted draft — validated by Dr. <name>'
@@ -170,8 +180,7 @@ class PDFSecurityService:
         img = img.resize((size, size))
 
         output = output_path or os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "outputs", "qrcodes",
-            f"qr_{uuid.uuid4().hex[:8]}.png"
+            os.path.dirname(os.path.dirname(__file__)), "outputs", "qrcodes", f"qr_{uuid.uuid4().hex[:8]}.png"
         )
         os.makedirs(os.path.dirname(output), exist_ok=True)
         img.save(output)
@@ -254,6 +263,7 @@ class PDFSecurityService:
         """
         try:
             from app.models import AuditLog
+
             entry = AuditLog(
                 doctor_id=doctor_id,
                 patient_id=details.get("patient_id") if details else None,

@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Patient, PatientNotification, Doctor, Appointment, PrescriptionBox, Invoice, Certificate
-from app.config import settings
+from app.models import Appointment, Certificate, Invoice, Patient, PatientNotification, PrescriptionBox
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +66,7 @@ class PatientSecurityService:
     ) -> List[Appointment]:
         """Get appointments for a patient (RLS enforced by query)."""
         result = await db.execute(
-            select(Appointment)
-            .where(Appointment.patient_id == patient_id)
-            .order_by(Appointment.start_at.desc())
+            select(Appointment).where(Appointment.patient_id == patient_id).order_by(Appointment.start_at.desc())
         )
         return result.scalars().all()
 
@@ -79,9 +76,7 @@ class PatientSecurityService:
         patient_id: UUID,
     ) -> List[PrescriptionBox]:
         """Get prescriptions for a patient (RLS enforced by query)."""
-        result = await db.execute(
-            select(PrescriptionBox).where(PrescriptionBox.patient_id == patient_id)
-        )
+        result = await db.execute(select(PrescriptionBox).where(PrescriptionBox.patient_id == patient_id))
         return result.scalars().all()
 
     @staticmethod
@@ -90,9 +85,7 @@ class PatientSecurityService:
         patient_id: UUID,
     ) -> List[Invoice]:
         """Get invoices for a patient (RLS enforced by query)."""
-        result = await db.execute(
-            select(Invoice).where(Invoice.patient_id == patient_id)
-        )
+        result = await db.execute(select(Invoice).where(Invoice.patient_id == patient_id))
         return result.scalars().all()
 
     @staticmethod
@@ -101,9 +94,7 @@ class PatientSecurityService:
         patient_id: UUID,
     ) -> List[Certificate]:
         """Get certificates for a patient (RLS enforced by query)."""
-        result = await db.execute(
-            select(Certificate).where(Certificate.patient_id == patient_id)
-        )
+        result = await db.execute(select(Certificate).where(Certificate.patient_id == patient_id))
         return result.scalars().all()
 
     @staticmethod
@@ -164,8 +155,7 @@ class PatientPortalAudit:
         """Audit that notifications are only delivered to intended patients."""
         # Check that all notifications have valid patient_id and doctor_id
         result = await db.execute(
-            select(func.count(PatientNotification.id))
-            .where(PatientNotification.patient_id.is_(None))
+            select(func.count(PatientNotification.id)).where(PatientNotification.patient_id.is_(None))
         )
         orphan_count = result.scalar() or 0
         return {"orphan_notifications": orphan_count, "passed": orphan_count == 0}
@@ -173,10 +163,7 @@ class PatientPortalAudit:
     @staticmethod
     async def audit_appointment_ownership(db: AsyncSession) -> Dict[str, Any]:
         """Verify all appointments have correct patient ownership."""
-        result = await db.execute(
-            select(func.count(Appointment.id))
-            .where(Appointment.patient_id.is_(None))
-        )
+        result = await db.execute(select(func.count(Appointment.id)).where(Appointment.patient_id.is_(None)))
         orphan_count = result.scalar() or 0
         return {"orphan_appointments": orphan_count, "passed": orphan_count == 0}
 

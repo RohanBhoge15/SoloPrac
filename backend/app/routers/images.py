@@ -30,6 +30,7 @@ from app.database import get_db
 from app.dependencies import get_current_doctor
 from app.models import AuditLog, ImageComparison, Patient, PatientVersion
 from app.routers.patients import _mint_version
+from app.services.clinical_significance import clinical_significance_from_tags
 from app.services.embeddings import embedding_service
 from app.services.image_registration import image_registration_service
 from app.services.qdrant import qdrant_service
@@ -46,72 +47,111 @@ async def _background_analyze_image(
     doctor_id: str,
     s3_key: str,
     image_type: str,
+    db: AsyncSession = None,
 ):
-    """Background task: analyze image with MedGemma and update version + Qdrant."""
+    """Analyze an image with MedGemma and update the version's state_jsonb.
+
+    When ``db`` is provided (the request session), the update runs in the
+    request's transaction under its RLS identity — guaranteed to see the
+    freshly minted version. When ``db`` is None, a short-lived ad-hoc session
+    is opened instead (used by callers without a request context).
+    """
+    import asyncio as _asyncio
+    import base64
+    import os
+    import tempfile
+    import uuid as _uuid
+
+    from app.agents.tools import _analyze_with_groq, _analyze_with_medgemma
+    from app.database import async_session_maker, set_rls_context
+    from app.services.storage import storage_service
+
     try:
         # Download image from S3 to temp file
-        import tempfile
-        import uuid as _uuid
-
-        from app.agents.tools import _analyze_with_groq, _analyze_with_medgemma
-        from app.database import async_session_maker
-        from app.services.storage import storage_service
-
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            tmp_path = tmp.name
-
+        tmp_path = None
         try:
-            image_bytes = await storage_service.download_file(s3_key)
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp_path = tmp.name
+
+            try:
+                image_bytes = await _asyncio.wait_for(storage_service.download_file("images", s3_key), timeout=30)
+            except _asyncio.TimeoutError:
+                logger.warning("Image analysis: download timed out after 30s for version %s", version_id)
+                return
             if not image_bytes:
+                logger.warning("Image analysis: no bytes for version %s", version_id)
                 return
             with open(tmp_path, "wb") as f:
                 f.write(image_bytes)
 
             # Generate base64
-            import base64
-
             with open(tmp_path, "rb") as f:
                 image_b64 = base64.b64encode(f.read()).decode("utf-8")
         finally:
-            import os
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        # Analyze with MedGemma (all image types now go local). Concise mode:
+        # only the first line is persisted below, and a short summary is ~4x
+        # faster than the full 1024-token analysis on this GPU.
+        analysis_result = await _analyze_with_medgemma(image_b64, image_type, concise=True)
 
-        # Analyze with MedGemma (all image types now go local)
-        result = await _analyze_with_medgemma(image_b64, image_type)
-
-        if result.get("status") != "ok":
+        if analysis_result.get("status") != "ok":
             # Fallback to Groq for non-radiology if MedGemma fails
-            result = await _analyze_with_groq(image_b64, image_type)
+            analysis_result = await _analyze_with_groq(image_b64, image_type)
 
-        analysis = result.get("analysis", "")
+        analysis = analysis_result.get("analysis", "")
         if not analysis:
+            logger.warning("Image analysis: MedGemma returned empty analysis for version %s", version_id)
             return
+        analyzed_by = analysis_result.get("model", "medgemma")
 
         # Truncate to crisp 1-2 line summary
         summary_text = analysis.split("\n")[0][:200]
 
         # Update version state_jsonb
-        async with async_session_maker() as db:
-            from app.models import PatientVersion
+        from app.models import PatientVersion
 
-            result = await db.execute(select(PatientVersion).where(PatientVersion.id == _uuid.UUID(version_id)))
+        if db is not None:
+            # Request-session path: RLS identity is already applied by get_db,
+            # and the version was just minted in this same transaction.
+            session = db
+        else:
+            session = async_session_maker()
+            await session.__aenter__()
+            await set_rls_context(session, doctor_id=doctor_id)
+
+        try:
+            result = await session.execute(select(PatientVersion).where(PatientVersion.id == _uuid.UUID(version_id)))
             version = result.scalar_one_or_none()
             if not version:
+                logger.warning("Image analysis: version %s not found (skipping update)", version_id)
                 return
 
             state = dict(version.state_jsonb or {})
             if "image" not in state:
                 state["image"] = {}
             state["image"]["clinical_summary"] = summary_text
-            state["image"]["analyzed_by"] = result.get("model", "medgemma")
+            state["image"]["analyzed_by"] = analyzed_by
 
             version.state_jsonb = state
             version.summary = summary_text[:120]
-            await db.commit()
+            from sqlalchemy.orm.attributes import flag_modified
+
+            # SQLAlchemy does not detect a plain JSONB re-assignment as dirty in
+            # this session; without flag_modified the state_jsonb update is
+            # silently dropped (summary persisted, state_jsonb did not).
+            flag_modified(version, "state_jsonb")
+            # Versions are content-addressed — keep the hash in sync with the
+            # new state so the tamper check on read passes.
+            version.version_hash = PatientVersion.compute_hash(state)
+            await session.commit()
+        finally:
+            if db is None:
+                await session.__aexit__(None, None, None)
 
         logger.info("Background image analysis complete for version %s: %s", version_id, summary_text[:50])
 
@@ -284,7 +324,7 @@ async def upload_images(
                         "edit_type": "manual",
                         "summary": f"Image: {file.filename}",
                         "tags": ["image"],
-                        "clinical_significance": 0.3,
+                        "clinical_significance": clinical_significance_from_tags(["image"]),
                         "version_hash": "",
                         "s3_key": s3_key,
                     }
@@ -313,20 +353,24 @@ async def upload_images(
                 author=f"doctor:{doctor.id}",
                 summary=f"Image uploaded: {file.filename}",
                 tags=["image"],
-                clinical_significance=0.3,
+                clinical_significance=clinical_significance_from_tags(["image"]),
             )
-            logger.info("Created PatientVersion %s for image %s", version.id, image_id)
-
-            # Analyze image in background (MedGemma local, non-blocking)
-            if background_tasks:
-                background_tasks.add_task(
-                    _background_analyze_image,
+            # Analyze image with MedGemma (concise, ~5-8s) and persist the
+            # clinical summary in the request session. Running it inline with
+            # the request's db guarantees the freshly minted version is visible
+            # under the same RLS identity — the background-task path could not
+            # see its own row.
+            try:
+                await _background_analyze_image(
                     str(version.id),
                     str(patient.id),
                     str(doctor.id),
                     s3_key,
                     "xray" if "xray" in (file.content_type or "").lower() else "other",
+                    db=db,
                 )
+            except Exception as exc:
+                logger.warning("Image analysis failed for %s: %s", file.filename, exc)
         except Exception as exc:
             logger.warning("Failed to create PatientVersion for image %s: %s", image_id, exc)
 
@@ -596,7 +640,7 @@ async def compare_images(
                     "edit_type": "manual",
                     "summary": f"Comparison image: {file.filename}",
                     "tags": ["image", "comparison"],
-                    "clinical_significance": 0.5,
+                    "clinical_significance": clinical_significance_from_tags(["image", "comparison"]),
                     "version_hash": "",
                 }
             )
@@ -606,6 +650,10 @@ async def compare_images(
     # Run ORB matching if we found a prior image
     matched_prior_path = None
     prior_version_id = ""
+    # Initialised here (not only inside the `if best_match` branch) because the
+    # response body reads it — leaving it conditionally-bound is how the
+    # sibling `curr_filepath` NameError got shipped.
+    prior_s3_key = None
     if best_match:
         prior_version_id = best_match.payload.get("version_id", "")
         # Try to find the prior image in S3
@@ -697,12 +745,17 @@ async def compare_images(
         "matched": reg_result.matched if reg_result else False,
         "current_image": {
             "image_id": str(curr_image_id),
-            "path": curr_filepath,
+            # S3 key, not a local path. `curr_filepath` never existed — referencing
+            # it raised NameError and 500'd this endpoint on every call.
+            "path": curr_s3_key,
             "filename": file.filename,
             "size": len(content),
         },
         "matched_image": {
-            "path": matched_prior_path,
+            # Must be the durable S3 key. `matched_prior_path` is the temp file
+            # unlinked above (see the cleanup block), so returning it handed the
+            # client a path that no longer exists.
+            "path": prior_s3_key if best_match else None,
             "version_id": prior_version_id if best_match else None,
             "score": best_match.score if best_match else None,
         }
@@ -799,7 +852,7 @@ async def save_comparison_to_record(
         if comparison.area_change_pct
         else "Image comparison",
         tags=["image_comparison"],
-        clinical_significance=0.5,
+        clinical_significance=clinical_significance_from_tags(["image_comparison"]),
     )
 
     # Update the comparison record with the version_id
@@ -908,6 +961,14 @@ async def update_image_summary(
     state["image"]["clinical_summary"] = summary
     version.state_jsonb = state
     version.summary = summary[:120] if summary else version.summary
+    from sqlalchemy.orm.attributes import flag_modified
+
+    # Same JSONB dirty-tracking fix as the background analyzer: plain
+    # re-assignment is not detected, so flag it explicitly.
+    flag_modified(version, "state_jsonb")
+    # Content-addressed version chain — recompute the hash with the new state
+    # so the read-side tamper check keeps passing.
+    version.version_hash = PatientVersion.compute_hash(state)
     await db.commit()
 
     return {"status": "ok", "version_id": str(version.id), "clinical_summary": summary}
@@ -919,10 +980,40 @@ async def get_image_file(
     s3_key: str = Query(..., description="S3 key of the image"),
     doctor=Depends(get_current_doctor),
 ):
-    """Return a presigned URL for viewing an image from S3."""
-    url = await storage_service.generate_presigned_url(s3_key, expires_in=3600)
-    if not url:
-        raise HTTPException(status_code=404, detail="Image not found")
-    from fastapi.responses import RedirectResponse
+    """Stream the raw image bytes for in-app viewing.
 
-    return RedirectResponse(url=url, status_code=307)
+    We used to 307-redirect to a presigned MinIO URL. That URL is signed
+    against MINIO_ENDPOINT — `minio:9000` in this deploy — which is a
+    Docker-internal hostname the BROWSER cannot resolve, so Axios reported
+    "Network Error" the moment it followed the redirect. curl from inside
+    the network worked fine, which is why this hid for so long. Same fix as
+    GET /documents/{doc_id}/file: stream through the backend.
+
+    Tenant safety: the key must live under this doctor's own prefix,
+    otherwise a crafted s3_key could read another doctor's image.
+    """
+    expected_prefix = f"images/{doctor.id}/"
+    if not s3_key.startswith(expected_prefix):
+        raise HTTPException(status_code=403, detail="Not authorised for this object")
+
+    try:
+        content = await storage_service.download_file(bucket_type="images", key=s3_key)
+    except Exception as exc:
+        logger.error("S3 download failed for %s: %s", s3_key, exc)
+        raise HTTPException(status_code=500, detail="Failed to download image")
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    import mimetypes
+
+    guessed, _ = mimetypes.guess_type(s3_key)
+    media_type = guessed or "application/octet-stream"
+
+    from fastapi.responses import Response
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=60"},
+    )

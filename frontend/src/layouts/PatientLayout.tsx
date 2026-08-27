@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Link, useLocation, Outlet } from 'react-router-dom'
+import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
-import { CalendarDays, Home, FileText, Bell, LogOut, Menu, X, Search, User } from 'lucide-react'
+import { CalendarDays, Home, FileText, Bell, LogOut, Menu, X, Search, User, Loader2 } from 'lucide-react'
+import { apiClient } from '@/services/api'
 
 const NAV_ITEMS = [
   { path: '/patient/dashboard', label: 'Dashboard', icon: Home },
@@ -14,7 +15,28 @@ const NAV_ITEMS = [
 
 export function PatientLayout() {
   const location = useLocation()
+  const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  // The prior "logout" was `<Link to="/patient/login">` — it navigated to the
+  // login page but left the HttpOnly `patient_token` cookie alive on the
+  // browser, so hitting Back or typing a patient URL re-authenticated
+  // immediately. We POST /public/auth/logout so the backend clears the cookie
+  // via Set-Cookie, then navigate.
+  const handleLogout = async () => {
+    if (loggingOut) return
+    setLoggingOut(true)
+    try {
+      await apiClient.post('/public/auth/logout')
+    } catch {
+      // Even if the server call fails, we still want to navigate away; the
+      // cookie might survive but the user has clearly asked to leave.
+    } finally {
+      setLoggingOut(false)
+      navigate('/patient/login', { replace: true })
+    }
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
@@ -58,10 +80,19 @@ export function PatientLayout() {
         </nav>
 
         <div className="p-3 border-t border-gray-200 dark:border-gray-700">
-          <Link to="/patient/login" className="flex items-center gap-2 px-3 py-2 text-sm text-gray-600 hover:text-red-600 transition-colors">
-            <LogOut className="h-4 w-4" />
-            <span>Logout</span>
-          </Link>
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-600 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-60"
+          >
+            {loggingOut ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <LogOut className="h-4 w-4" />
+            )}
+            <span>{loggingOut ? 'Logging out…' : 'Logout'}</span>
+          </button>
         </div>
       </aside>
 

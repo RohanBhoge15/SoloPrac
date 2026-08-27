@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, createContext, useContext, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
 import {
@@ -32,9 +32,11 @@ interface CommandItem {
 interface CommandPaletteProps {
   open: boolean
   onClose: () => void
+  // D-11 Part B: allow the palette's own ⌘K listener to open (not just close) the palette.
+  onOpen?: () => void
 }
 
-export function CommandPalette({ open, onClose }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onOpen }: CommandPaletteProps) {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const navigate = useNavigate()
@@ -130,7 +132,8 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       label: 'Weekly Reports',
       description: 'View AI-generated weekly summaries',
       icon: TrendingUp,
-      action: () => navigate('/dashboard'),
+      // D-11 Part A: was navigating to /dashboard; route to actual weekly report page.
+      action: () => navigate('/weekly-report'),
       category: 'Actions',
     },
   ]
@@ -181,18 +184,21 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   }
 
   // Global ⌘K / Ctrl+K listener
+  // D-11 Part B: previously only closed the palette; now toggles (open if closed, close if open).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault()
         if (open) {
           onClose()
+        } else if (onOpen) {
+          onOpen()
         }
       }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [open, onClose])
+  }, [open, onClose, onOpen])
 
   if (!open) return null
 
@@ -303,14 +309,51 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 }
 
 // ─── Global CommandProvider ────────────────────────
-// Wrap this at the app level to provide ⌘K everywhere
+// Wrap this at the app level (inside AppLayout, which is the only layout that
+// wants the palette) to provide ⌘K everywhere.
+//
+// Historical bug: this used to be a plain `useState` hook. Every component
+// that called useCommandPalette() got its OWN private state — so the Dashboard's
+// Search button was flipping a flag nobody was watching, and the palette
+// (mounted in AppLayout with a different hook instance) never opened. Fixed
+// by promoting to a real React Context; all consumers now share one truth.
 
-export function useCommandPalette() {
+interface CommandPaletteContextValue {
+  isOpen: boolean
+  toggle: () => void
+  openPalette: () => void
+  closePalette: () => void
+}
+
+const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null)
+
+export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false)
-
   const toggle = useCallback(() => setIsOpen(prev => !prev), [])
   const openPalette = useCallback(() => setIsOpen(true), [])
   const closePalette = useCallback(() => setIsOpen(false), [])
+  return (
+    <CommandPaletteContext.Provider value={{ isOpen, toggle, openPalette, closePalette }}>
+      {children}
+    </CommandPaletteContext.Provider>
+  )
+}
 
-  return { isOpen, toggle, openPalette, closePalette }
+export function useCommandPalette(): CommandPaletteContextValue {
+  const ctx = useContext(CommandPaletteContext)
+  if (!ctx) {
+    // Fall back to no-op so a stray caller outside the provider doesn't crash
+    // the app. Warn loudly in dev so this is caught early.
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn('useCommandPalette() called outside CommandPaletteProvider — Search will not work here.')
+    }
+    return {
+      isOpen: false,
+      toggle: () => {},
+      openPalette: () => {},
+      closePalette: () => {},
+    }
+  }
+  return ctx
 }
