@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, createContext, useContext, ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, createContext, useContext, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/utils/helpers'
 import {
@@ -119,10 +119,15 @@ export function CommandPalette({ open, onClose, onOpen }: CommandPaletteProps) {
       description: 'Find a patient by name',
       icon: Users,
       action: () => {
-        // Focus the search input in the header
-        const searchInput = document.querySelector<HTMLInputElement>('input[type="search"]')
-        searchInput?.focus()
         onClose()
+        // Let the header mount settle, then focus the patient search via a11y label
+        setTimeout(() => {
+          const el =
+            document.querySelector<HTMLInputElement>('[aria-label="Search patients"]') ||
+            document.querySelector<HTMLInputElement>('input[type="search"]')
+          el?.focus()
+          el?.select()
+        }, 80)
       },
       shortcut: '⌘K',
       category: 'Actions',
@@ -138,14 +143,20 @@ export function CommandPalette({ open, onClose, onOpen }: CommandPaletteProps) {
     },
   ]
 
-  const filtered = query
-    ? commands.filter(
-        cmd =>
-          cmd.label.toLowerCase().includes(query.toLowerCase()) ||
-          cmd.description.toLowerCase().includes(query.toLowerCase()) ||
-          (cmd.shortcut && cmd.shortcut.toLowerCase().includes(query.toLowerCase()))
-      )
-    : commands
+  const filtered = useMemo(
+    () =>
+      query
+        ? commands.filter(
+            (cmd) =>
+              cmd.label.toLowerCase().includes(query.toLowerCase()) ||
+              cmd.description.toLowerCase().includes(query.toLowerCase()) ||
+              (cmd.shortcut && cmd.shortcut.toLowerCase().includes(query.toLowerCase()))
+          )
+        : commands,
+    // commands is stable (navigate is stable) — re-filter only on query
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [query]
+  )
 
   // Reset index when query changes
   useEffect(() => {
@@ -200,14 +211,17 @@ export function CommandPalette({ open, onClose, onOpen }: CommandPaletteProps) {
     return () => document.removeEventListener('keydown', handler)
   }, [open, onClose, onOpen])
 
-  if (!open) return null
+  const grouped = useMemo(
+    () =>
+      filtered.reduce<Record<string, CommandItem[]>>((acc, item) => {
+        if (!acc[item.category]) acc[item.category] = []
+        acc[item.category].push(item)
+        return acc
+      }, {}),
+    [filtered]
+  )
 
-  // Group by category
-  const grouped = filtered.reduce<Record<string, CommandItem[]>>((acc, item) => {
-    if (!acc[item.category]) acc[item.category] = []
-    acc[item.category].push(item)
-    return acc
-  }, {})
+  if (!open) return null
 
   return (
     <>
@@ -225,10 +239,10 @@ export function CommandPalette({ open, onClose, onOpen }: CommandPaletteProps) {
         aria-modal="true"
         aria-label="Command palette"
       >
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl overflow-hidden">
+        <div className="rounded-xl border border-border bg-surface-2 shadow-card-elevated overflow-hidden">
           {/* Search Input */}
-          <div className="flex items-center border-b border-gray-200 dark:border-gray-700 px-4">
-            <Search className="h-5 w-5 text-gray-400 mr-3 shrink-0" />
+          <div className="flex items-center border-b border-border px-4">
+            <Search className="h-5 w-5 text-muted-fg mr-3 shrink-0" />
             <input
               autoFocus
               type="text"
@@ -236,10 +250,10 @@ export function CommandPalette({ open, onClose, onOpen }: CommandPaletteProps) {
               onChange={e => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Search commands..."
-              className="flex-1 h-14 bg-transparent text-gray-900 dark:text-white placeholder-gray-400 outline-none text-lg"
+              className="flex-1 h-14 bg-transparent text-strong-fg placeholder:text-muted-fg/60 outline-none text-[15px]"
               aria-label="Search commands"
             />
-            <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-400 bg-gray-100 dark:bg-gray-800 rounded">
+            <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-1 text-xs text-muted-fg bg-surface-3 rounded border border-border">
               <Command className="h-3 w-3" />
               K
             </kbd>

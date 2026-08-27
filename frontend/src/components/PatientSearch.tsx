@@ -21,6 +21,7 @@ interface PatientSearchProps {
   placeholder?: string
   className?: string
   variant?: 'header' | 'sidebar'
+  navigateOnSelect?: boolean
 }
 
 export function PatientSearch({
@@ -28,6 +29,7 @@ export function PatientSearch({
   placeholder = 'Search patients...',
   className,
   variant = 'header',
+  navigateOnSelect = true,
 }: PatientSearchProps) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<PatientSearchResult[]>([])
@@ -40,6 +42,7 @@ export function PatientSearch({
   // ReturnType<typeof setTimeout>, not NodeJS.Timeout — this is browser code and
   // must not depend on @types/node being present in the tree.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   const fetchPatients = useCallback(async (searchQuery: string) => {
     if (!searchQuery.trim()) {
@@ -47,9 +50,12 @@ export function PatientSearch({
       setIsOpen(false)
       return
     }
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     setLoading(true)
     try {
-      const res = await apiClient.get('/patients/search', { params: { q: searchQuery, limit: 15 } })
+      const res = await apiClient.get('/patients/search', { params: { q: searchQuery, limit: 15 }, signal: ctrl.signal as any })
       // Backend returns a FLAT shape: {id, name, initials, age, gender, phone,
       // head_version_id, updated_at}. Older code tried to read
       // `head_version.state_jsonb.demographics.name` — that path only exists on
@@ -76,12 +82,13 @@ export function PatientSearch({
       // on re-focus, so new results appeared invisible until the user clicked
       // the input again — fixes D-10 in AUDIT.md.
       setIsOpen(patients.length > 0)
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.name === 'CanceledError' || e?.name === 'AbortError' || e?.code === 'ERR_CANCELED') return
       console.error('Patient search failed:', e)
       setResults([])
       setIsOpen(false)
     } finally {
-      setLoading(false)
+      if (!ctrl.signal.aborted) setLoading(false)
     }
   }, [])
 
@@ -100,7 +107,7 @@ export function PatientSearch({
     setIsOpen(false)
     setResults([])
     onSelect?.(patient)
-    navigate(`/patients/${patient.id}`)
+    if (navigateOnSelect) navigate(`/patients/${patient.id}`)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -172,10 +179,10 @@ export function PatientSearch({
           aria-autocomplete="list"
           role="combobox"
           className={cn(
-            'pl-10 pr-8 h-9 text-sm',
+            'pl-10 pr-8 h-9 text-sm shadow-sm',
             variant === 'sidebar'
-              ? 'bg-gray-100 dark:bg-gray-800 border-transparent focus:border-primary-500'
-              : 'bg-gray-50 dark:bg-gray-800'
+              ? 'bg-surface-3 border-transparent focus:border-primary-500 focus:bg-surface-2'
+              : 'bg-surface border-border focus:bg-surface-2'
           )}
         />
         {query && (
@@ -197,7 +204,7 @@ export function PatientSearch({
         <div
           ref={listRef}
           className={cn(
-            'absolute z-50 mt-1 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg overflow-hidden',
+            'absolute z-50 mt-2 w-full rounded-xl border border-border bg-surface-2 shadow-card-elevated overflow-hidden',
             variant === 'sidebar' ? 'left-0' : ''
           )}
           role="listbox"
@@ -212,8 +219,8 @@ export function PatientSearch({
               className={cn(
                 'flex items-center gap-3 w-full px-3 py-2.5 text-left transition-colors',
                 idx === activeIndex
-                  ? 'bg-primary-50 dark:bg-primary-900/20'
-                  : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                  ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700'
+                  : 'hover:bg-surface-3'
               )}
             >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
