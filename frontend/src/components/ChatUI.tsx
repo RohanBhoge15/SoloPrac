@@ -297,13 +297,13 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
                   'flex h-8 w-8 shrink-0 items-center justify-center rounded-full mt-0.5',
                   msg.role === 'user'
                     ? 'bg-primary-100 dark:bg-primary-900/30'
-                    : 'bg-gray-100 dark:bg-gray-800'
+                    : 'bg-surface-3'
                 )}
               >
                 {msg.role === 'user' ? (
                   <User className="h-4 w-4 text-primary-600 dark:text-primary-400" />
                 ) : (
-                  <Bot className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+                  <Bot className="h-4 w-4 text-gray-600 dark:text-muted-fg" />
                 )}
               </div>
 
@@ -314,11 +314,11 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
                     'rounded-xl px-4 py-3 text-sm leading-relaxed',
                     msg.role === 'user'
                       ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white'
+                      : 'bg-surface-3 text-strong-fg'
                   )}
                 >
                   {msg.isStreaming && !msg.content ? (
-                    <div className="flex items-center gap-2 text-gray-500">
+                    <div className="flex items-center gap-2 text-muted-fg">
                       <Loader2 className="h-4 w-4 animate-spin" />
                       <span>Thinking...</span>
                     </div>
@@ -343,7 +343,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
                             <img
                               src={`/api/v1/agent/citation-url?s3_key=${encodeURIComponent(cite.s3_key)}`}
                               alt={`v${cite.version_number}`}
-                              className="h-8 w-8 rounded border border-gray-200 dark:border-gray-700 object-cover cursor-pointer hover:ring-2 hover:ring-primary-400 transition-all"
+                              className="h-8 w-8 rounded border border-border object-cover cursor-pointer hover:ring-2 hover:ring-primary-400 transition-all"
                               loading="lazy"
                               onError={(e) => { e.currentTarget.style.display = 'none' }}
                             />
@@ -351,17 +351,17 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
                         )}
                         <button
                           onClick={() => onCiteVersion?.(cite.version_number)}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-colors"
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium bg-primary-50/60 text-primary-600 dark:text-primary-400 border border-primary-200 dark:border-primary-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 transition-colors"
                         >
                           <GitCommit className="h-2.5 w-2.5" />
                           <span>v{cite.version_number}</span>
-                          <span className="text-gray-400">·</span>
+                          <span className="text-muted-fg">·</span>
                           <span>{cite.date || 'recent'}</span>
                         </button>
                       </div>
                     ))}
                     {msg.citations.length > 4 && (
-                      <span className="text-[10px] text-gray-400 self-center">
+                      <span className="text-[10px] text-muted-fg self-center">
                         +{msg.citations.length - 4} more
                       </span>
                     )}
@@ -400,7 +400,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
               <button
                 key={s}
                 onClick={() => handleSuggestionClick(s)}
-                className="text-xs px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white transition-colors"
+                className="text-xs px-3 py-1.5 rounded-full border border-border text-gray-600 dark:text-muted-fg hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white transition-colors"
               >
                 {s}
               </button>
@@ -412,7 +412,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
       </div>
 
       {/* Input Area */}
-      <div className="border-t border-gray-200 dark:border-gray-700 px-4 py-3 bg-white dark:bg-gray-900">
+      <div className="border-t border-border px-4 py-3 bg-surface-2">
         <div className="flex items-end gap-2 max-w-3xl mx-auto">
           <div className="flex-1 relative">
             <textarea
@@ -424,7 +424,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
               rows={1}
               disabled={isStreaming}
               className={cn(
-                'w-full resize-none rounded-xl border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-3 pr-10 text-sm text-gray-900 dark:text-white placeholder-gray-400',
+                'w-full resize-none rounded-xl border border-border bg-white dark:bg-gray-800 px-4 py-3 pr-10 text-sm text-strong-fg placeholder-gray-400',
                 'focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent',
                 'disabled:opacity-50 disabled:cursor-not-allowed'
               )}
@@ -439,7 +439,7 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
                 onClick={handleMicClick}
                 className={cn(
                   'absolute right-3 bottom-2.5 transition-colors',
-                  chatRecording ? 'text-red-500 animate-pulse' : 'text-gray-400 hover:text-red-500',
+                  chatRecording ? 'text-red-500 animate-pulse' : 'text-muted-fg hover:text-red-500',
                 )}
                 aria-label={chatRecording ? 'Stop recording' : 'Voice input'}
                 title={chatRecording ? 'Stop recording' : 'Voice input'}
@@ -477,12 +477,12 @@ export function ChatUI({ patientId, className, initialMessage, onCiteVersion }: 
         {isStreaming && (
           <div className="flex items-center gap-1.5 mt-2 max-w-3xl mx-auto">
             <Sparkles className="h-3 w-3 text-primary-500 animate-pulse" />
-            <span className="text-[10px] text-gray-400">AI is generating response...</span>
+            <span className="text-[10px] text-muted-fg">AI is generating response...</span>
           </div>
         )}
 
         {!isStreaming && (
-          <p className="text-[10px] text-gray-400 mt-2 max-w-3xl mx-auto">
+          <p className="text-[10px] text-muted-fg mt-2 max-w-3xl mx-auto">
             AI responses are verified by AI — doctor review recommended. Shift+Enter for new line.
           </p>
         )}

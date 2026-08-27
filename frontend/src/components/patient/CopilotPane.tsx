@@ -81,10 +81,12 @@ export function CopilotPane({
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const conversationIdRef = useRef<string>(makeId())
 
-  // Auto-scroll to the bottom whenever a new token arrives.
+  // Auto-scroll only if user is near bottom (stickiness check) — don't yank history
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    if (nearBottom) el.scrollTop = el.scrollHeight
   }, [messages])
 
   // Cleanup — abort in-flight stream on unmount so we don't leak connections

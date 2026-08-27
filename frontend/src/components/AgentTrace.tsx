@@ -10,14 +10,25 @@ interface AgentTraceProps {
   onFinished?: boolean
 }
 
+const FRIENDLY_COLORS: Record<string, string> = {
+  'Understanding your request…': 'text-primary-600',
+  'Classifying your question…': 'text-purple-600',
+  'Planning the steps…': 'text-blue-600',
+  'Searching the patient record…': 'text-cyan-600',
+  'Reviewing the draft…': 'text-orange-600',
+  'Drafting the answer…': 'text-emerald-600',
+  'Finalizing the response…': 'text-primary-600',
+}
 function getColor(event: string): string {
-  if (event.toLowerCase().includes('rout')) return 'text-purple-600 dark:text-purple-400'
-  if (event.toLowerCase().includes('plan')) return 'text-blue-600 dark:text-blue-400'
-  if (event.toLowerCase().includes('search') || event.toLowerCase().includes('record')) return 'text-cyan-600 dark:text-cyan-400'
-  if (event.toLowerCase().includes('execut')) return 'text-orange-600 dark:text-orange-400'
-  if (event.toLowerCase().includes('synth') || event.toLowerCase().includes('draft')) return 'text-green-600 dark:text-green-400'
-  if (event.toLowerCase().includes('final')) return 'text-primary-600 dark:text-primary-400'
-  return 'text-gray-600 dark:text-gray-400'
+  if (FRIENDLY_COLORS[event]) return FRIENDLY_COLORS[event]
+  const lower = event.toLowerCase()
+  if (lower.includes('classif')) return 'text-purple-600'
+  if (lower.includes('plan')) return 'text-blue-600'
+  if (lower.includes('search') || lower.includes('record')) return 'text-cyan-600'
+  if (lower.includes('review')) return 'text-orange-600'
+  if (lower.includes('draft')) return 'text-emerald-600'
+  if (lower.includes('final')) return 'text-primary-600'
+  return 'text-muted-fg'
 }
 
 export function AgentTrace({ events, isStreaming }: AgentTraceProps) {
@@ -39,7 +50,7 @@ export function AgentTrace({ events, isStreaming }: AgentTraceProps) {
                 'flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-colors',
                 isLast && isStreaming
                   ? 'bg-primary-50 dark:bg-primary-900/10'
-                  : 'bg-gray-50 dark:bg-gray-800/30'
+                  : 'bg-surface-3/50'
               )}
             >
               <span className="shrink-0">
