@@ -77,7 +77,7 @@ export function Breadcrumbs() {
   return (
     <nav
       aria-label="Breadcrumb"
-      className="flex items-center gap-1.5 text-sm text-muted-fg mb-4"
+      className="flex items-center gap-1.5 text-sm text-muted-fg mb-5 flex-wrap"
     >
       <Link
         to="/dashboard"
@@ -90,13 +90,14 @@ export function Breadcrumbs() {
         <div key={c.href} className="flex items-center gap-1.5">
           <ChevronRight className="h-3.5 w-3.5 text-muted-fg/60" aria-hidden="true" />
           {c.isLast ? (
-            <span className="font-medium text-strong-fg" aria-current="page">
+            <span className="font-medium text-strong-fg truncate max-w-[14rem]" aria-current="page" title={c.label}>
               {c.label}
             </span>
           ) : (
             <Link
               to={c.href}
-              className="hover:text-strong-fg transition-colors"
+              className="hover:text-strong-fg transition-colors truncate max-w-[10rem]"
+              title={c.label}
             >
               {c.label}
             </Link>

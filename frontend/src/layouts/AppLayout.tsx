@@ -20,6 +20,7 @@ import {
   Bell,
   Menu,
   Plus,
+  Search,
 } from 'lucide-react'
 
 // C-9 (Piece 6): doctor-side inbox item shape returned by /doctor/me/inbox.
@@ -76,7 +77,7 @@ function AppLayoutInner() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const queryClient = useQueryClient()
-  const [sidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [notifOpen, setNotifOpen] = useState(false)
   const notifRef = useRef<HTMLDivElement | null>(null)
@@ -154,30 +155,14 @@ function AppLayoutInner() {
     return () => document.removeEventListener('mousedown', onDown)
   }, [notifOpen])
 
-  // Global Cmd/Ctrl+K opens the palette from anywhere in the app.
-  // The palette component itself handles Cmd+K → close when it's already open,
-  // so we only fire this when the palette is closed to avoid a double-toggle race.
+  // Close popovers on Escape globally — palette's own ⌘K handling lives in CommandPalette
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        // Don't hijack Cmd+K inside inputs where users might expect native behavior.
-        const target = e.target as HTMLElement | null
-        const tag = target?.tagName?.toLowerCase()
-        const editable = tag === 'input' || tag === 'textarea' || target?.isContentEditable
-        if (editable && !cmdPaletteOpen) {
-          // Still open the palette — Cmd+K in a search bar is what most apps do — but
-          // let inputs that specifically opt-out (data-no-cmdk) keep the native behavior.
-          if (target?.dataset?.noCmdk !== undefined) return
-        }
-        if (!cmdPaletteOpen) {
-          e.preventDefault()
-          openPalette()
-        }
-      }
+      if (e.key === 'Escape' && notifOpen) setNotifOpen(false)
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [cmdPaletteOpen, openPalette])
+  }, [notifOpen])
 
   const handleLogout = () => {
     logout()
@@ -185,10 +170,13 @@ function AppLayoutInner() {
 
   return (
     <div className="min-h-screen bg-surface">
+      <a href="#main-content" className="skip-link">
+        Skip to content
+      </a>
       {/* Mobile menu overlay */}
       {mobileMenuOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
           onClick={() => setMobileMenuOpen(false)}
           aria-hidden="true"
         />
@@ -204,16 +192,24 @@ function AppLayoutInner() {
       >
         {/* Logo / Brand */}
         <div className="flex h-16 items-center justify-between px-4 border-b border-border">
-          <Link to="/dashboard" className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-600 shadow-card">
+          <Link to="/dashboard" className="flex items-center gap-2 min-w-0">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-600 shadow-card shrink-0">
               <span className="text-white font-bold text-sm tracking-tight">SP</span>
             </div>
             {sidebarOpen && (
-              <span className="font-semibold text-base text-strong-fg tracking-tight">
+              <span className="font-semibold text-base text-strong-fg tracking-tight truncate">
                 SoloPrac<span className="text-primary-600"> AI</span>
               </span>
             )}
           </Link>
+          <button
+            onClick={() => setSidebarOpen((v) => !v)}
+            className="hidden lg:flex h-7 w-7 items-center justify-center rounded-md hover:bg-surface-3 text-muted-fg hover:text-strong-fg transition-colors shrink-0"
+            aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+            title={sidebarOpen ? 'Collapse' : 'Expand'}
+          >
+            <Menu className="h-4 w-4" />
+          </button>
         </div>
 
         {/* Navigation */}
@@ -304,26 +300,28 @@ function AppLayoutInner() {
 
       {/* Main Content */}
       <main
+        id="main-content"
+        tabIndex={-1}
         className={cn(
-          'min-h-screen transition-all duration-300 lg:ml-64',
+          'min-h-screen transition-all duration-300 focus:outline-none',
           sidebarOpen ? 'lg:ml-64' : 'lg:ml-20'
         )}
       >
         {/* Top Bar */}
-        <header className="sticky top-0 z-20 h-16 bg-surface-2/85 backdrop-blur-md border-b border-border">
-          <div className="flex h-full items-center justify-between px-4 lg:px-6">
+        <header className="sticky top-0 z-20 h-16 bg-surface-2/90 backdrop-blur-md supports-[backdrop-filter]:bg-surface-2/80 border-b border-border">
+          <div className="flex h-full items-center justify-between px-4 lg:px-6 gap-3">
             {/* Left: Mobile menu + Search */}
-            <div className="flex items-center gap-4 flex-1">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
               <button
-                className="lg:hidden p-2 rounded-md hover:bg-surface"
+                className="lg:hidden p-2 rounded-lg hover:bg-surface-3 shrink-0"
                 onClick={() => setMobileMenuOpen(true)}
                 aria-label="Open menu"
               >
                 <Menu className="h-6 w-6" />
               </button>
 
-              {/* Global Search + Command Palette Trigger */}
-              <div className="relative flex-1 max-w-xl hidden sm:block">
+              {/* Global Search + Command Palette Trigger — visible from md, icon-only on mobile */}
+              <div className="relative flex-1 max-w-xl hidden md:block">
                 <PatientSearch
                   placeholder="Search patients... (⌘K)"
                   variant="header"
@@ -338,6 +336,13 @@ function AppLayoutInner() {
                   ⌘K
                 </button>
               </div>
+              <button
+                onClick={openPalette}
+                className="md:hidden p-2 rounded-lg hover:bg-surface-3 text-muted-fg hover:text-strong-fg shrink-0"
+                aria-label="Search patients"
+              >
+                <Search className="h-5 w-5" />
+              </button>
               <CommandPalette open={cmdPaletteOpen} onClose={closePalette} onOpen={openPalette} />
             </div>
 
